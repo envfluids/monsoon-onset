@@ -1,3 +1,7 @@
-weights/
-output/
-data/
+*/weights/*
+*/output/*
+*/data/*
+*/EKR/*
+*/logs/*
+*/raw/*
+__pycache__/
