@@ -1,6 +1,7 @@
 from download_ic import get_data
 import os
 
+
 def main():
     DATE_F = get_data()
     # DATE_F = "20250410T18"
@@ -21,6 +22,7 @@ def main():
 
     else:
         print("Will not run model, no new data to download. Retrying in 15 minutes")
+
 
 if __name__ == "__main__":
     main()

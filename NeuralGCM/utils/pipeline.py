@@ -23,5 +23,6 @@ def main():
     else:
         print("Will not run model, no new data to download.")
 
+
 if __name__ == "__main__":
     main()

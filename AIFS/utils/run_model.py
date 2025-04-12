@@ -21,11 +21,11 @@ TFM_N320_LATLON = load_npz(
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
 
+
 def get_state(date_f):
     with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
         data = pickle.load(f)
         return data
-
 
 
 def process_step(output_state):
@@ -45,6 +45,7 @@ def process_step(output_state):
     step_ds = step_ds.expand_dims("step")
     step_ds["step"] = [int(runcount)]
     return step_ds
+
 
 def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     if version == 0:
@@ -131,7 +132,7 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     date_f = args.date
-    
+
     version = 1
     lead_time = 41 * 24
     print(f"Version: {version}")
