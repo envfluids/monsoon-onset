@@ -1,7 +1,15 @@
-*/weights/*
-*/output/*
-*/data/*
-*/EKR/*
-*/logs/*
-*/raw/*
+weights/*
+output/*
+data/*
+EKR/*
+logs/*
+raw/*
 __pycache__/
+
+# Allow placeholder files to keep directory structure
+!weights/.gitkeep
+!output/.gitkeep
+!data/.gitkeep
+!EKR/.gitkeep
+!logs/.gitkeep
+!raw/.gitkeep
