@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /scratch/midway3/marchakitus/AIFS/operational/utils
+cd /scratch/midway3/marchakitus/monsoon-onset/AIFS/utils
 
 source /home/marchakitus/.bashrc
 
