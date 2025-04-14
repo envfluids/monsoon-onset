@@ -1,7 +1,7 @@
-/weights/*
+*/weights/*
 output/*
 data/*
-/EKR/*
+*/EKR/*
 logs/*
 raw/*
 __pycache__/
