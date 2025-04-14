@@ -1,9 +1,9 @@
 */weights/*
-output/*
-data/*
+*/output/*
+*/data/*
 */EKR/*
-logs/*
-raw/*
+*/logs/*
+*/raw/*
 __pycache__/
 
 # Allow placeholder files to keep directory structure
