@@ -13,6 +13,11 @@ import gc
 import copy
 
 import argparse
+import logging
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 TFM_N320_LATLON = load_npz(
     "../EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
@@ -21,17 +26,18 @@ TFM_N320_LATLON = load_npz(
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
 
-
 def get_state(date_f):
+    logging.info(f"Reading input state for date: {date_f}")
     with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
         data = pickle.load(f)
         return data
 
 
+
 def process_step(output_state):
     output_state, runcount = output_state
     data_vars = {}
-    print("processing step", output_state["date"])
+    logging.info(f"Processing step {runcount} for date: {output_state['date']}")
     for field in output_state["fields"]:
         values = (
             TFM_N320_LATLON * output_state["fields"][field].reshape(-1, 1)
@@ -45,7 +51,6 @@ def process_step(output_state):
     step_ds = step_ds.expand_dims("step")
     step_ds["step"] = [int(runcount)]
     return step_ds
-
 
 def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     if version == 0:
@@ -63,7 +68,6 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     hour_str = str(hour).zfill(2)
 
     # Get the input state
-    print("Getting input state")
     input_state = get_state(date_f)
 
     # Initialize runner on the GPU
@@ -72,7 +76,7 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     # Run forecasts and save each step
     runcount = 6
     datasets = []
-    print("Running forecast")
+    logging.info(f"Running forecast for {forecast_hours} hours")
     for state in runner.run(input_state=input_state, lead_time=forecast_hours):
         print_state(state)
 
@@ -91,7 +95,7 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
             datasets.append((selected_data, runcount))
         else:
             datasets.append((saved_state, runcount))
-        print(f"Completed forecast for step {runcount}, results in memory")
+        logging.info(f"Completed forecast for step {runcount}, results in memory")
         runcount += 6
 
     ds = xr.concat(
@@ -105,16 +109,18 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     )
     del runner
     gc.collect()
-    print(f"Completed forecast for {output_dir}")
+    logging.info(f"Completed forecast for {output_dir}")
 
 
 def main(version, date_f, output_dir, lead_time, save_fields=None):
     date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
     if not os.path.exists(output_dir):
         os.makedirs(output_dir, exist_ok=True)
-    print("Running for:", date_f)
-    if os.path.exists(f"{output_dir}/TESTinit_{date_f}.nc"):
+    logging.info(f"Running for: {date_f}")
+    logging.info(f"Output directory: {output_dir}")
+    if os.path.exists(f"{output_dir}/init_{date_f}.nc"):
         print("Skipping:", date_f, "already exits")
+        logging.warning(f"File {output_dir}/init_{date_f}.nc already exists. Exiting.")
     else:
         run(date, date_f, lead_time, version, output_dir, save_fields)
 
@@ -132,11 +138,13 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     date_f = args.date
-
+    
     version = 1
     lead_time = 41 * 24
-    print(f"Version: {version}")
-    print(f"Lead time: {lead_time} hours")
+
+    logging.info(f"Date: {date_f}")
+    logging.info(f"Version: {version}")
+    logging.info(f"Lead time: {lead_time} hours")
 
     save_fields = [
         "2t",
@@ -147,3 +155,4 @@ if __name__ == "__main__":
     ]
 
     main(version, date_f, OUTPUT_DIR, lead_time, save_fields=save_fields)
+    logging.info(f"Exiting inference script")
