@@ -11,7 +11,7 @@ def main():
     DATE_F = get_data()
 
     if DATE_F:
-        logging.info(f"IC download script was successful, new data available")
+        logging.info("IC download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
         command = (
             f"sbatch "
