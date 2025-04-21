@@ -3,6 +3,11 @@ import glob
 import argparse
 import numpy as np
 import os
+import logging
+
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def calculate_sji(ds):
@@ -48,6 +53,7 @@ def main():
     )
     args = parser.parse_args()
     date = args.date
+    logging.info(f"Merging data for date: {date}")
     ngcm_out = xr.open_mfdataset(
         f"../raw/output/{date}/*.zarr", engine="zarr", preprocess=preprocess
     )
@@ -57,20 +63,24 @@ def main():
         .sel(level=850)
         .drop_vars("level")
     )
+    logging.info("Calculating & Merging SJI")
     ngcm_out = calculate_sji(ngcm_out)
     ngcm_out.to_netcdf(f"../output/sji/{date}.nc")
     ngcm_out.close()
 
+    logging.info("Merging tcwv")
     tcw_files = glob.glob(f"../output/tcw/*_{date}_INTERMEDIATE_3.nc")
     tcw = xr.open_mfdataset(tcw_files)
     tcw.to_netcdf(f"../output/tcw/{date}.nc")
     tcw.close()
 
+    logging.info("Merging tp")
     tp_files = glob.glob(f"../output/tp/*_{date}_INTERMEDIATE_3.nc")
     tp = xr.open_mfdataset(tp_files)
     tp.to_netcdf(f"../output/tp/{date}.nc")
     tp.close()
 
+    logging.info("Removing intermediate files")
     for file in tcw_files:
         os.remove(file)
     for file in tp_files:

@@ -88,7 +88,7 @@ regridder = horizontal_interpolation.ConservativeRegridder(
 
 
 def run_model(date, date_f, forcings_clim, members):
-    print(date)
+    logging.info(f"Running model for date: {date_f}")
     year = date.year
     path_gfs_Ini = f"../raw/ncep_ic/processed/gdas_{date_f}.nc"
     gfs_ds = xarray.open_dataset(path_gfs_Ini)
@@ -108,7 +108,7 @@ def run_model(date, date_f, forcings_clim, members):
     all_forcings = model.forcings_from_xarray(forcings_clim_sub)
     time = eval_era5.time
     for rand in members:
-        print(rand)
+        logging.info(f"Running model for member: {rand}")
         init_date = time.values
         times = init_date + (np.arange(1, steps + 1) * dt)  # time axis in hours
 
@@ -168,7 +168,7 @@ def run_model(date, date_f, forcings_clim, members):
 
         data_rechunked.to_zarr(output_path + f"/{date_f}/member_{rand}.zarr")
 
-    print(f"Done with members: {members}")
+    logging.info(f"Done with members: {members}")
 
 
 def main():
@@ -176,15 +176,15 @@ def main():
     parser.add_argument("--date", type=str, help="Year to forecast")
     parser.add_argument("--mpi", type=int, help="MPI rank")
     args = parser.parse_args()
-    print("MPI Rank", args.mpi)
-    print("Initializing Model for", args.date)
+    logging.info("MPI Rank", args.mpi)
+    logging.info("Date", args.date)
     mpi = args.mpi
     if mpi > 3:
-        print("MPI can only be 0, 1, 2, 3")
+        logging.error("MPI can only be 0, 1, 2, 3")
         return
     os.environ["CUDA_VISIBLE_DEVICES"] = str(mpi)
     devices = jax.local_devices()
-    print(devices)
+    logging.info(f"Using device: {devices}")
     date_f = args.date
     date = datetime.strptime(date_f, "%Y%m%dT%H")
 

@@ -95,7 +95,7 @@ def preprocess(ds):
 
 def process_member(member, date):
     # cdo = Cdo()
-    print("Processing member:", member)
+    logging.info(f"Processing member: {member}")
     ds = (
         xr.open_zarr(f"../raw/output/{date}/member_{member}.zarr")
         .rename(
@@ -177,7 +177,7 @@ def main():
     n_members = len(glob.glob(f"../raw/output/{date}/member_*.zarr"))
     futures = []
     with ProcessPoolExecutor(max_workers=n_members) as executor:
-        print(
+        logging.info(
             f"Submitting tasks for {n_members} members using up to {n_members} workers..."
         )
         # Submit all tasks for the current year
@@ -188,7 +188,9 @@ def main():
 
         # --- Collect results ---
         processed_files = []
-        print(f"Waiting for {len(futures)} member tasks to complete for {date}...")
+        logging.info(
+            f"Waiting for {len(futures)} member tasks to complete for {date}..."
+        )
         # as_completed yields futures as they finish (in any order)
         # This is useful for getting results sooner or for progress tracking
         for i, future in enumerate(as_completed(futures), 1):
@@ -196,14 +198,14 @@ def main():
                 result = (
                     future.result()
                 )  # Get the return value from the function (file path or None)
-                print(
+                logging.info(
                     f"  Completed task {i}/{n_members} for {date}. Success: {result is not None}"
                 )
                 if result:
                     processed_files.append(result)
             except Exception as e:
                 # Catch exceptions raised *during* the execution of the task in the worker process
-                print(
+                logging.info(
                     f"ERROR retrieving result for a task in {date}: {type(e).__name__} - {e}"
                 )
                 # Log the specific member if possible (though future doesn't easily expose args)
