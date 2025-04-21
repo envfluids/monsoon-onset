@@ -6,11 +6,12 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def main():
     DATE_F = get_data()
     # DATE_F = "20250410T18"
     if DATE_F:
-        logging.info(f"IC download script was successful, new data available")
+        logging.info("IC download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
         print(f"DATE: {DATE_F}")
         command = (
@@ -26,7 +27,10 @@ def main():
         print("Running model")
 
     else:
-        logging.info("Will not run model, no new data to download. Retrying in 15 minutes")
+        logging.info(
+            "Will not run model, no new data to download. Retrying in 15 minutes"
+        )
+
 
 if __name__ == "__main__":
     main()

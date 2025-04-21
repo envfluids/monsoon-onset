@@ -6,7 +6,9 @@ import argparse
 import logging
 
 # Configure logging - This setup is good.
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def run_ncl(in_file, out_file_interp):
@@ -70,37 +72,42 @@ def run_ncl(in_file, out_file_interp):
     logging.info("Running NCL script via stdin...")
     try:
         process = subprocess.run(
-            ['ncl'],
+            ["ncl"],
             input=ncl_script_content,
             capture_output=True,
             text=True,
-            check=True, # Raises CalledProcessError if return code is non-zero
-            encoding='utf-8' # Explicitly set encoding
+            check=True,  # Raises CalledProcessError if return code is non-zero
+            encoding="utf-8",  # Explicitly set encoding
         )
         logging.info("NCL script executed successfully.")
         logging.debug("--- NCL Stdout ---:\n%s", process.stdout)
         # NCL often prints warnings/info to stderr even on success
         if process.stderr:
-             logging.debug("--- NCL Stderr ---:\n%s", process.stderr)
+            logging.debug("--- NCL Stderr ---:\n%s", process.stderr)
         # --- Check if output file was created ---
         if not os.path.exists(out_file_interp):
-            logging.error(f"NCL ran but the output file was not created: {out_file_interp}")
+            logging.error(
+                f"NCL ran but the output file was not created: {out_file_interp}"
+            )
             return False
-        return True # Success
+        return True  # Success
     except subprocess.CalledProcessError as e:
         logging.error(f"Error running NCL script (return code {e.returncode}).")
         logging.error("--- NCL Stdout ---:\n%s", e.stdout)
         logging.error("--- NCL Stderr ---:\n%s", e.stderr)
         # Use logging.exception to include traceback info automatically
         logging.exception("NCL subprocess execution failed.")
-        return False # Failure
+        return False  # Failure
     except FileNotFoundError:
-        logging.error("Error: 'ncl' command not found. Is NCL installed and in your system's PATH?")
-        return False # Failure
+        logging.error(
+            "Error: 'ncl' command not found. Is NCL installed and in your system's PATH?"
+        )
+        return False  # Failure
     except Exception as e:
         # Catch any other unexpected errors during subprocess execution
         logging.exception(f"An unexpected error occurred during NCL execution: {e}")
-        return False # Failure
+        return False  # Failure
+
 
 def make_ds(out_file_interp, out_file_ic, date_f):
     """
@@ -115,21 +122,23 @@ def make_ds(out_file_interp, out_file_ic, date_f):
         bool: True if processing was successful, False otherwise.
     """
     logging.info(f"Starting dataset processing for {out_file_interp}")
-    ds_ncep = None # Initialize to None
+    ds_ncep = None  # Initialize to None
     ds_ERA = None  # Initialize to None
 
     try:
         # --- Load Reference Dataset ---
-        path_ERA = '../data/model_ds/'
-        era_file = os.path.join(path_ERA, "ERA5_2018_05_16_00.nc") # Use a specific file
+        path_ERA = "../data/model_ds/"
+        era_file = os.path.join(
+            path_ERA, "ERA5_2018_05_16_00.nc"
+        )  # Use a specific file
         logging.info(f"Loading reference ERA5 dataset: {era_file}")
         if not os.path.exists(era_file):
             logging.error(f"Reference ERA5 file not found: {era_file}")
             return False
         ds_ERA = xr.open_dataset(era_file)
-        levels = ds_ERA['level'].values
-        lats = ds_ERA['latitude'].values
-        lons = ds_ERA['longitude'].values
+        levels = ds_ERA["level"].values
+        lats = ds_ERA["latitude"].values
+        lons = ds_ERA["longitude"].values
         logging.info("Reference dataset loaded successfully.")
 
         # --- Load NCL Output Dataset ---
@@ -149,29 +158,45 @@ def make_ds(out_file_interp, out_file_ic, date_f):
 
         # --- Define Renaming Maps ---
         RENAME_DIMS = {
-            'ncl0': 'level', 'ncl1': 'latitude', 'ncl2': 'longitude',
-            'ncl3': 'level', 'ncl4': 'latitude', 'ncl5': 'longitude',
-            'ncl6': 'level', 'ncl7': 'latitude', 'ncl8': 'longitude',
-            'ncl9': 'level', 'ncl10': 'latitude', 'ncl11': 'longitude',
-            'ncl12': 'level', 'ncl13': 'latitude', 'ncl14': 'longitude',
-            'ncl15': 'level', 'ncl16': 'latitude', 'ncl17': 'longitude',
+            "ncl0": "level",
+            "ncl1": "latitude",
+            "ncl2": "longitude",
+            "ncl3": "level",
+            "ncl4": "latitude",
+            "ncl5": "longitude",
+            "ncl6": "level",
+            "ncl7": "latitude",
+            "ncl8": "longitude",
+            "ncl9": "level",
+            "ncl10": "latitude",
+            "ncl11": "longitude",
+            "ncl12": "level",
+            "ncl13": "latitude",
+            "ncl14": "longitude",
+            "ncl15": "level",
+            "ncl16": "latitude",
+            "ncl17": "longitude",
         }
-        RENAME_VARS = {"T_interp": "temperature",
-                       "U_interp": "u_component_of_wind",
-                       "V_interp": "v_component_of_wind",
-                       "S_interp": "specific_humidity",
-                       "HGT_interp": "geopotential"}
+        RENAME_VARS = {
+            "T_interp": "temperature",
+            "U_interp": "u_component_of_wind",
+            "V_interp": "v_component_of_wind",
+            "S_interp": "specific_humidity",
+            "HGT_interp": "geopotential",
+        }
 
         # --- Nested Processing Function ---
         def process(ds_to_process, target_levels, target_lats, target_lons, time_coord):
             logging.debug("Starting internal processing function.")
             # Check if 'time' dimension already exists before expanding
-            if 'time' not in ds_to_process.dims:
-                 ds_to_process = ds_to_process.expand_dims('time')
-            ds_to_process['time'] = [time_coord]
+            if "time" not in ds_to_process.dims:
+                ds_to_process = ds_to_process.expand_dims("time")
+            ds_to_process["time"] = [time_coord]
 
             # Safely rename dimensions
-            rename_safe_dims = {k: v for k, v in RENAME_DIMS.items() if k in ds_to_process.dims}
+            rename_safe_dims = {
+                k: v for k, v in RENAME_DIMS.items() if k in ds_to_process.dims
+            }
             if rename_safe_dims:
                 logging.debug(f"Renaming dimensions: {rename_safe_dims}")
                 ds_to_process = ds_to_process.rename(rename_safe_dims)
@@ -179,23 +204,27 @@ def make_ds(out_file_interp, out_file_ic, date_f):
                 logging.warning("No dimensions found matching the RENAME_DIMS pattern.")
 
             # Safely rename variables
-            rename_safe_vars = {k: v for k, v in RENAME_VARS.items() if k in ds_to_process.data_vars}
+            rename_safe_vars = {
+                k: v for k, v in RENAME_VARS.items() if k in ds_to_process.data_vars
+            }
             if rename_safe_vars:
                 logging.debug(f"Renaming variables: {rename_safe_vars}")
                 ds_to_process = ds_to_process.rename(rename_safe_vars)
             else:
-                 logging.warning("No variables found matching the RENAME_VARS pattern.")
+                logging.warning("No variables found matching the RENAME_VARS pattern.")
 
             # Assign coordinates - potential source of errors if shapes mismatch
             logging.debug("Assigning coordinates (level, lat, lon).")
-            ds_to_process = ds_to_process.assign_coords(level=target_levels, latitude=target_lats, longitude=target_lons)
-            ds_to_process['geopotential'] = ds_to_process['geopotential'] * 9.81
+            ds_to_process = ds_to_process.assign_coords(
+                level=target_levels, latitude=target_lats, longitude=target_lons
+            )
+            ds_to_process["geopotential"] = ds_to_process["geopotential"] * 9.81
             # Calculate cloud water/ice content
-            if 'CW_interp' in ds_to_process:
+            if "CW_interp" in ds_to_process:
                 logging.debug("Calculating cloud liquid/ice water content.")
-                CWMR = ds_to_process['CW_interp']     # Cloud water mixing ratio
-                T_K = ds_to_process['temperature']    # Temperature in Kelvin
-                T_C = T_K - 273.15                    # Convert to Celsius
+                CWMR = ds_to_process["CW_interp"]  # Cloud water mixing ratio
+                T_K = ds_to_process["temperature"]  # Temperature in Kelvin
+                T_C = T_K - 273.15  # Convert to Celsius
 
                 liquid_condition = T_C >= -20
                 ice_condition = T_C < -20
@@ -203,14 +232,15 @@ def make_ds(out_file_interp, out_file_ic, date_f):
                 CLWMR = CWMR.where(liquid_condition, 0.0).fillna(0.0)
                 CIWMR = CWMR.where(ice_condition, 0.0).fillna(0.0)
 
-                ds_to_process['specific_cloud_liquid_water_content'] = CLWMR
-                ds_to_process['specific_cloud_ice_water_content'] = CIWMR
+                ds_to_process["specific_cloud_liquid_water_content"] = CLWMR
+                ds_to_process["specific_cloud_ice_water_content"] = CIWMR
 
                 logging.debug("Dropping intermediate 'CW_interp' variable.")
                 ds_to_process = ds_to_process.drop_vars("CW_interp")
             else:
-                logging.warning("Variable 'CW_interp' not found. Skipping cloud water calculation.")
-
+                logging.warning(
+                    "Variable 'CW_interp' not found. Skipping cloud water calculation."
+                )
 
             logging.debug("Internal processing function finished.")
             return ds_to_process
@@ -224,14 +254,16 @@ def make_ds(out_file_interp, out_file_ic, date_f):
         ds_processed.to_netcdf(out_file_ic)
         logging.info("Final dataset saved successfully.")
 
-        return True # Success
+        return True  # Success
 
     except FileNotFoundError as e:
         # This might be caught earlier, but good to have redundancy
         logging.error(f"File not found during dataset processing: {e}")
         return False
     except xr.backends.opener.DatasetBuildError as e:
-        logging.error(f"Error opening NetCDF file (possibly corrupt or invalid format): {e}")
+        logging.error(
+            f"Error opening NetCDF file (possibly corrupt or invalid format): {e}"
+        )
         logging.exception("Dataset opening failed.")
         return False
     except KeyError as e:
@@ -248,7 +280,9 @@ def make_ds(out_file_interp, out_file_ic, date_f):
         return False
     except Exception as e:
         # Catch-all for any other unexpected errors during processing
-        logging.exception(f"An unexpected error occurred during dataset processing: {e}")
+        logging.exception(
+            f"An unexpected error occurred during dataset processing: {e}"
+        )
         return False
     finally:
         # --- Ensure datasets are closed ---
@@ -269,7 +303,7 @@ def main():
     parser.add_argument(
         "--date",
         type=str,
-        required=True, # Make date mandatory
+        required=True,  # Make date mandatory
         help="Date for the processing in YYYYMMDDTHH format (e.g., 20030625T06)",
     )
 
@@ -278,7 +312,7 @@ def main():
     logging.info(f"Processing data for date: {date_f}")
 
     # Define directories and file paths
-    base_dir = "../raw/ncep_ic" # Define base directory for clarity
+    base_dir = "../raw/ncep_ic"  # Define base directory for clarity
     input_dir = os.path.join(base_dir, "download")
     output_dir = os.path.join(base_dir, "processed")
 
@@ -288,7 +322,7 @@ def main():
         logging.info(f"Ensured output directory exists: {output_dir}")
     except OSError as e:
         logging.error(f"Could not create output directory {output_dir}: {e}")
-        return # Cannot proceed without output directory
+        return  # Cannot proceed without output directory
 
     in_file = os.path.join(input_dir, f"gdas_{date_f}.pgrb2")
     out_file_interp = os.path.join(output_dir, f"INTERMEDIATE_gdas_{date_f}.nc")
@@ -303,7 +337,7 @@ def main():
 
     if not ncl_success:
         logging.error("NCL processing failed. Aborting.")
-        return # Stop execution if NCL failed
+        return  # Stop execution if NCL failed
 
     logging.info("NCL processing completed successfully.")
 
@@ -313,8 +347,10 @@ def main():
     if not make_ds_success:
         logging.error("Dataset processing (make_ds) failed. Aborting.")
         # Keep intermediate file for debugging if make_ds failed
-        logging.warning(f"Intermediate file {out_file_interp} may still exist for debugging.")
-        return # Stop execution if make_ds failed
+        logging.warning(
+            f"Intermediate file {out_file_interp} may still exist for debugging."
+        )
+        return  # Stop execution if make_ds failed
 
     logging.info("Dataset processing completed successfully.")
 
@@ -325,7 +361,9 @@ def main():
             os.remove(out_file_interp)
             logging.info(f"Successfully removed intermediate file: {out_file_interp}")
         else:
-            logging.warning(f"Intermediate file not found, cannot remove: {out_file_interp}")
+            logging.warning(
+                f"Intermediate file not found, cannot remove: {out_file_interp}"
+            )
     except OSError as e:
         # Log as a warning because the main task is done, but cleanup failed.
         logging.warning(f"Error removing intermediate file {out_file_interp}: {e}")

@@ -6,6 +6,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def main():
     DATE_F = get_data()
 
@@ -25,7 +26,10 @@ def main():
         print("Running model")
 
     else:
-        logging.info("Will not run model, no new data to download. Retrying in 30 minutes")
+        logging.info(
+            "Will not run model, no new data to download. Retrying in 30 minutes"
+        )
+
 
 if __name__ == "__main__":
     main()
