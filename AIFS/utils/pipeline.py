@@ -13,7 +13,6 @@ def main():
     if DATE_F:
         logging.info("IC download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
-        print(f"DATE: {DATE_F}")
         command = (
             f"sbatch "
             f"--job-name=AIFS_fc_{DATE_F} "
@@ -24,7 +23,7 @@ def main():
         )
 
         os.system(command)
-        print("Running model")
+        logging.info("Running model")
 
     else:
         logging.info(

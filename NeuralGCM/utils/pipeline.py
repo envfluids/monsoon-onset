@@ -23,7 +23,7 @@ def main():
         )
 
         os.system(command)
-        print("Running model")
+        logging.info("Running model")
 
     else:
         logging.info(
