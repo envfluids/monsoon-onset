@@ -176,8 +176,7 @@ def main():
     parser.add_argument("--date", type=str, help="Year to forecast")
     parser.add_argument("--mpi", type=int, help="MPI rank")
     args = parser.parse_args()
-    logging.info("MPI Rank", args.mpi)
-    logging.info("Date", args.date)
+    logging.info(f"MPI Rank{args.mpi}")
     mpi = args.mpi
     if mpi > 3:
         logging.error("MPI can only be 0, 1, 2, 3")
