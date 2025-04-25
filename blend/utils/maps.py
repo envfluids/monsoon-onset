@@ -8,6 +8,7 @@ from matplotlib.colors import TwoSlopeNorm, LinearSegmentedColormap
 import geopandas as gpd
 from shapely.geometry import Polygon
 from pathlib import Path
+import logging
 
 def make_maps(summary, date):
     base = Path("../").resolve()
@@ -140,7 +141,7 @@ def make_maps(summary, date):
             ax.set_aspect('equal')
             ax.axis('off')
             plt.tight_layout()
-            print(f"Saving map for {var} on {date_str}")
+            logging.info(f"Saving map for {var} on {date_str}")
             plt.savefig(f"{output_dir}/map_week{tag}_{date_str}.png", dpi=200)
             plt.close(fig)
     # ------------------------------------------------------------------------------
@@ -200,4 +201,4 @@ def make_maps(summary, date):
         plt.savefig(f"{output_dir}/map_bars_{date_str}.png", dpi=200)
         plt.close(fig)
 
-    print("All maps saved under the `maps/` directory")
+    logging.info(f"All maps saved under the {output_dir} directory")

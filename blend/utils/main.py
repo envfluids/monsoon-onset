@@ -26,6 +26,15 @@ def get_data(date):
     aifs_tp_file = base / "AIFS" / "output" / "tp" / f"{date}.nc"
     ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"{date}.nc"
 
+    if aifs_tp_file.exists() and ngcm_precip_file.exists():
+        logging.info(f"Blending AIFS and NGCM data for {date}")
+    else:
+        if not aifs_tp_file.exists():
+            logging.error(f"Missing AIFS data for {date}")
+        if not ngcm_precip_file.exists():
+            logging.error(f"Missing NGCM data for {date}")
+        return None
+    
     allowed_cells = pd.read_csv(allowed_cells_file)
 
     # Process forecasts
@@ -207,10 +216,13 @@ def main():
     date = args.date
 
     final = get_data(date)
-
-    summary = blend(final, date)
-
-    make_maps(summary, date)
+    if final is None:
+        logging.error("No data to process")
+        return
+    else:
+        summary = blend(final, date)
+        make_maps(summary, date)
+        logging.info(f"Maps created for {date}")
 
 if __name__ == '__main__':
     main()
