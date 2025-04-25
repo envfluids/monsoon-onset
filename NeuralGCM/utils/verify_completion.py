@@ -8,7 +8,6 @@ logging.basicConfig(
 )
 
 def main():
-
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
     )
