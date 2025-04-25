@@ -9,6 +9,8 @@
 #SBATCH --mail-user=marchakitus@uchicago.edu
 #SBATCH --mail-type=all
 
+set -euo pipefail
+
 source /home/marchakitus/.bashrc
 
 conda activate /home/marchakitus/.conda/envs/ncl_stable
