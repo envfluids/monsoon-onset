@@ -36,7 +36,7 @@ def main():
             logging.info(f"File exists: {file_path}")
             return True
         else:
-            logging.error(f"File does not exist: {file_path}")
+            logging.warning(f"File does not exist: {file_path}")
             return False
 
     # check that all files exist
@@ -57,7 +57,7 @@ def main():
         logging.info("All files exist, initiating model blend process")
         sys.exit(0)
     else:
-        logging.error("Not all files exist, exiting")
+        logging.warning("Not all files exist, exiting")
         sys.exit(1)
 if __name__ == "__main__":
     main()

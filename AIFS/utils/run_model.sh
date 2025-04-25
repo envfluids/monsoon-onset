@@ -8,11 +8,7 @@
 #SBATCH --mail-user=marchakitus@uchicago.edu
 #SBATCH --mail-type=all
 
-set -euo pipefail
-
-# source /home/marchakitus/.bashrc
-
-DATE_F=$"20250424T12"
+source /home/marchakitus/.bashrc
 
 conda activate /home/marchakitus/.conda/envs/AIFSv1
 python ./run_model.py --date $DATE_F
@@ -21,6 +17,7 @@ conda deactivate
 conda activate /home/marchakitus/.conda/envs/ncl_stable
 python ./post_process.py --date $DATE_F
 
+set -euo pipefail
 python ./verify_completion.py --date $DATE_F
 
 cd ../../blend/utils
