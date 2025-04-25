@@ -30,3 +30,8 @@ python ./post_process.py --date $DATE_F
 conda deactivate
 conda activate /home/marchakitus/.conda/envs/neuralgcm
 python ./post_process_merge.py --date $DATE_F
+
+python ./verify_completion.py --date $DATE_F
+
+cd ../../blend/utils
+python ./main.py --date $DATE_F
