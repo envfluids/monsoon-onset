@@ -4,7 +4,7 @@
 */EKR/*
 */logs/*
 */raw/*
-*/Thumbs.db
+**/Thumbs.db
 __pycache__/
 
 # Allow placeholder files to keep directory structure
