@@ -10,10 +10,9 @@ import os
 from blend import blend
 from maps import make_maps
 
-def get_data(date):
+def get_data(date, base):
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
-    base = Path("../../").resolve()
     out_path = base / "blend" / "output" / date 
     os.makedirs(out_path, exist_ok=True)
     out_file = out_path / f'all_data.csv'
@@ -33,7 +32,7 @@ def get_data(date):
             logging.error(f"Missing AIFS data for {date}")
         if not ngcm_precip_file.exists():
             logging.error(f"Missing NGCM data for {date}")
-        return None
+        return None, None
     
     allowed_cells = pd.read_csv(allowed_cells_file)
 
@@ -201,7 +200,28 @@ def get_data(date):
     final.to_csv(out_file, index=False)
     logging.info(f"CV data with rolling‑sum stats and transformed climatology written to {out_file}")
     
-    return final
+    return out_path, final
+
+def copy_to_latest(origin_path, dest_path):
+    """Copy files from origin_path to dest_path and remove existing files in dest_path."""
+
+    command = f"rm -r {dest_path}/*"
+    try:
+        os.system(command)
+        logging.info(f"Removed existing files in: {dest_path}")
+    except Exception as e:
+        logging.error(f"Error removing symbolic link: {e}")
+        raise e
+
+    command = f"cp -r {origin_path} {dest_path}"
+    try:
+        os.system(command)
+        logging.info(f"Copied files from {origin_path} to {dest_path}")
+    except Exception as e:
+        logging.error(f"Error copying files: {e}")
+        raise e
+    finally:
+        logging.info("Copy operation completed.")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -214,8 +234,9 @@ def main():
     )
     args = parser.parse_args()
     date = args.date
-
-    final = get_data(date)
+    base = base = Path(__file__).resolve().parent.parent.parent
+    sync_path = base / "sync" / "latest" 
+    out_path, final = get_data(date, base)
     if final is None:
         logging.error("No data to process")
         return
@@ -223,6 +244,8 @@ def main():
         summary = blend(final, date)
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")
+
+        copy_to_latest(out_path, sync_path)
 
 if __name__ == '__main__':
     main()
