@@ -1,0 +1,2 @@
+*/15 * * * * /scratch/midway3/marchakitus/monsoon-onset/AIFS/chron_job.sh >> /scratch/midway3/marchakitus/monsoon-onset/AIFS/logs/cron.log 2>&1
+*/30 * * * * /scratch/midway3/marchakitus/monsoon-onset/NeuralGCM/chron_job.sh >> /scratch/midway3/marchakitus/monsoon-onset/NeuralGCM/logs/cron.log 2>&1
