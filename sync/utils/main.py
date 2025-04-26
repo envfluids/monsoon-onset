@@ -19,7 +19,7 @@ live_date_ref = data_dir / "latest.txt"
 if not os.path.exists(live_date_ref):
     logging.info(f"Creating live date reference file at {live_date_ref}")
     with open(live_date_ref, "w") as f:
-        f.write(date)
+        f.write("XXXX-XX-XX")  # Placeholder for the first run
 
 with open(live_date_ref, "r") as f:
     live_date = f.read().strip()
