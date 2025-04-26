@@ -11,7 +11,7 @@ from pathlib import Path
 import logging
 
 def make_maps(summary, date):
-    base = Path("../").resolve()
+    base = Path(__file__).resolve().parent
     india_shapefile = base / "data" / "india_shapefile" / "India_Country_Boundary.shp"
 
     # ------------------------------------------------------------------------------
@@ -142,7 +142,7 @@ def make_maps(summary, date):
             ax.axis('off')
             plt.tight_layout()
             logging.info(f"Saving map for {var} on {date_str}")
-            plt.savefig(f"{output_dir}/map_week{tag}_{date_str}.png", dpi=200)
+            plt.savefig(f"{output_dir}/map_week{tag}.png", dpi=200)
             plt.close(fig)
     # ------------------------------------------------------------------------------
     # 7) Bar‐chart maps (week1, week2, week3, week4, later) with cell outlines
@@ -198,7 +198,7 @@ def make_maps(summary, date):
         ax.set_aspect('equal')
         ax.axis('off')
         plt.tight_layout()
-        plt.savefig(f"{output_dir}/map_bars_{date_str}.png", dpi=200)
+        plt.savefig(f"{output_dir}/map_bars.png", dpi=200)
         plt.close(fig)
 
     logging.info(f"All maps saved under the {output_dir} directory")

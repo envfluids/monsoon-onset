@@ -234,7 +234,7 @@ def main():
     )
     args = parser.parse_args()
     date = args.date
-    base = base = Path(__file__).resolve().parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent
     sync_path = base / "sync" / "latest" 
     out_path, final = get_data(date, base)
     if final is None:
