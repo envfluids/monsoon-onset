@@ -3,50 +3,62 @@ from pathlib import Path
 from glob import glob
 import logging
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
-base = Path(__file__).resolve().parent.parent.parent
-operational_dir = base.parent / "monsoon-operational"
-live_dir = operational_dir / "docs" / "assets" 
-maps_dir = live_dir / "images"
-data_dir = live_dir / "data"
+def main():
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
-latest = base / "sync" / "latest"
-latest_dir = glob(str(latest / "*"))[0]
-date = latest_dir.split("/")[-1]
+    base = Path(__file__).resolve().parent.parent.parent
+    operational_dir = base.parent / "monsoon-operational"
+    live_dir = operational_dir / "docs" / "assets" 
+    maps_dir = live_dir / "images"
+    data_dir = live_dir / "data"
 
-live_date_ref = data_dir / "latest.txt"
-if not os.path.exists(live_date_ref):
-    logging.info(f"Creating live date reference file at {live_date_ref}")
-    with open(live_date_ref, "w") as f:
-        f.write("XXXX-XX-XX")  # Placeholder for the first run
+    latest = base / "sync" / "latest"
+    latest_dir = glob(str(latest / "*"))[0]
+    date = latest_dir.split("/")[-1]
 
-with open(live_date_ref, "r") as f:
-    live_date = f.read().strip()
+    live_date_ref = data_dir / "latest.txt"
+    if not os.path.exists(live_date_ref):
+        logging.info(f"Creating live date reference file at {live_date_ref}")
+        with open(live_date_ref, "w") as f:
+            f.write("XXXX-XX-XX")  # Placeholder for the first run
 
-if date == live_date:
-    logging.info(f"Latest date {date} is the same as live date {live_date}. No need to update.")
-else:
-    logging.info(f"Latest date {date} is different from live date {live_date}. Updating live date.")
+    with open(live_date_ref, "r") as f:
+        live_date = f.read().strip()
 
-    command = f"rm -r {maps_dir}/*"
-    os.system(command)
-    command = f"rm -r {data_dir}/*"
-    os.system(command)
+    if date == live_date:
+        logging.info(f"Latest date {date} is the same as live date {live_date}. No need to update.")
+    else:
+        logging.info(f"Latest date {date} is different from live date {live_date}. Updating live date.")
 
-    latest_maps = latest_dir + "/maps" + "/map_bars.png"
-    command = f"cp {latest_maps} {maps_dir}"
-    os.system(command)
+        command = f"rm -r {maps_dir}/*"
+        os.system(command)
+        command = f"rm -r {data_dir}/*"
+        os.system(command)
 
-    latest_data = latest_dir + "/blend_output_summary.csv"
-    command = f"cp {latest_data} {data_dir}"
-    os.system(command)
+        latest_maps = latest_dir + "/maps" + "/map_bars.png"
+        command = f"cp {latest_maps} {maps_dir}"
+        os.system(command)
 
-    with open(data_dir / "latest.txt", "w") as f:
-        f.write(date)
+        latest_data = latest_dir + "/blend_output_summary.csv"
+        command = f"cp {latest_data} {data_dir}"
+        os.system(command)
 
-    logging.info(f"Updated live date to {date}.")
+        with open(data_dir / "latest.txt", "w") as f:
+            f.write(date)
 
-    command = f"cd {operational_dir} && git add . && git commit -m 'Updated live date to {date}' && git push"
-    os.system(command)
-    logging.info(f"Pushed changes to operational repo.")
+        logging.info(f"Updated live date to {date}.")
+
+        command = f"cd {operational_dir} && git add . && git commit -m 'Updated live date to {date}' && git push"
+        try:
+            result = os.system(command)
+            if result != 0:
+                raise RuntimeError(f"Command failed with exit code {result}: {command}")
+            logging.info(f"Pushed changes to operational repo.")
+        except Exception as e:
+            logging.error(f"Failed to push changes to operational repo: {e}")
+
+    logging.info("Sync process completed.")
+
+if __name__ == "__main__":
+    main()
