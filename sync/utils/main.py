@@ -36,7 +36,6 @@ else:
 
     latest_maps = latest_dir + "/maps" + "/map_bars.png"
     command = f"cp {latest_maps} {maps_dir}"
-    print(command)
     os.system(command)
 
     latest_data = latest_dir + "/blend_output_summary.csv"
