@@ -36,6 +36,5 @@ python ./verify_completion.py --date $DATE_F
 
 conda deactivate
 conda activate /home/marchakitus/.conda/envs/ncl_stable
-
 cd ../../blend/utils
 python ./main.py --date $DATE_F
