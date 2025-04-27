@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from glob import glob
 import logging
+import socket
 
 
 def main():
@@ -57,6 +58,9 @@ def main():
         with open(data_dir / "latest.txt", "w") as f:
             f.write(date)
 
+        with open(data_dir / "cluster.txt", "w") as f:
+            f.write(socket.gethostname())
+        
         logging.info(f"Updated live date to {date}.")
 
         command = f"cd {operational_dir} && git add . && git commit -m 'Updated live date to {date}' && git push"
