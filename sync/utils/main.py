@@ -23,6 +23,16 @@ def main():
         with open(live_date_ref, "w") as f:
             f.write("XXXX-XX-XX")  # Placeholder for the first run
 
+    command = f"cd {operational_dir} && git pull"
+    try:
+        result = os.system(command)
+        if result != 0:
+            raise RuntimeError(f"Command failed with exit code {result}: {command}")
+        logging.info(f"Pulled latest changes from operational repo.")
+    except Exception as e:
+        logging.error(f"Failed to pull changes from operational repo: {e}")
+        return
+
     with open(live_date_ref, "r") as f:
         live_date = f.read().strip()
 

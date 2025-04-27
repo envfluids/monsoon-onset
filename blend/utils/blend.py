@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def blend(df_raw, date):
-    base = Path(__file__).resolve().parent
+    base = Path(__file__).resolve().parent.parent
     coef_file = base / "data" / "coefs" / "multinom_coefs_full.csv"
     coef_clim_file = base / "data" / "coefs" / "multinom_coefs_full_clim.csv"
     output_dir = base / "output" / date

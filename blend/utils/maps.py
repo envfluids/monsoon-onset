@@ -11,7 +11,7 @@ from pathlib import Path
 import logging
 
 def make_maps(summary, date):
-    base = Path(__file__).resolve().parent
+    base = Path(__file__).resolve().parent.parent
     india_shapefile = base / "data" / "india_shapefile" / "India_Country_Boundary.shp"
 
     # ------------------------------------------------------------------------------
