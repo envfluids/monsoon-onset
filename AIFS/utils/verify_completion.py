@@ -7,6 +7,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
@@ -21,7 +22,7 @@ def main():
     base = Path(__file__).resolve().parent.parent.parent
 
     print(base)
-    AIFS_output_path = base / "AIFS" / "output" 
+    AIFS_output_path = base / "AIFS" / "output"
     AIFS_tp_path = AIFS_output_path / "tp" / f"{date}.nc"
     AIFS_sji_path = AIFS_output_path / "sji" / f"{date}.nc"
     AIFS_tcw_path = AIFS_output_path / "tcw" / f"{date}.nc"
@@ -59,5 +60,7 @@ def main():
     else:
         logging.warning("Not all files exist, exiting")
         sys.exit(1)
+
+
 if __name__ == "__main__":
     main()

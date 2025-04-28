@@ -10,13 +10,16 @@ import os
 from blend import blend
 from maps import make_maps, make_extra_maps
 
-def get_data(date, base):
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s:%(message)s')
 
-    out_path = base / "blend" / "output" / date 
+def get_data(date, base):
+    logging.basicConfig(
+        level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    )
+
+    out_path = base / "blend" / "output" / date
     os.makedirs(out_path, exist_ok=True)
-    out_file = out_path / f'all_data.csv'
-    #copies of each of these files are in the py folder I sent Adam
+    out_file = out_path / f"all_data.csv"
+    # copies of each of these files are in the py folder I sent Adam
     thresholds_file = base / "blend" / "data" / "support" / "thresholds_df.csv"
     clusters_file = base / "blend" / "data" / "support" / "onset_clusters.csv"
     mat_file = base / "blend" / "data" / "support" / "onset_five_day_thres_2deg.mat"
@@ -33,63 +36,65 @@ def get_data(date, base):
         if not ngcm_precip_file.exists():
             logging.error(f"Missing NGCM data for {date}")
         return None, None
-    
+
     allowed_cells = pd.read_csv(allowed_cells_file)
 
     # Process forecasts
     ngcm_df = process_ngcm(ngcm_precip_file, mat_file, allowed_cells)
     aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
-    ngcm_df['time'] = pd.to_datetime(ngcm_df['time']).dt.normalize()
-    aifs_df['time'] = pd.to_datetime(aifs_df['time']).dt.normalize()
-    
+    ngcm_df["time"] = pd.to_datetime(ngcm_df["time"]).dt.normalize()
+    aifs_df["time"] = pd.to_datetime(aifs_df["time"]).dt.normalize()
+
     # Load additional data
     clim = pd.read_csv(clim_file)
-    clim['time'] = pd.to_datetime(clim['time']).dt.normalize()
+    clim["time"] = pd.to_datetime(clim["time"]).dt.normalize()
     thresholds = pd.read_csv(thresholds_file)
     clusters = pd.read_csv(clusters_file)
 
     # Merge CV data
-    ngcm_sel = ngcm_df.rename(columns={'v_wind':'ngcm_wind','v_tcw':'ngcm_tcw'})
+    ngcm_sel = ngcm_df.rename(columns={"v_wind": "ngcm_wind", "v_tcw": "ngcm_tcw"})
     merged = ngcm_sel.merge(
-        aifs_df.rename(columns={'v_wind':'aifs_wind','v_tcw':'aifs_tcw'}),
-        on=['time','day','lat','lon'], how='inner'
+        aifs_df.rename(columns={"v_wind": "aifs_wind", "v_tcw": "aifs_tcw"}),
+        on=["time", "day", "lat", "lon"],
+        how="inner",
     )
 
-   #read in climatology data
+    # read in climatology data
     clim_wide = clim.pivot_table(
-        index=['time','day','lat','lon'],
-        columns='model', values='predicted_prob'
+        index=["time", "day", "lat", "lon"], columns="model", values="predicted_prob"
     ).reset_index()
-    all_data = merged.merge(clim_wide, on=['time','day','lat','lon'], how='inner')
-    all_data['year'] = all_data['time'].dt.year
-    all_data['date'] = all_data['time'] + pd.to_timedelta(all_data['day'], unit='D')
+    all_data = merged.merge(clim_wide, on=["time", "day", "lat", "lon"], how="inner")
+    all_data["year"] = all_data["time"].dt.year
+    all_data["date"] = all_data["time"] + pd.to_timedelta(all_data["day"], unit="D")
 
     # -------------------------------------------------------------------------
     # COMPUTE DAILY ROLLING TOTALS (5‑day & 10‑day)
     # -------------------------------------------------------------------------
-    all_data = all_data.sort_values(['lat', 'lon', 'time', 'day'])
+    all_data = all_data.sort_values(["lat", "lon", "time", "day"])
 
-    for var in ['ngcm_rain_daily', 'aifs_rain_daily']:
+    for var in ["ngcm_rain_daily", "aifs_rain_daily"]:
         if var in all_data.columns:
             # group the filled series and apply compute_roll_sum to each chunk
-            grp = all_data.groupby(['lat', 'lon', 'time'])[var]
-            all_data[f'{var}_5day_total'] = grp.transform(
+            grp = all_data.groupby(["lat", "lon", "time"])[var]
+            all_data[f"{var}_5day_total"] = grp.transform(
                 lambda x: compute_roll_sum(x.fillna(0).to_numpy(), 5)
             )
-            all_data[f'{var}_10day_total'] = grp.transform(
+            all_data[f"{var}_10day_total"] = grp.transform(
                 lambda x: compute_roll_sum(x.fillna(0).to_numpy(), 10)
             )
-    
+
     # all_data.to_csv(out, index=False)
 
     # -------------------------------------------------------------------------
     # BIN INTO WEEKS
     # -------------------------------------------------------------------------
-    bins   = [0, 7, 14, 21, 28, np.inf]
-    labels = ['week1','week2','week3','week4','later']
-    all_data['interval'] = pd.cut(all_data['day'], bins=bins, labels=labels, right=True)
-    
-    model_cols = [c for c in clim_wide.columns if c not in ['time','day','lat','lon']]
+    bins = [0, 7, 14, 21, 28, np.inf]
+    labels = ["week1", "week2", "week3", "week4", "later"]
+    all_data["interval"] = pd.cut(all_data["day"], bins=bins, labels=labels, right=True)
+
+    model_cols = [
+        c for c in clim_wide.columns if c not in ["time", "day", "lat", "lon"]
+    ]
 
     # -------------------------------------------------------------------------
     # AGGREGATE BY (time,lat,lon,interval)
@@ -99,33 +104,30 @@ def get_data(date, base):
     #   - climatology probs stay sums (we’ll rename later)
     # -------------------------------------------------------------------------
     agg_dict = {
-        'ngcm_rain_daily':           'sum',
-        'aifs_rain_daily':           'sum',
-        'ngcm_rain_daily_5day_total':'max',
-        'aifs_rain_daily_5day_total':'max',
-        'ngcm_rain_daily_10day_total':'min',
-        'aifs_rain_daily_10day_total':'min',
-        **{m: 'sum' for m in model_cols}
+        "ngcm_rain_daily": "sum",
+        "aifs_rain_daily": "sum",
+        "ngcm_rain_daily_5day_total": "max",
+        "aifs_rain_daily_5day_total": "max",
+        "ngcm_rain_daily_10day_total": "min",
+        "aifs_rain_daily_10day_total": "min",
+        **{m: "sum" for m in model_cols},
     }
 
     agg = (
-        all_data
-        .groupby(['time','lat','lon','interval'])
-        .agg(agg_dict)
-        .reset_index()
+        all_data.groupby(["time", "lat", "lon", "interval"]).agg(agg_dict).reset_index()
     )
 
     # -------------------------------------------------------------------------
     # PIVOT TO WIDE
     # -------------------------------------------------------------------------
     wide = agg.pivot_table(
-        index=['time','lat','lon'],
-        columns='interval',
-        values=list(agg_dict.keys())
+        index=["time", "lat", "lon"], columns="interval", values=list(agg_dict.keys())
     ).reset_index()
 
     # flatten MultiIndex like ('ngcm_rain_daily_5day_total','week1') → 'ngcm_rain_daily_5day_total_week1'
-    wide.columns = ['_'.join(filter(None, col)).strip('_') for col in wide.columns.values]
+    wide.columns = [
+        "_".join(filter(None, col)).strip("_") for col in wide.columns.values
+    ]
 
     # -------------------------------------------------------------------------
     # RENAME CLIMATOLOGY & ROLLING‑SUM COLUMNS
@@ -133,31 +135,28 @@ def get_data(date, base):
     # 1) climatology: e.g. 'clim_mr_week1' → 'prob_clim_mr_week1'
     for m in model_cols:
         for wk in labels:
-            old = f'{m}_{wk}'
-            new = f'prob_{m}_{wk}'
+            old = f"{m}_{wk}"
+            new = f"prob_{m}_{wk}"
             if old in wide.columns:
                 wide = wide.rename(columns={old: new})
 
     # 2) rolling‑sum stats:
     #    'ngcm_rain_daily_5day_total_week1' → 'max_ngcm_5day_week1', etc.
-    for src in ['ngcm','aifs']:
+    for src in ["ngcm", "aifs"]:
         for wk in labels:
-            o5 = f'{src}_rain_daily_5day_total_{wk}'
-            n5 = f'max_{src}_5day_{wk}'
+            o5 = f"{src}_rain_daily_5day_total_{wk}"
+            n5 = f"max_{src}_5day_{wk}"
             if o5 in wide.columns:
                 wide = wide.rename(columns={o5: n5})
 
-            o10 = f'{src}_rain_daily_10day_total_{wk}'
-            n10 = f'min_{src}_10day_{wk}'
+            o10 = f"{src}_rain_daily_10day_total_{wk}"
+            n10 = f"min_{src}_10day_{wk}"
             if o10 in wide.columns:
                 wide = wide.rename(columns={o10: n10})
 
-
-    final = (
-         wide
-         .merge(clusters,    on=['lat','lon'], how='left')
-         .merge(thresholds,  on=['lat','lon'], how='left')
-     )
+    final = wide.merge(clusters, on=["lat", "lon"], how="left").merge(
+        thresholds, on=["lat", "lon"], how="left"
+    )
     # -------------------------------------------------------------------------
     # TRANSFORM climatology probabilities per week
     #  - npc: logit only
@@ -165,42 +164,45 @@ def get_data(date, base):
     #  - quasi: logit + scale
     # -------------------------------------------------------------------------
     from scipy.special import logit
-    weeks = ['week1', 'week2', 'week3', 'week4', 'later']
+
+    weeks = ["week1", "week2", "week3", "week4", "later"]
     # 1) NPC: logit only
-    for prefix in ['prob_clim_npc_all', 'prob_clim_npc_post']:
+    for prefix in ["prob_clim_npc_all", "prob_clim_npc_post"]:
         for wk in weeks:
-            col = f'{prefix}_{wk}'
+            col = f"{prefix}_{wk}"
             if col in final.columns:
                 final[col] = logit(final[col].clip(lower=0.0001, upper=0.99))
- 
+
     # 2) MR: logit + scale, then rename "_all" → no suffix
-    for pref in ['prob_clim_mr_all', 'prob_clim_mr_post']:
+    for pref in ["prob_clim_mr_all", "prob_clim_mr_post"]:
         for wk in weeks:
-            old = f'{pref}_{wk}'
+            old = f"{pref}_{wk}"
             if old in final.columns:
                 x = logit(final[old].clip(0.0001, 0.99))
                 # build new name: drop "_all" but keep "_post" if present
-                if pref.endswith('_all'):
-                    new = f'prob_clim_mr_{wk}'
+                if pref.endswith("_all"):
+                    new = f"prob_clim_mr_{wk}"
                 else:
-                    new = f'prob_clim_mr_post_{wk}'
+                    new = f"prob_clim_mr_post_{wk}"
                 final[new] = x
                 # remove the old column if renamed
                 if new != old:
-                   final.drop(columns=[old], inplace=True)
+                    final.drop(columns=[old], inplace=True)
     # 3) QUASI: logit + scale (keep names)
-    for prefix in ['prob_clim_quasi', 'prob_clim_quasi_post']:
-         for wk in weeks:
-             col = f'{prefix}_{wk}'
-             if col in final.columns:
-                 x = logit(final[col].clip(0.0001, 0.99))
-                 final[col] = x
- 
+    for prefix in ["prob_clim_quasi", "prob_clim_quasi_post"]:
+        for wk in weeks:
+            col = f"{prefix}_{wk}"
+            if col in final.columns:
+                x = logit(final[col].clip(0.0001, 0.99))
+                final[col] = x
 
     final.to_csv(out_file, index=False)
-    logging.info(f"CV data with rolling‑sum stats and transformed climatology written to {out_file}")
-    
+    logging.info(
+        f"CV data with rolling‑sum stats and transformed climatology written to {out_file}"
+    )
+
     return out_path, final
+
 
 def copy_to_latest(origin_path, dest_path):
     """Copy files from origin_path to dest_path and remove existing files in dest_path."""
@@ -223,6 +225,7 @@ def copy_to_latest(origin_path, dest_path):
     finally:
         logging.info("Copy operation completed.")
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
@@ -235,7 +238,7 @@ def main():
     args = parser.parse_args()
     date = args.date
     base = Path(__file__).resolve().parent.parent.parent
-    sync_path = base / "sync" / "latest" 
+    sync_path = base / "sync" / "latest"
     out_path, final = get_data(date, base)
     if final is None:
         logging.error("No data to process")
@@ -248,5 +251,6 @@ def main():
         logging.info(f"Extra maps created for {date}")
         copy_to_latest(out_path, sync_path)
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

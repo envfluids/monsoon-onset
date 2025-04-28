@@ -3,7 +3,6 @@ import numpy as np
 from pathlib import Path
 
 
-
 def blend(df_raw, date):
     base = Path(__file__).resolve().parent.parent
     coef_file = base / "data" / "coefs" / "multinom_coefs_full.csv"
@@ -16,13 +15,11 @@ def blend(df_raw, date):
     # df_raw = pd.read_csv(processed_data_file)
 
     # original model coefs
-    coef_orig = pd.read_csv(coef_file) \
-                .set_index("category")
+    coef_orig = pd.read_csv(coef_file).set_index("category")
     features_orig = coef_orig.columns.tolist()
 
     # clim model coefs (CSV this time)
-    coef_clim = pd.read_csv(coef_clim_file) \
-                .set_index("category")
+    coef_clim = pd.read_csv(coef_clim_file).set_index("category")
     features_clim = coef_clim.columns.tolist()
 
     # ------------------------------------------------------------------------------
@@ -59,7 +56,7 @@ def blend(df_raw, date):
     # ------------------------------------------------------------------------------
     def softmax_probs(X_mat, coefs_df):
         logits = X_mat.dot(coefs_df.values.T)
-        exp_l  = np.exp(logits)
+        exp_l = np.exp(logits)
         return exp_l / exp_l.sum(axis=1, keepdims=True)
 
     # ------------------------------------------------------------------------------
@@ -67,11 +64,7 @@ def blend(df_raw, date):
     # ------------------------------------------------------------------------------
     X_orig = df[features_orig]
     probs_orig = softmax_probs(X_orig.values, coef_orig)
-    prob_df_orig = pd.DataFrame(
-        probs_orig,
-        columns=coef_orig.index,
-        index=df.index
-    )
+    prob_df_orig = pd.DataFrame(probs_orig, columns=coef_orig.index, index=df.index)
 
     # ------------------------------------------------------------------------------
     # 6) compute clim‐model probabilities
@@ -79,33 +72,38 @@ def blend(df_raw, date):
     X_clim = df[features_clim]
     probs_clim = softmax_probs(X_clim.values, coef_clim)
     prob_df_clim = pd.DataFrame(
-        probs_clim,
-        columns=[f"clim_{c}" for c in coef_clim.index],
-        index=df.index
+        probs_clim, columns=[f"clim_{c}" for c in coef_clim.index], index=df.index
     )
 
     # ------------------------------------------------------------------------------
     # 7) combine and write CSVs
     # ------------------------------------------------------------------------------
     # full raw + both sets of probs
-    combined = pd.concat([
-        df.reset_index(drop=True),
-        prob_df_orig.reset_index(drop=True),
-        prob_df_clim.reset_index(drop=True)
-    ], axis=1)
+    combined = pd.concat(
+        [
+            df.reset_index(drop=True),
+            prob_df_orig.reset_index(drop=True),
+            prob_df_clim.reset_index(drop=True),
+        ],
+        axis=1,
+    )
 
     clim_out = output_dir / "blend_output_with_clim.csv"
     combined.to_csv(clim_out, index=False)
 
     # summary: only lat, lon, time + predictions
-    keep = ["lat", "lon", "time"] \
-        + list(coef_orig.index) \
+    keep = (
+        ["lat", "lon", "time"]
+        + list(coef_orig.index)
         + [f"clim_{c}" for c in coef_clim.index]
+    )
     summary = combined[keep]
 
     summary_out = output_dir / "blend_output_summary.csv"
     summary.to_csv(summary_out, index=False)
 
-    print("Wrote blend_output_with_clim.csv and blend_output_summary.csv to", output_dir)
+    print(
+        "Wrote blend_output_with_clim.csv and blend_output_summary.csv to", output_dir
+    )
 
     return summary

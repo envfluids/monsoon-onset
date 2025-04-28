@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 
+
 def find_onset(series: np.ndarray, window: int, thresh: float) -> float:
     """
     Return 1-based index of first day where series>1 and rolling sum>thresh, else NaN.
@@ -31,8 +32,6 @@ def compute_roll_sum(arr: np.ndarray, n: int) -> np.ndarray:
     """
     s = pd.Series(arr)
     rolled = s.rolling(n, min_periods=n).sum()
-    #align left instead of right
-    rolled = rolled.shift(-(n-1))
+    # align left instead of right
+    rolled = rolled.shift(-(n - 1))
     return rolled.to_numpy()
-
-
