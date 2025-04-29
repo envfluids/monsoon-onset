@@ -6,9 +6,9 @@ Operational version of the data-driven monsoon onset
 
 ### Details 
 imerg_daily.sh is the script that needs to be triggered on a daily basis to produce the most up-to-date IMERG graphs.
-    - Currently pulling data using a wget with my (Tyler Yang's) credentials - To get this to run on Midway cluster, I will either probably have to set up the cookies file again or use another person's credentials
-    - Does eventually need to be changed if we are changing to the real time IMD/IMERG set
-    - This pulls in the ***IMERG Late run Data *** (appears 14 hours after day end)
+    -  Currently pulling data using a wget with my (Tyler Yang's) credentials - To get this to run on Midway cluster, I will either probably have to set up the cookies file again or use another person's credentials
+    -  Does eventually need to be changed if we are changing to the real time IMD/IMERG set
+    -  This pulls in the ***IMERG Late run Data *** (appears 14 hours after day end)
 
 imerg_all.sh is the script for downloading multiple day files at once if you need to
     - Should be done during the first time you set up the pipeline - make sure you change the for loop parameters to get this to work
