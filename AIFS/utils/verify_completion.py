@@ -23,14 +23,14 @@ def main():
 
     print(base)
     AIFS_output_path = base / "AIFS" / "output"
-    AIFS_tp_path = AIFS_output_path / "tp" / f"{date}.nc"
-    AIFS_sji_path = AIFS_output_path / "sji" / f"{date}.nc"
-    AIFS_tcw_path = AIFS_output_path / "tcw" / f"{date}.nc"
+    AIFS_tp_path = AIFS_output_path / "tp" / f"tp_{date}.nc"
+    AIFS_sji_path = AIFS_output_path / "sji" / f"sji_{date}.nc"
+    AIFS_tcw_path = AIFS_output_path / "tcw" / f"tcw_{date}.nc"
 
     NGCM_output_path = base / "NeuralGCM" / "output"
-    NGCM_tp_path = NGCM_output_path / "tp" / f"{date}.nc"
-    NGCM_sji_path = NGCM_output_path / "sji" / f"{date}.nc"
-    NGCM_tcw_path = NGCM_output_path / "tcw" / f"{date}.nc"
+    NGCM_tp_path = NGCM_output_path / "tp" / f"tp_{date}.nc"
+    NGCM_sji_path = NGCM_output_path / "sji" / f"sji_{date}.nc"
+    NGCM_tcw_path = NGCM_output_path / "tcw" / f"tcw_{date}.nc"
 
     def check_file_exists(file_path):
         if file_path.exists():

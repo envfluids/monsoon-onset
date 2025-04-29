@@ -25,8 +25,8 @@ def get_data(date, base):
     mat_file = base / "blend" / "data" / "support" / "onset_five_day_thres_2deg.mat"
     clim_file = base / "blend" / "data" / "support" / "ensemble_outputs_clim_2025.csv"
     allowed_cells_file = base / "blend" / "data" / "support" / "allowed_cells.csv"
-    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"{date}.nc"
-    ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"{date}.nc"
+    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
+    ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
 
     if aifs_tp_file.exists() and ngcm_precip_file.exists():
         logging.info(f"Blending AIFS and NGCM data for {date}")

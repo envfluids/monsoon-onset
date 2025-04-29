@@ -65,19 +65,19 @@ def main():
     )
     logging.info("Calculating & Merging SJI")
     ngcm_out = calculate_sji(ngcm_out)
-    ngcm_out.to_netcdf(f"../output/sji/{date}.nc")
+    ngcm_out.to_netcdf(f"../output/sji/sji_{date}.nc")
     ngcm_out.close()
 
     logging.info("Merging tcwv")
     tcw_files = glob.glob(f"../output/tcw/*_{date}_INTERMEDIATE_3.nc")
     tcw = xr.open_mfdataset(tcw_files)
-    tcw.to_netcdf(f"../output/tcw/{date}.nc")
+    tcw.to_netcdf(f"../output/tcw/tcw_{date}.nc")
     tcw.close()
 
     logging.info("Merging tp")
     tp_files = glob.glob(f"../output/tp/*_{date}_INTERMEDIATE_3.nc")
     tp = xr.open_mfdataset(tp_files)
-    tp.to_netcdf(f"../output/tp/{date}.nc")
+    tp.to_netcdf(f"../output/tp/tp_{date}.nc")
     tp.close()
 
     logging.info("Removing intermediate files")

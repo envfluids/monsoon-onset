@@ -100,7 +100,7 @@ def main():
     logging.info("Processing SJI")
     AIFS_SJI = AIFS[["u_850", "v_850"]]
     AIFS_SJI = calculate_sji(AIFS_SJI)
-    AIFS_SJI.to_netcdf(f"../output/sji/{date}.nc")
+    AIFS_SJI.to_netcdf(f"../output/sji/sji_{date}.nc")
     AIFS_SJI.close()
 
     logging.info("Processing TCW")
@@ -124,7 +124,7 @@ def main():
     os.remove(regrid_input_path)
     AIFS_TCW = xr.open_dataset(regrid_output_path)
     AIFS_TCW = process_tcw(AIFS_TCW)
-    AIFS_TCW.to_netcdf(f"../output/tcw/{date}.nc")
+    AIFS_TCW.to_netcdf(f"../output/tcw/tcw_{date}.nc")
     AIFS_TCW.close()
     os.remove(regrid_output_path)
 
@@ -148,7 +148,7 @@ def main():
     os.remove(regrid_input_path)
     AIFS_tp = xr.open_dataset(regrid_output_path)
     AIFS_tp = process_tp(AIFS_tp)
-    AIFS_tp.to_netcdf(f"../output/tp/{date}.nc")
+    AIFS_tp.to_netcdf(f"../output/tp/tp_{date}.nc")
     os.remove(regrid_output_path)
     AIFS_tp.close()
     AIFS.close()
