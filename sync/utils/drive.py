@@ -46,7 +46,7 @@ def authenticate():
     # If there are no (valid) credentials available, let the user log in.
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            logging.Warning("Token expired. Attempting to refresh token...")
+            logging.warning("Token expired. Attempting to refresh token...")
             try:
                 creds.refresh(Request())
                 logging.info("Token refreshed successfully.")
@@ -61,7 +61,7 @@ def authenticate():
         # --- This block now correctly handles the case where creds were invalid ---
         # Run flow if creds are None (initial run, failed load, failed refresh)
         if not creds:
-            logging.Warning("No valid credentials found. Starting authentication flow...")
+            logging.warning("No valid credentials found. Starting authentication flow...")
             try:
                 flow = InstalledAppFlow.from_client_secrets_file(str(credentials_path), SCOPES)
                 # Specify redirect_uri for desktop apps
@@ -159,7 +159,7 @@ def get_folder_id_by_path(service, path_string):
     # Normalize path: remove leading/trailing slashes and filter empty parts
     path_parts = [part for part in path_string.strip('/').split('/') if part]
     if not path_parts:
-         logging.Warning("Empty or root path provided.")
+         logging.warning("Empty or root path provided.")
          return 'root' # Or handle as error if root isn't intended
 
     current_parent_id = 'root' # Always start from root for absolute paths
@@ -308,7 +308,6 @@ def drive_sync(date, cluster): # Added cluster parameter with default
         base = script_dir.parent.parent # project_root
     except NameError:
         # Fallback for interactive sessions or environments where __file__ isn't set
-        print("Warning: __file__ not defined. Using current working directory's parent as project base.")
         logging.warning("Using current working directory's parent as project base.")
         # This assumes you run interactively from the 'scripts' dir
         base = Path.cwd().parent
@@ -316,9 +315,9 @@ def drive_sync(date, cluster): # Added cluster parameter with default
              logging.warning("Base path might be incorrect. Expected AIFS folder not found.")
 
 
-    print(f"Using project base path: {base}")
-    print(f"Syncing for date: {date}, cluster: {cluster}")
-    print(f"Target Drive path: {DRIVE_CLUSTER_BASE_PATH}/{date}")
+    logging.info(f"Using project base path: {base}")
+    logging.info(f"Syncing for date: {date}, cluster: {cluster}")
+    logging.info(f"Target Drive path: {DRIVE_CLUSTER_BASE_PATH}/{date}")
 
 
     # --- Define Local File/Directory Sources ---
