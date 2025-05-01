@@ -52,8 +52,13 @@ def main():
     data_dir = live_dir / "data"
 
     latest = base / "sync" / "latest"
-    latest_dir = glob(str(latest / "*"))[0]
-    date = latest_dir.split("/")[-1]
+    try:
+        latest_dir = glob(str(latest / "*"))[0]
+        date = latest_dir.split("/")[-1]
+    except IndexError as e:
+        logging.error(f"Failed to find latest directory: {e}")
+        logging.info("Exiting sync process.")
+        return
 
     live_date_ref = data_dir / "latest.txt"
     if not os.path.exists(live_date_ref):
