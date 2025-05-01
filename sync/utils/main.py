@@ -126,7 +126,7 @@ def main():
     if not os.path.exists(drive_log):
         logging.info(f"Creating drive sync reference file at {drive_log}")
         with open(drive_log, "w") as f:
-            f.write(date)  # Placeholder for the first run
+            f.write("")  # Placeholder for the first run
     else:
         with open(drive_log, "r") as f:
             drive_dates = f.read()
