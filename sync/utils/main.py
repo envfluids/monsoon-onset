@@ -64,7 +64,7 @@ def main():
     if not os.path.exists(live_date_ref):
         logging.info(f"Creating live date reference file at {live_date_ref}")
         with open(live_date_ref, "w") as f:
-            f.write("XXXXXXXXT00")  # Placeholder for the first run
+            f.write("XXXXXXXXTXX")  # Placeholder for the first run
 
     command = f"cd {operational_dir} && git pull"
     try:
