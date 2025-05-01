@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /scratch/midway3/marchakitus/monsoon-onset/sync/utils
+cd /project/pedramh/monsoon/monsoon-onset/sync/utils
 
 source /home/marchakitus/.bashrc
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /scratch/midway3/marchakitus/monsoon-onset/NeuralGCM/utils
+cd /project/pedramh/monsoon/monsoon-onset/NeuralGCM/utils
 
 source /home/marchakitus/.bashrc
 
