@@ -17,7 +17,7 @@ conda deactivate
 conda activate /home/marchakitus/.conda/envs/ncl_stable
 python ./post_process.py --date $DATE_F
 
-set -euo pipefail
+# set -euo pipefail
 python ./verify_completion.py --date $DATE_F
 
 cd ../../blend/utils

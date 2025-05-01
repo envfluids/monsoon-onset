@@ -31,7 +31,6 @@ conda deactivate
 conda activate /home/marchakitus/.conda/envs/neuralgcm
 python ./post_process_merge.py --date $DATE_F
 
-set -euo pipefail
 python ./verify_completion.py --date $DATE_F
 
 conda deactivate
