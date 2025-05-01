@@ -122,7 +122,32 @@ def main():
             f"Latest forecast {date} is the same as the live date {live_date}. No need to update."
         )
 
-    logging.info("Sync process completed.")
+    drive_log = base / "sync" / "logs" / "drive.txt"
+    if not os.path.exists(drive_log):
+        logging.info(f"Creating drive sync reference file at {drive_log}")
+        with open(drive_log, "w") as f:
+            f.write(date)  # Placeholder for the first run
+    else:
+        with open(drive_log, "r") as f:
+            drive_dates = f.read()
+            dates_list = drive_dates.split("\n")
+            if date in dates_list:
+                logging.info(f"Date {date} already exists in drive sync reference file.")
+                return
+            else:
+                logging.info(f"Date {date} does not exist in drive sync reference file.")
+                try:
+                    from drive import drive_sync
+                    CLUSTER = "midway"
+                    drive_sync(date, CLUSTER)
+                    logging.info(f"Adding date {date} to drive sync reference file.")
+                    with open(drive_log, "a") as f:
+                        f.write(date + "\n")
+                except Exception as e:
+                    logging.error(f"Failed to sync with Google Drive: {e}")
+                    return
+    
+    logging.info(f"Sync process completed successfully.")
 
 
 if __name__ == "__main__":

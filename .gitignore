@@ -5,6 +5,7 @@
 */logs/*
 */raw/*
 */latest/*
+*/.auth/*
 **/Thumbs.db
 __pycache__/
 

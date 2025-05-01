@@ -4,7 +4,7 @@ cd /project/pedramh/monsoon/monsoon-onset/sync/utils
 
 source /home/marchakitus/.bashrc
 
-# conda activate /home/marchakitus/.conda/envs/ncl_stable
+conda activate /project/pedramh/monsoon/conda-envs/monsoon
 timeout 2m python ./main.py
 
 if [ $? -eq 124 ]; then
