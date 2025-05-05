@@ -56,7 +56,7 @@ graph TD
         Blend_main --> Blend_proc_ngcm[blend/utils/ngcm.py]
         Blend_main --> Blend_blend[blend/utils/blend.py]
         Blend_main --> Blend_maps[blend/utils/maps.py]
-        Blend_main --> Blend_output(Save to sync/latest/\{date})
+        Blend_main --> Blend_output(Save to sync/latest/"{date}")
      end
 
     subgraph Sync Process
