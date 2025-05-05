@@ -43,7 +43,7 @@ graph TD
         NGCM_pipeline -- Checks New Data --> NGCM_download[NeuralGCM/utils/download_ncep.py]
         NGCM_download -- If New --> NGCM_sbatch(sbatch NeuralGCM/utils/run_model.sh)
         NGCM_sbatch --> NGCM_pre[NeuralGCM/utils/preprocess.py]
-        NGCM_pre --> NGCM_run[NeuralGCM/utils/run_model.py<br>(Ensemble)]
+        NGCM_pre --> NGCM_run[NeuralGCM/utils/run_model.py - Ensemble]
         NGCM_run --> NGCM_post[NeuralGCM/utils/post_process.py]
         NGCM_post --> NGCM_merge[NeuralGCM/utils/post_process_merge.py]
         NGCM_merge --> Verify2[NeuralGCM/utils/verify_completion.py]
