@@ -9,7 +9,7 @@ The system is composed of four primary components orchestrated via cron jobs and
 1.  **AIFS (ECMWF Integrated Forecasting System Interface):** Downloads ECMWF IFS data, runs the AIFS inference model, post-processes the output, and verifies completion.
 2.  **NeuralGCM:** Downloads NCEP GDAS data, preprocesses it (including NCL-based interpolation), runs an ensemble forecast using the NeuralGCM model, post-processes the ensemble output (including CDO-based regridding), merges results, and verifies completion.
 3.  **Blend:** Triggered upon successful completion of *both* AIFS and NeuralGCM for a given forecast initialization time. It loads the processed outputs from both models, aggregates data weekly, applies a multinomial logistic regression blending model, and generates probabilistic forecasts and map visualizations.
-4.  **Sync:** Periodically checks for new blended outputs, updates a separate operational repository (presumably for a live website), and archives results to Google Drive.
+4.  **Sync:** Periodically checks for new blended outputs, updates a separate operational repository for the live website, and archives results to Google Drive.
 
 **Workflow Scheduling:**
 
@@ -43,7 +43,7 @@ graph TD
         NGCM_pipeline -- Checks New Data --> NGCM_download[NeuralGCM/utils/download_ncep.py]
         NGCM_download -- If New --> NGCM_sbatch(sbatch NeuralGCM/utils/run_model.sh)
         NGCM_sbatch --> NGCM_pre[NeuralGCM/utils/preprocess.py]
-        NGCM_pre --> NGCM_run[NeuralGCM/utils/run_model.py-(Ensemble)]
+        NGCM_pre --> NGCM_run[NeuralGCM/utils/run_model.py - Ensemble]
         NGCM_run --> NGCM_post[NeuralGCM/utils/post_process.py]
         NGCM_post --> NGCM_merge[NeuralGCM/utils/post_process_merge.py]
         NGCM_merge --> Verify2[NeuralGCM/utils/verify_completion.py]
