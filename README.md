@@ -24,9 +24,9 @@ Each `chron_job.sh` script activates the appropriate Conda environment and execu
 ```mermaid
 graph TD
     subgraph Cron Scheduling
-        CronAIFS("*/15 * * * *") --> AIFS_cron[AIFS/chron_job.sh]
-        CronNGCM("*/30 * * * *") --> NGCM_cron[NeuralGCM/chron_job.sh]
-        CronSync("*/5 * * * *") --> Sync_cron[sync/utils/cron_job.sh]
+        CronAIFS(*/15 * * * *) --> AIFS_cron[AIFS/chron_job.sh]
+        CronNGCM(*/30 * * * *) --> NGCM_cron[NeuralGCM/chron_job.sh]
+        CronSync(*/5 * * * *) --> Sync_cron[sync/utils/cron_job.sh]
     end
 
     subgraph AIFS Pipeline
@@ -43,46 +43,41 @@ graph TD
         NGCM_pipeline -- Checks New Data --> NGCM_download[NeuralGCM/utils/download_ncep.py]
         NGCM_download -- If New --> NGCM_sbatch(sbatch NeuralGCM/utils/run_model.sh)
         NGCM_sbatch --> NGCM_pre[NeuralGCM/utils/preprocess.py]
-        NGCM_pre --> NGCM_run["NeuralGCM/utils/run_model.py (Ensemble)"]
+        NGCM_pre --> NGCM_run[NeuralGCM/utils/run_model.py (Ensemble)]
         NGCM_run --> NGCM_post[NeuralGCM/utils/post_process.py]
         NGCM_post --> NGCM_merge[NeuralGCM/utils/post_process_merge.py]
         NGCM_merge --> Verify2[NeuralGCM/utils/verify_completion.py]
     end
 
-    subgraph Blend Process
+     subgraph Blend Process
         Verify1 -- Both Succeed --> Blend_main[blend/utils/main.py]
         Verify2 -- Both Succeed --> Blend_main
         Blend_main --> Blend_proc_aifs[blend/utils/aifs.py]
         Blend_main --> Blend_proc_ngcm[blend/utils/ngcm.py]
         Blend_main --> Blend_blend[blend/utils/blend.py]
         Blend_main --> Blend_maps[blend/utils/maps.py]
-        Blend_main --> Blend_output("Save to sync/latest/{date}")
-    end
+        Blend_main --> Blend_output(Save to sync/latest/{date})
+     end
 
     subgraph Sync Process
         Sync_cron --> Sync_main[sync/utils/main.py]
         Sync_main -- Checks --> Blend_output
-        Sync_main -- If Newer --> Update_Live_Repo[Update monsoon-operational Repo]
+        Sync_main -- If Newer --> Update_Live_Repo(Update monsoon-operational Repo)
         Sync_main -- If Not Synced --> Sync_drive[sync/utils/drive.py]
-        Sync_drive --> Archive_Drive[Archive to Google Drive]
+        Sync_drive --> Archive_Drive(Archive to Google Drive)
     end
 
-    classDef cron     fill:#f9f,stroke:#333,stroke-width:2px;
-    classDef script   fill:#ccf,stroke:#333,stroke-width:2px;
-    classDef data     fill:#cfc,stroke:#333,stroke-width:2px;
-    classDef process  fill:#ff9,stroke:#333,stroke-width:2px;
+ classDef cron fill:#f9f,stroke:#333,stroke-width:2px;
+ classDef script fill:#ccf,stroke:#333,stroke-width:2px;
+ classDef data fill:#cfc,stroke:#333,stroke-width:2px;
+ classDef process fill:#ff9,stroke:#333,stroke-width:2px;
 
-    class CronAIFS,CronNGCM,CronSync cron;
-    class AIFS_cron,NGCM_cron,Sync_cron,
-          AIFS_sbatch,NGCM_sbatch,
-          AIFS_run,AIFS_post,Verify1,
-          NGCM_pre,NGCM_run,NGCM_post,NGCM_merge,Verify2,
-          Blend_main,Blend_proc_aifs,Blend_proc_ngcm,Blend_blend,Blend_maps,
-          Sync_main,Sync_drive script;
-    class AIFS_pipeline,NGCM_pipeline script;
-    class AIFS_download,NGCM_download script;
-    class Blend_output,Archive_Drive,Update_Live_Repo data;
-    class Verify1,Verify2 process;
+ class CronAIFS,CronNGCM,CronSync cron;
+ class AIFS_cron,NGCM_cron,Sync_cron,AIFS_sbatch,NGCM_sbatch,AIFS_run,AIFS_post,Verify1,NGCM_pre,NGCM_run,NGCM_post,NGCM_merge,Verify2,Blend_main,Blend_proc_aifs,Blend_proc_ngcm,Blend_blend,Blend_maps,Sync_main,Sync_drive script;
+ class AIFS_pipeline,NGCM_pipeline script;
+ class AIFS_download,NGCM_download script;
+ class Blend_output,Archive_Drive,Update_Live_Repo data;
+ class Verify1,Verify2 process;
 ```
 
 *(Note: Mermaid diagram above describes the workflow visually)*
