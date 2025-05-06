@@ -13,7 +13,12 @@ import os
 import glob
 from datetime import datetime
 from pathlib import Path
+import argparse
+import logging
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 def sequence_overlap(X, lseason, nday):
     nr, nv = np.shape(X)
@@ -226,7 +231,7 @@ def plot_graph_mod(
     plt.close()
  
 # Main Workflow:
-def main():
+def process(date_f):
     base = Path(__file__).resolve().parent.parent
     data_dir = base / "raw" / "IMERG_daily"
     file_pattern = os.path.join(data_dir, '*2025*.nc4')
@@ -242,8 +247,11 @@ def main():
         except:
             continue
 
-    yesdate = (datetime.now() - timedelta(days=1)).strftime('%Y%m%dT12')
+    # yesdate = (datetime.now() - timedelta(days=1)).strftime('%Y%m%dT12')
+    yesdate = date_f
+    logging.info(f"Processing data for date: {yesdate}")
     output_dir = base / "output" / yesdate
+    logging.info(f"Output directory: {output_dir}")
     os.makedirs(output_dir, exist_ok=True)
     dat = xr.open_mfdataset(filtered_files, combine='by_coords')
     MWmean_dir = base / "data" / "MWmean.npy"
@@ -256,6 +264,8 @@ def main():
     rainfall_5 = np.transpose(np.where(rainfall_5 < 0, np.nan, rainfall_5.values))
     rainfall_1 = dat_1["precipitation"].mean(dim='time')
     rainfall_1 = np.transpose(np.where(rainfall_1 < 0, np.nan, rainfall_1.values))
+
+    logging.info("Plotting graphs")
 
     O1, O2, MWmean = onset_agro_bis(dat_ap["precipitation"].stack(grid=["lat", "lon"]).values, dat_ap['time'].values.shape[0], 1, 5, mwmean, 10, 5, 30)
     O1 = O1[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
@@ -279,6 +289,21 @@ def main():
         save_path = base / "output" / yesdate / fp
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
         plt.close()
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Process weather data for a given year"
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Date for the inference in YYYYMMDDHH format",
+    )
+    args = parser.parse_args()
+    date_f = args.date
+    process(date_f)
+
+    logging.info("Processing completed successfully.")
 
 if __name__ == "__main__":
     main()
