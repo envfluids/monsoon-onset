@@ -9,6 +9,7 @@ import argparse
 import os
 from blend import blend
 from maps import make_maps, make_extra_maps
+from plot_precip import plot_precip
 
 
 def get_data(date, base):
@@ -249,8 +250,8 @@ def main():
         logging.info(f"Maps created for {date}")
         make_extra_maps(summary, date)
         logging.info(f"Extra maps created for {date}")
+        plot_precip(date)
         copy_to_latest(out_path, sync_path)
-
 
 if __name__ == "__main__":
     main()
