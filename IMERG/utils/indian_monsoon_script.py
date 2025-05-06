@@ -15,8 +15,6 @@ from datetime import datetime
 from pathlib import Path
 
 
-# Helper Functions
-
 def sequence_overlap(X, lseason, nday):
     nr, nv = np.shape(X)
     nyear = nr // lseason
@@ -197,7 +195,6 @@ def plot_graph_mod(
     gridlines = ax.gridlines(draw_labels=True, linestyle="--", color="gray")
     ax.set_title(title)
    
-    # path = "/global/homes/t/tyang25/Indian_Monsoon_Onset/grid_2x2_dissem.csv"
     base = Path(__file__).resolve().parent.parent
     df_path = base / "data" / "grid_2x2_dissem.csv"
     df = pd.read_csv(df_path)
@@ -225,15 +222,11 @@ def plot_graph_mod(
         cbar = im.colorbar
         cbar.ax.set_yticklabels(bounds)
     save_path = base / "output" / yesdate / fp
-    # save_path = f"/global/cfs/cdirs/m3310/tyang25/Monsoon_IMERG/{yesdate}/{fp}"
     plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
-
-
-    
+ 
 # Main Workflow:
 def main():
-    # data_dir = "/global/cfs/cdirs/m3310/tyang25/IMERG_daily/"
     base = Path(__file__).resolve().parent.parent
     data_dir = base / "raw" / "IMERG_daily"
     file_pattern = os.path.join(data_dir, '*2025*.nc4')
@@ -249,19 +242,6 @@ def main():
         except:
             continue
 
-    # data_dir = "/global/cfs/cdirs/m3310/tyang25/IMERG_daily/"
-    # file_pattern = os.path.join(data_dir, '*2025*.nc4')
-    # nc_files = sorted(glob.glob(file_pattern))
-    # #print(nc_files)
-    # filtered_files = []
-    # for file in nc_files:
-    #     basename = os.path.basename(file)
-    #     try:
-    #         date_str = basename.split('.')[4][:8] 
-    #         if int(date_str) >= 20250401:
-    #             filtered_files.append(file)
-    #     except:
-    #         continue
     yesdate = (datetime.now() - timedelta(days=1)).strftime('%Y%m%dT12')
     output_dir = base / "output" / yesdate
     os.makedirs(output_dir, exist_ok=True)
@@ -273,12 +253,9 @@ def main():
     dat_1 = dat_ap.isel(time=slice(-1, None))
 
     rainfall_5 = dat_5["precipitation"].mean(dim='time')
-    #print(rainfall_5)
-    #print(dat_5)
     rainfall_5 = np.transpose(np.where(rainfall_5 < 0, np.nan, rainfall_5.values))
     rainfall_1 = dat_1["precipitation"].mean(dim='time')
     rainfall_1 = np.transpose(np.where(rainfall_1 < 0, np.nan, rainfall_1.values))
-    #rint(rainfall_5.shape)
 
     O1, O2, MWmean = onset_agro_bis(dat_ap["precipitation"].stack(grid=["lat", "lon"]).values, dat_ap['time'].values.shape[0], 1, 5, mwmean, 10, 5, 30)
     O1 = O1[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
@@ -300,7 +277,6 @@ def main():
         ax.set_title(f'{lat}N, {lon}E, Rainfall')
         fp = f'{lat}N_{lon}E_TS'
         save_path = base / "output" / yesdate / fp
-        # save_path = f"/global/cfs/cdirs/m3310/tyang25/Monsoon_IMERG/{yesdate}/{fp}"
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
         plt.close()
 
