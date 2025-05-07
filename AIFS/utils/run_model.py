@@ -151,8 +151,11 @@ if __name__ == "__main__":
         "2t",
         "u_850",
         "v_850",
+        "u_200",
+        "v_200",
         "tp",
         "tcw",
+        "msl",
     ]
 
     main(version, date_f, OUTPUT_DIR, lead_time, save_fields=save_fields)

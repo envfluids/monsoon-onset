@@ -155,12 +155,12 @@ def run_model(date, date_f, forcings_clim, members):
         geopotential = predictions_ds[["geopotential"]].sel(
             level=[850, 900, 925, 950, 975, 1000]
         )
-        wind_850 = predictions_ds[["u_component_of_wind", "v_component_of_wind"]].sel(
-            level=[850]
+        wind = predictions_ds[["u_component_of_wind", "v_component_of_wind"]].sel(
+            level=[200, 850]
         )
         precipitation = predictions_ds[["precipitation_cumulative_mean"]]
 
-        data = xarray.merge([specific_humidity, geopotential, wind_850, precipitation])
+        data = xarray.merge([specific_humidity, geopotential, wind, precipitation])
         data = data.expand_dims("ensemble", axis=0)
         data["ensemble"] = [rand]
 
