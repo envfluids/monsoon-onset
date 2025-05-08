@@ -71,6 +71,7 @@ def sync_IMERG():
                 try:
                     from drive import drive_sync_IMERG
                     drive_sync_IMERG(date, CLUSTER)
+                    logging.info("IMERG data synced successfully.")
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
                         f.write(date + "\n")
@@ -183,7 +184,6 @@ def main():
     try:
         logging.info("Syncing IMERG data...")
         sync_IMERG()
-        logging.info("IMERG data synced successfully.")
     except Exception as e:
         logging.error(f"Failed to sync IMERG data: {e}")
         return
