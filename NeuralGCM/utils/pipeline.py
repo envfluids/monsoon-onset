@@ -5,12 +5,13 @@ import logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
-
+ALLOWED_HOURS = ["00", "12"]
 
 def main():
     DATE_F = get_data()
-
-    if DATE_F:
+    # DATE_F = "20250410T12"
+    hour = DATE_F.split("T")[-1]
+    if DATE_F and hour in ALLOWED_HOURS:
         logging.info("IC download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
         command = (
