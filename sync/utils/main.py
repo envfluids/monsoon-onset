@@ -1,10 +1,13 @@
 import os
 from pathlib import Path
 from glob import glob
-import logging
 import socket
 from datetime import datetime
+import logging
 
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 def parse_date(date_str):
     """
@@ -40,11 +43,43 @@ def is_more_recent(date_str1, date_str2):
     return date2 > date1
 
 
-def main():
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
-    )
+def sync_IMERG():
+    base = Path(__file__).resolve().parent.parent.parent
+    IMERG_output = base / "IMERG" / "output"
+    try:
+        latest_dir = glob(str(IMERG_output / "*"))[-1]
+        date = latest_dir.split("/")[-1]
+    except IndexError as e:
+        logging.error(f"Failed to find latest directory: {e}")
+        logging.info("Exiting sync process.")
+        return
+    drive_log = base / "sync" / "logs" / "IMERG_drive.txt"
+    if not os.path.exists(drive_log):
+        logging.info(f"Creating drive sync reference file at {drive_log}")
+        with open(drive_log, "w") as f:
+            f.write("")  # Placeholder for the first run
+    else:
+        with open(drive_log, "r") as f:
+            drive_dates = f.read()
+            dates_list = drive_dates.split("\n")
+            if date in dates_list:
+                logging.info(f"Date {date} already exists in drive sync reference file.")
+                return
+            else:
+                logging.info(f"Date {date} does not exist in drive sync reference file.")
+                try:
+                    from drive import drive_sync_IMERG
+                    CLUSTER = "midway"
+                    drive_sync_IMERG(date, CLUSTER)
+                    logging.info(f"Adding date {date} to drive sync reference file.")
+                    with open(drive_log, "a") as f:
+                        f.write(date + "\n")
+                except Exception as e:
+                    logging.error(f"Failed to sync with Google Drive: {e}")
+                    return
 
+
+def main():
     base = Path(__file__).resolve().parent.parent.parent
     operational_dir = base.parent / "monsoon-operational"
     live_dir = operational_dir / "docs" / "assets"
@@ -147,6 +182,14 @@ def main():
                     logging.error(f"Failed to sync with Google Drive: {e}")
                     return
     
+    # Sync IMERG data
+    try:
+        logging.info("Syncing IMERG data...")
+        sync_IMERG()
+        logging.info("IMERG data synced successfully.")
+    except Exception as e:
+        logging.error(f"Failed to sync IMERG data: {e}")
+        return
     logging.info(f"Sync process completed successfully.")
 
 
