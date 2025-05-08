@@ -8,6 +8,7 @@ import logging
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
 )
+CLUSTER = "midway"
 
 def parse_date(date_str):
     """
@@ -69,7 +70,6 @@ def sync_IMERG():
                 logging.info(f"Date {date} does not exist in drive sync reference file.")
                 try:
                     from drive import drive_sync_IMERG
-                    CLUSTER = "midway"
                     drive_sync_IMERG(date, CLUSTER)
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
@@ -168,19 +168,16 @@ def main():
             dates_list = drive_dates.split("\n")
             if date in dates_list:
                 logging.info(f"Date {date} already exists in drive sync reference file.")
-                return
             else:
                 logging.info(f"Date {date} does not exist in drive sync reference file.")
                 try:
                     from drive import drive_sync
-                    CLUSTER = "midway"
                     drive_sync(date, CLUSTER)
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
                         f.write(date + "\n")
                 except Exception as e:
                     logging.error(f"Failed to sync with Google Drive: {e}")
-                    return
     
     # Sync IMERG data
     try:
