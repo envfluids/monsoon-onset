@@ -8,7 +8,7 @@ import numpy as np
 import argparse
 import os
 from blend import blend
-from maps import make_maps, make_extra_maps
+from maps import make_maps
 from plot_precip import plot_precip
 from circulation.circulation_main import plot_circulation
 
@@ -17,9 +17,7 @@ def get_data(date, base):
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
     )
-
     out_path = base / "blend" / "output" / date
-    os.makedirs(out_path, exist_ok=True)
     out_file = out_path / f"all_data.csv"
     # copies of each of these files are in the py folder I sent Adam
     thresholds_file = base / "blend" / "data" / "support" / "thresholds_df.csv"
@@ -38,7 +36,7 @@ def get_data(date, base):
         if not ngcm_precip_file.exists():
             logging.error(f"Missing NGCM data for {date}")
         return None, None
-
+    os.makedirs(out_path, exist_ok=True)
     allowed_cells = pd.read_csv(allowed_cells_file)
 
     # Process forecasts
@@ -252,9 +250,6 @@ def main():
         logging.info("Creating maps")
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")
-        logging.info("Creating extra maps")
-        make_extra_maps(summary, date)
-        logging.info(f"Extra maps created for {date}")
         logging.info("Plotting precipitation")
         plot_precip(date)
         logging.info(f"Precipitation plots created for {date}")
