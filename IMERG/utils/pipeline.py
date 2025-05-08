@@ -12,7 +12,7 @@ def main():
     # DATE_F = "20250410T18"
     print(DATE_F)
     if DATE_F:
-        logging.info("IC download script was successful, new data available")
+        logging.info("IMERG download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
         command = (
             f"sbatch "
@@ -28,7 +28,7 @@ def main():
 
     else:
         logging.info(
-            "Will not run model, no new data to download. Retrying in 15 minutes"
+            "No new data. Will not submit compute job. Retrying in 15 minutes"
         )
 
 
