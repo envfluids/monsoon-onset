@@ -22,7 +22,7 @@ auth_dir = Path(__file__).resolve().parent.parent / ".auth"
 
 CREDENTIALS_FILE = auth_dir / 'credentials.json'
 TOKEN_FILE = auth_dir / 'token.json'
-
+NUM_API_RETRIES = 3
 
 # --- Google Drive Helper Functions ---
 
@@ -89,8 +89,8 @@ def authenticate():
          return None
 
     try:
-        service = build('drive', 'v3', credentials=creds)
-        logging.info("Authentication successful. Drive service created.")
+        service = build('drive', 'v3', credentials=creds, num_retries=NUM_API_RETRIES)
+        logging.info(f"Authentication successful. Drive service created. API calls will be retried up to {NUM_API_RETRIES} times on transient server errors (5xx).")
         return service
     except HttpError as error:
         logging.error(f"Error building Drive service: {error}")
