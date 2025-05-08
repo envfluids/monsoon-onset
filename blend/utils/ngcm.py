@@ -7,7 +7,9 @@ from scipy.io import loadmat
 from multiprocessing import Pool
 from functools import partial
 from utils import find_onset, compute_quasi_onset
-
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 def _ngcm_worker(
     coord,

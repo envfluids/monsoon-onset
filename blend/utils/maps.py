@@ -14,7 +14,9 @@ import geopandas as gpd
 from shapely.geometry import Polygon
 from pathlib import Path
 import logging
-
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 def make_maps(summary, date):
     base = Path(__file__).resolve().parent.parent

@@ -5,7 +5,9 @@ import pandas as pd
 from netCDF4 import Dataset
 from scipy.io import loadmat
 from utils import find_onset, compute_quasi_onset
-
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 def process_aifs(
     tp_file: Path,

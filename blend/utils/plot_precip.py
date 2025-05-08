@@ -18,7 +18,10 @@ import geopandas as gpd
 from shapely.geometry import box
 
 from MoronRobertson_F import onset_agro_bis
-
+import logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 warnings.filterwarnings('ignore')
 
 def forecast_onset_cal_NeuralGCM_GFS(ds_model, number, MWMean):
@@ -283,7 +286,7 @@ def plot_precip(date):
         out_ens_prob = path_out / outfn
         fig.savefig(out_ens_prob, dpi=300, bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved {outfn}")
+        logging.info(f"Saved {outfn}")
 
     # 0) Metadata
     df_metadata = df_meta.copy()
@@ -401,7 +404,7 @@ def plot_precip(date):
         out_5_day = path_out / outfn
         fig.savefig(out_5_day, dpi=300, bbox_inches="tight")
         plt.close(fig)
-        print(f"Saved {outfn}")
+        logging.info(f"Saved {outfn}")
 
 
 
@@ -533,7 +536,7 @@ def plot_precip(date):
     week1to4_out = path_out / OUTPUT_FILE
     fig.savefig(week1to4_out, dpi=300, bbox_inches='tight')
     #plt.close(fig)
-    print(f"Saved {OUTPUT_FILE}")
+    logging.info(f"Saved {OUTPUT_FILE}")
 
 def main():
     # date = "20250506T12"

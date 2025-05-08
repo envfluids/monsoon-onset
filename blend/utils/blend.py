@@ -1,7 +1,10 @@
 import pandas as pd
 import numpy as np
 from pathlib import Path
-
+import logging
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+)
 
 def blend(df_raw, date):
     base = Path(__file__).resolve().parent.parent
@@ -102,8 +105,8 @@ def blend(df_raw, date):
     summary_out = output_dir / "blend_output_summary.csv"
     summary.to_csv(summary_out, index=False)
 
-    print(
-        "Wrote blend_output_with_clim.csv and blend_output_summary.csv to", output_dir
+    logging.info(
+        f"Wrote blend_output_with_clim.csv and blend_output_summary.csv to {output_dir}"
     )
 
     return summary

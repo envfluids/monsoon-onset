@@ -10,6 +10,7 @@ import os
 from blend import blend
 from maps import make_maps, make_extra_maps
 from plot_precip import plot_precip
+from circulation.circulation_main import plot_circulation
 
 
 def get_data(date, base):
@@ -245,13 +246,23 @@ def main():
         logging.error("No data to process")
         return
     else:
+        logging.info(f"Initializing blend")
         summary = blend(final, date)
+        logging.info(f"Blending completed for {date}")
+        logging.info("Creating maps")
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")
+        logging.info("Creating extra maps")
         make_extra_maps(summary, date)
         logging.info(f"Extra maps created for {date}")
+        logging.info("Plotting precipitation")
         plot_precip(date)
+        logging.info(f"Precipitation plots created for {date}")
+        logging.info("Plotting circulation")
+        plot_circulation(base, date)
+        logging.info(f"Circulation plots created for {date}")
         copy_to_latest(out_path, sync_path)
+        logging.info(f"FINAL: COMPUTE PIPELINE COMPLETE FOR {date}")
 
 if __name__ == "__main__":
     main()
