@@ -28,25 +28,15 @@ def get_data(max_days_to_check=7):
               within the checked range, or an error occurs.
     """
     try:
-        # Determine paths relative to this script file
-        # Assumes this script is in a 'utils' directory, and 'raw' and '.auth' are siblings of 'utils'
-        script_file_path = Path(__file__).resolve() # a/b/utils/imerg_downloader.py
-        utils_dir = script_file_path.parent       # a/b/utils
-        base_dir = utils_dir.parent               # a/b (project root)
+        script_file_path = Path(__file__).resolve()
+        utils_dir = script_file_path.parent
+        base_dir = utils_dir.parent
     except NameError: 
-        # Fallback for interactive environments where __file__ might not be defined
-        # In this case, assume current working directory is project root or utils
-        # For robustness, it's better if this script is part of a package or has a fixed structure.
-        # If running interactively or __file__ is not set, assume script is in 'utils' relative to current execution
-        # This might need adjustment based on how it's run.
-        # For a robust solution, explicitly pass base_dir or ensure __file__ is available.
-        # For now, let's assume a structure where 'utils' is a subdir of where we want 'raw' and '.auth'
-        # If current dir is 'utils', parent is project root. If current dir is project root, this is okay too.
         
         # Check if we are in 'utils' directory
         if Path.cwd().name == 'utils':
             base_dir = Path.cwd().parent
-        else: # Assume cwd is project root
+        else:
             base_dir = Path.cwd()
         logging.warning(f"Warning: __file__ not defined. Assuming base directory: {base_dir}")
 
@@ -96,7 +86,7 @@ def get_data(max_days_to_check=7):
             "wget",
             "--spider",
             f"--load-cookies={cookies_file}",
-            f"--save-cookies={cookies_file}", # Recommended to keep session active
+            f"--save-cookies={cookies_file}",
             "--keep-session-cookies",
             url
         ]
@@ -180,22 +170,10 @@ def get_data(max_days_to_check=7):
 if __name__ == '__main__':
     logging.info("Starting IMERG data download process...")
     # Define base_dir for testing if __file__ is not available (e.g. running selection in IDE)
-    # This assumes your CWD is the project root when testing this block directly.
-    # If you run `python utils/imerg_downloader.py`, then __file__ will be set.
-    
-    # Example of setting base_dir manually if needed for testing:
-    # test_base_dir = Path.cwd() # Or Path("/path/to/your/project_root")
-    # print(f"Running test with base_dir: {test_base_dir}")
     
     downloaded_date = get_data()
 
     if downloaded_date:
         logging.info(f"New data downloaded for date: {downloaded_date}")
-        # Here, your 'imerg_all' script would typically proceed to run the
-        # indian_monsoon_script.py, potentially using this downloaded_date
-        # to inform its processing or output directory naming.
-        # For example:
-        # print(f"Now, you would typically run the analysis script for {downloaded_date}.")
-        # subprocess.run(["python", "utils/indian_monsoon_script.py"], check=True) # Adjust path as needed
     else:
         logging.info("No new data downloaded. Exiting process.")
