@@ -27,6 +27,7 @@ In indian_monsoon_script.py -> Need to resolve the following path dependencies
 - Lines 198, 283 -> this should be the path to the "grid_2x2_dissem" csv file
 - Line 262 -> MWmean.npy file that exists in this directory
 - Lines 223, 294 -> This should be the same from line 259.
+- Lines 306 -> Same path from line 259
 
 In imerg_daily.sh and imerg_all.sh
 

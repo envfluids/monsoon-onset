@@ -117,7 +117,7 @@ def onset_agro_bis(X, lseason, defdry, sw, wet, sd, dry, window):
             tab = np.column_stack([sample[:, j], wsample[:,j], SW_extension, SD_extension])
             if i == 123: print(f"Tab for year {i}, station {j}:", pd.DataFrame(tab).to_string())
             nrtab, nctab = np.shape(tab)
-            o1 = np.where((tab[:, 2] >= wet[j]) & (tab[:, 1] == 1))[0]
+            o1 = np.where((tab[:, 2] >= wet[j]) & (tab[:, 1] == 1) & (np.arange(tab.shape[0]) >= 30))[0]
             #if i == 123: print(o1)
             D = tab[:, 3]
             #if (i == 81): print(D.shape)
@@ -195,7 +195,7 @@ def plot_graph_mod(
     gridlines = ax.gridlines(draw_labels=True, linestyle="--", color="gray")
     ax.set_title(title)
    
-    path = "/global/homes/t/tyang25/Indian_Monsoon_Onset/grid_2x2_dissem.csv"
+    path = "/global/homes/t/tyang25/Indian_Monsoon_Onset/MonsoonGithub/monsoon-onset/grid_2x2_dissem.csv"
     df = pd.read_csv(path)
     df_1d = df[df["dissem33_15"] == 1]
     coords = list(df_1d[['lat', 'lon']].itertuples(index=False, name=None))
@@ -280,7 +280,7 @@ plot_graph_mod(O2, "[IMERG] Onset Occurences - With Dryspell", [], dat_ap, "Onse
 plot_graph_mod(rainfall_5, "5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "Five_day_rain")
 plot_graph_mod(rainfall_1, "1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "One_day_rain")
 
-path = "/global/homes/t/tyang25/Indian_Monsoon_Onset/grid_2x2_dissem.csv"
+path = "/global/homes/t/tyang25/Indian_Monsoon_Onset/MonsoonGithub/monsoon-onset/grid_2x2_dissem.csv"
 df = pd.read_csv(path)
 df_1d = df[df["dissem33_15"] == 1]
 coords = list(df_1d[['lat', 'lon']].itertuples(index=False, name=None))
@@ -294,3 +294,13 @@ for lat, lon in coords:
     save_path = f"/global/cfs/cdirs/m3310/tyang25/Monsoon_IMERG/{yesdate}/{fp}"
     fig.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.show()
+O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
+
+O1set = xr.DataArray(
+        O1_name,
+        coords={"lat": dat_ap["lat"], "lon": dat_ap["lon"]},
+        dims=["lat", "lon"],
+        name="Onset_Occurrence"
+    )
+O1set = O1set.transpose("lon", "lat")
+O1set.to_dataframe().to_csv(f"/global/cfs/cdirs/m3310/tyang25/Monsoon_IMERG/{yesdate}/OnsetDates.csv")
