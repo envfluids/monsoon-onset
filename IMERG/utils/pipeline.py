@@ -9,8 +9,8 @@ logging.basicConfig(
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250410T18"
-    print(DATE_F)
+    # DATE_F = "20250510"
+    # print(DATE_F)
     if DATE_F:
         logging.info("IMERG download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
