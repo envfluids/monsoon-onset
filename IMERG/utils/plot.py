@@ -297,7 +297,7 @@ def main():
     parser.add_argument(
         "--date",
         type=str,
-        help="Date for the inference in YYYYMMDDTHH format",
+        help="Date for the inference in YYYYMMDD format",
     )
     args = parser.parse_args()
     date_f = args.date
