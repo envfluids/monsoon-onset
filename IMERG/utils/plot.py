@@ -289,10 +289,10 @@ def process(date_f):
         save_path = base / "output" / yesdate / fp
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
         plt.close()
-    O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
+    O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
     O1set = xr.DataArray(
             O1_name,
-            coords={"lat": dat_ap["lat"], "lon": dat_ap["lon"]},
+            coords={"lat": dat_ap["lat"].astype(int), "lon": dat_ap["lon"].astype(int)},
             dims=["lat", "lon"],
             name="Onset_Occurrence"
         )
