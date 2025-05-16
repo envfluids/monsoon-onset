@@ -44,12 +44,50 @@ def is_more_recent(date_str1, date_str2):
     return date2 > date1
 
 
+def find_most_recent_date(date_list):
+    """
+    Finds the most recent date from a list of date strings.
+
+    The date strings are expected to be in 'YYYYMMDD' format.
+    This format allows for direct string comparison to determine recency,
+    as lexicographical order will correspond to chronological order.
+
+    Args:
+        date_list: A list of strings, where each string is a date
+                   formatted as 'YYYYMMDD'. Example: ["20230115", "20230120"].
+
+    Returns:
+        A string representing the most recent date from the list.
+        Returns None if the input list is empty or None.
+
+    Raises:
+        ValueError: If any date string in the list is not in the
+                    expected 'YYYYMMDD' format or is not a valid date string.
+    """
+    if not date_list:
+        return None  # Handle empty or None list
+
+    most_recent = ""  # Initialize with an empty string
+
+    for date_str in date_list:
+        # Basic validation for format (8 digits)
+        if not isinstance(date_str, str) or len(date_str) != 8 or not date_str.isdigit():
+            raise ValueError(
+                f"Invalid date format: '{date_str}'. Expected 'YYYYMMDD' numeric string."
+            )
+
+        if date_str > most_recent:
+            most_recent = date_str
+
+    return most_recent
+
+
 def sync_IMERG():
     base = Path(__file__).resolve().parent.parent.parent
     IMERG_output = base / "IMERG" / "output"
     try:
-        latest_dir = glob(str(IMERG_output / "*"))[-1]
-        date = latest_dir.split("/")[-1]
+        date_dirs = glob(str(IMERG_output / "*"))
+        date = find_most_recent_date([d.split("/")[-1] for d in date_dirs])
     except IndexError as e:
         logging.error(f"Failed to find latest directory: {e}")
         logging.info("Exiting sync process.")
