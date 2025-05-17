@@ -11,6 +11,7 @@ from blend import blend
 from maps import make_maps
 from plot_precip import plot_precip
 from circulation.circulation_main import plot_circulation
+from messages import generate_messages
 
 
 def get_data(date, base):
@@ -247,6 +248,9 @@ def main():
         logging.info(f"Initializing blend")
         summary = blend(final, date)
         logging.info(f"Blending completed for {date}")
+        logging.info(f"Generating messages for {date}")
+        generate_messages(base, out_path, summary)
+        logging.info(f"Messages generated for {date}")
         logging.info("Creating maps")
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")
