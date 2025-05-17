@@ -298,7 +298,7 @@ def plot_wndspd_quiver_850(u_daily, v_daily, init_time_index, forecast_day_index
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"Saved: {save_path}")
+        logging.info(f"Saved: {save_path}")
     else:
         plt.show()
 
@@ -362,7 +362,7 @@ def plot_wndspd_quiver_200(u_daily, v_daily, init_time_index, forecast_day_index
     if save_path:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         plt.close()
-        print(f"Saved: {save_path}")
+        logging.info(f"Saved: {save_path}")
     else:
         plt.show()
 
