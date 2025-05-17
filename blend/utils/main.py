@@ -248,7 +248,7 @@ def main():
         logging.info(f"Initializing blend")
         summary = blend(final, date)
         logging.info(f"Blending completed for {date}")
-        logging.info(f"Generating messages for {date}")
+        logging.info(f"Generating messages")
         generate_messages(base, out_path, summary)
         logging.info(f"Messages generated for {date}")
         logging.info("Creating maps")
