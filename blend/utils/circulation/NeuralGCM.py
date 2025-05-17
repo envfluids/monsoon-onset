@@ -166,7 +166,7 @@ def plot_circulation_quiver_850(u_daily, v_daily, init_time_index, forecast_day_
     # Titles
     ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
     ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
-    plt.suptitle(f"NGCM: 850 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
+    plt.suptitle("NGCM: 850 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
 
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     if save_path:
@@ -223,7 +223,7 @@ def plot_circulation_quiver_200(u_daily, v_daily, init_time_index, forecast_day_
     # Titles
     ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
     ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
-    plt.suptitle(f"NGCM: 200 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
+    plt.suptitle("NGCM: 200 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
 
     plt.tight_layout(rect=[0, 0, 1, 0.94])
     if save_path:
@@ -233,6 +233,138 @@ def plot_circulation_quiver_200(u_daily, v_daily, init_time_index, forecast_day_
     else:
         plt.show()
 
+
+def plot_wndspd_quiver_850(u_daily, v_daily, init_time_index, forecast_day_index, save_path=None):
+    init_time = np.datetime_as_string(u_daily.time[init_time_index].values, unit='D')
+    valid_time = np.datetime_as_string(
+        u_daily.time[init_time_index].values + np.timedelta64(forecast_day_index, 'D'), unit='D')
+
+    # Subset and average across ensemble
+    u_ensmean = u_daily.mean(dim="ensemble")
+    v_ensmean = v_daily.mean(dim="ensemble")
+
+    u = u_ensmean.isel(time=init_time_index, day=forecast_day_index).sel(
+        longitude=slice(30, 130), latitude=slice(-40, 40), level=850)
+    v = v_ensmean.isel(time=init_time_index, day=forecast_day_index).sel(
+        longitude=slice(30, 130), latitude=slice(-40, 40), level=850)
+
+    # Calculate wind speed magnitude
+    wind_speed = np.sqrt(u**2 + v**2)
+
+    # Coordinates and stride for quiver
+    stride = 1
+    u_plot = u[::stride, ::stride]
+    v_plot = v[::stride, ::stride]
+    lons = u.longitude.values
+    lats = u.latitude.values
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+    # Plot setup
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+    ax.set_extent([30, 130, -40, 40], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='10m', linewidth=1)
+
+    # Plot wind speed background
+    wind_plot = ax.pcolormesh(lon2d, lat2d, wind_speed.T.values, cmap='YlGnBu', shading='auto', vmin=0, vmax=30)
+    cbar = plt.colorbar(wind_plot, ax=ax, orientation='vertical', pad=0.02, shrink=0.7)
+    cbar.set_label('Wind Speed (m/s)')
+
+    # Quiver plot
+    q = ax.quiver(lons[::stride], lats[::stride], u_plot.T.values, v_plot.T.values,
+                  scale=500, width=0.0015, color='black')
+
+    # Quiver key background and label
+    rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
+                             facecolor='white', edgecolor='none', zorder=1)
+    ax.add_patch(rect)
+    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+                      coordinates='axes', color='black', zorder=2)
+
+    # Axis ticks
+    xticks = np.arange(30, 131, 20)
+    yticks = np.arange(-40, 41, 20)
+    ax.set_xticks(xticks, crs=ccrs.PlateCarree())
+    ax.set_yticks(yticks, crs=ccrs.PlateCarree())
+    ax.set_xticklabels([f"{x}" for x in xticks], fontsize=10)
+    ax.set_yticklabels([f"{y}" for y in yticks], fontsize=10)
+    ax.gridlines(draw_labels=False, linewidth=0.5, color='gray', linestyle='--')
+
+    # Titles
+    ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
+    ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
+    plt.suptitle("NGCM: 850 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved: {save_path}")
+    else:
+        plt.show()
+
+
+def plot_wndspd_quiver_200(u_daily, v_daily, init_time_index, forecast_day_index, save_path=None):
+    init_time = np.datetime_as_string(u_daily.time[init_time_index].values, unit='D')
+    valid_time = np.datetime_as_string(
+        u_daily.time[init_time_index].values + np.timedelta64(forecast_day_index, 'D'), unit='D')
+
+    # Subset
+    u_ensmean = u_daily.mean(dim="ensemble")
+    v_ensmean = v_daily.mean(dim="ensemble")
+
+    u = u_ensmean.isel(time=init_time_index, day=forecast_day_index).sel(longitude=slice(30, 130), latitude=slice(-40, 40), level = 200)
+    v = v_ensmean.isel(time=init_time_index, day=forecast_day_index).sel(longitude=slice(30, 130), latitude=slice(-40, 40), level = 200)
+    # Calculate wind speed magnitude
+    wind_speed = np.sqrt(u**2 + v**2)
+    stride = 1
+    u_plot = u[::stride, ::stride]
+    v_plot = v[::stride, ::stride]
+    lons = u.longitude.values[::stride]
+    lats = u.latitude.values[::stride]
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+    ax.set_extent([30, 130, -40, 40], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='10m', linewidth=1)
+
+     # Plot wind speed background
+    wind_plot = ax.pcolormesh(lon2d, lat2d, wind_speed.T.values, cmap='YlGnBu', shading='auto', vmin=0, vmax=60)
+    cbar = plt.colorbar(wind_plot, ax=ax, orientation='vertical', pad=0.02, shrink=0.7)
+    cbar.set_label('Wind Speed (m/s)')
+    
+    # Quiver and legend
+    q = ax.quiver(lon2d, lat2d, u_plot.T.values, v_plot.T.values, scale=800, width=0.0015)
+    rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
+                         facecolor='white', edgecolor='none', zorder=1)
+    ax.add_patch(rect)
+
+    # Add quiver key (make sure it has higher zorder so it's on top of the patch)
+    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+                  coordinates='axes', color='black', zorder=2)
+
+    # Axis ticks
+    xticks = np.arange(30, 131, 20)
+    yticks = np.arange(-40, 41, 20)
+    ax.set_xticks(xticks, crs=ccrs.PlateCarree())
+    ax.set_yticks(yticks, crs=ccrs.PlateCarree())
+    ax.set_xticklabels([f"{x}°E" for x in xticks], fontsize=10)
+    ax.set_yticklabels([f"{y}°N" for y in yticks], fontsize=10)
+
+    ax.gridlines(draw_labels=False, linewidth=0.5, color='gray', linestyle='--')
+
+    # Titles
+    ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
+    ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
+    plt.suptitle("NGCM: 200 hPa Wind (ensemble mean)", fontsize=12, y=0.87)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"Saved: {save_path}")
+    else:
+        plt.show()
 
 def plot_neuralgcm(input_path, save_dir):
     file_pattern = os.path.join(input_path,"*.zarr")
@@ -261,4 +393,11 @@ def plot_neuralgcm(input_path, save_dir):
         wind200_filename = save_dir / f'ngcm_u200_v200_wind_day_{day}.png' ### Path needs to be changed for automation
         plot_circulation_quiver_200(u_daily, v_daily, init_time_index=0,
                             forecast_day_index=day, save_path=wind200_filename)
+        
+        wndspd850_filename = save_dir / f'ngcm_wndspd850_wind_day_{day}.png' ### Path needs to be changed for automation
+        plot_wndspd_quiver_850(u_daily, v_daily, init_time_index=0,
+                            forecast_day_index=day, save_path=wndspd850_filename)
+        wndspd200_filename = save_dir / f'ngcm_wndspd200_wind_day_{day}.png' ### Path needs to be changed for automation
+        plot_wndspd_quiver_200(u_daily, v_daily, init_time_index=0,
+                            forecast_day_index=day, save_path=wndspd200_filename)
 

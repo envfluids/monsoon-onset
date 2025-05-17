@@ -175,7 +175,8 @@ def main():
             f.write(date)
 
         with open(data_dir / "cluster.txt", "w") as f:
-            f.write(socket.gethostname())
+            f.write("A")
+            # f.write(socket.gethostname())
 
         logging.info(f"Updated live date to {date}.")
 
