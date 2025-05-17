@@ -158,24 +158,29 @@ def main():
             f"Latest forecast {date} is more recent that live date {live_date}. Updating live date."
         )
 
-        command = f"rm -r {maps_dir}/*"
-        os.system(command)
+        # command = f"rm -r {maps_dir}/*"
+        # os.system(command)
         command = f"rm -r {data_dir}/*"
         os.system(command)
 
-        latest_maps = latest_dir + "/maps" + "/map_bars.png"
-        command = f"cp {latest_maps} {maps_dir}"
-        os.system(command)
+        # latest_maps = latest_dir + "/maps" + "/map_bars.png"
+        # command = f"cp {latest_maps} {maps_dir}"
+        # os.system(command)
 
         latest_data = latest_dir + "/blend_output_summary.csv"
         command = f"cp {latest_data} {data_dir}"
+        os.system(command)
+
+        latest_messages = latest_dir + "/messages" + "/message_templates_output_eng.csv"
+        command = f"cp {latest_messages} {data_dir}"
         os.system(command)
 
         with open(data_dir / "latest.txt", "w") as f:
             f.write(date)
 
         with open(data_dir / "cluster.txt", "w") as f:
-            f.write(socket.gethostname())
+            f.write("A")
+            # f.write(socket.gethostname())
 
         logging.info(f"Updated live date to {date}.")
 
