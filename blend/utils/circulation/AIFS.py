@@ -229,9 +229,7 @@ def plot_circulation_quiver_200hpa(u850_daily, v850_daily, init_time_index, fore
         plt.show()
 
 
-import matplotlib.pyplot as plt
-import cartopy.crs as ccrs
-import numpy as np
+
 
 def plot_tcw_contourf(tcw_daily, init_time_index, forecast_day_index,
                       save_path=None, cmap='viridis', vmin=None, vmax=None, levels=None):
@@ -292,6 +290,141 @@ def plot_tcw_contourf(tcw_daily, init_time_index, forecast_day_index,
         plt.show()
 
 
+def plot_wndspd850_aifs(u850_daily, v850_daily, init_time_index, forecast_day_index, save_path=None):
+    init_time = np.datetime_as_string(u850_daily.time[init_time_index].values, unit='D')
+    valid_time = np.datetime_as_string(
+        u850_daily.time[init_time_index].values + np.timedelta64(forecast_day_index, 'D'), unit='D')
+
+    # Subset
+    u = u850_daily.isel(time=init_time_index, day=forecast_day_index).sel(lon=slice(30, 130), lat=slice(40, -40))
+    v = v850_daily.isel(time=init_time_index, day=forecast_day_index).sel(lon=slice(30, 130), lat=slice(40, -40))
+
+    # Compute wind speed
+    wind_speed = np.sqrt(u**2 + v**2)
+
+    # Grid for quivers (downsampled)
+    stride = 12
+    u_plot = u[::stride, ::stride]
+    v_plot = v[::stride, ::stride]
+    lons = u.lon.values[::stride]
+    lats = u.lat.values[::stride]
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+    # Full grid for pcolormesh
+    lon_full, lat_full = np.meshgrid(u.lon, u.lat)
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+    ax.set_extent([30, 130, -40, 40], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='10m', linewidth=1)
+
+    # Background wind speed
+    speed_plot = ax.pcolormesh(lon_full, lat_full, wind_speed, transform=ccrs.PlateCarree(),
+                               cmap='YlGnBu', shading='auto',vmin=0, vmax=30)
+    cbar = plt.colorbar(speed_plot, ax=ax, orientation='vertical', pad=0.02, shrink=0.7)
+    cbar.set_label('Wind Speed (m/s)', fontsize=10)
+
+    # Quiver
+    q = ax.quiver(lon2d, lat2d, u_plot.values, v_plot.values, scale=500, width=0.0015)
+
+    # Quiver key background patch
+    rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
+                             facecolor='white', edgecolor='none', zorder=1)
+    ax.add_patch(rect)
+
+    # Quiver key
+    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+                      coordinates='axes', color='black', zorder=2)
+
+    # Axis ticks
+    xticks = np.arange(30, 130, 20)
+    yticks = np.arange(-40, 50, 20)
+    ax.set_xticks(xticks, crs=ccrs.PlateCarree())
+    ax.set_yticks(yticks, crs=ccrs.PlateCarree())
+    ax.set_xticklabels([f"{x}" for x in xticks], fontsize=10)
+    ax.set_yticklabels([f"{y}" for y in yticks], fontsize=10)
+
+    ax.gridlines(draw_labels=False, linewidth=0.5, color='gray', linestyle='--')
+
+    # Titles
+    ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
+    ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
+    plt.suptitle('AIFS: 850 hPa Wind', fontsize=12, y=0.87)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logging.info(f"Saved: {save_path}")
+    else:
+        plt.show()
+
+def plot_wndspd200_aifs(u850_daily, v850_daily, init_time_index, forecast_day_index, save_path=None):
+    init_time = np.datetime_as_string(u850_daily.time[init_time_index].values, unit='D')
+    valid_time = np.datetime_as_string(
+        u850_daily.time[init_time_index].values + np.timedelta64(forecast_day_index, 'D'), unit='D')
+
+    # Subset
+    u = u850_daily.isel(time=init_time_index, day=forecast_day_index).sel(lon=slice(30, 130), lat=slice(40, -40))
+    v = v850_daily.isel(time=init_time_index, day=forecast_day_index).sel(lon=slice(30, 130), lat=slice(40, -40))
+    # Compute wind speed
+    wind_speed = np.sqrt(u**2 + v**2)
+    
+    stride = 12
+    u_plot = u[::stride, ::stride]
+    v_plot = v[::stride, ::stride]
+    lons = u.lon.values[::stride]
+    lats = u.lat.values[::stride]
+    lon2d, lat2d = np.meshgrid(lons, lats)
+  # Full grid for pcolormesh
+    lon_full, lat_full = np.meshgrid(u.lon, u.lat)
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 8), subplot_kw={'projection': ccrs.PlateCarree()})
+    ax.set_extent([30, 130, -40, 40], crs=ccrs.PlateCarree())
+    ax.coastlines(resolution='10m', linewidth=1)
+
+    # Background wind speed
+    speed_plot = ax.pcolormesh(lon_full, lat_full, wind_speed, transform=ccrs.PlateCarree(),
+                               cmap='YlGnBu', shading='auto',vmin=0, vmax=60)
+    cbar = plt.colorbar(speed_plot, ax=ax, orientation='vertical', pad=0.02, shrink=0.7)
+    cbar.set_label('Wind Speed (m/s)', fontsize=10)
+    
+    # Quiver and legend
+    q = ax.quiver(lon2d, lat2d, u_plot.values, v_plot.values, scale=1000, width=0.0015)
+
+    rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
+                         facecolor='white', edgecolor='none', zorder=1)
+    ax.add_patch(rect)
+
+# Add quiver key (make sure it has higher zorder so it's on top of the patch)
+    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+                  coordinates='axes', color='black', zorder=2)
+    #qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E', coordinates='axes', color='black')
+    #qk.text.set_backgroundcolor('white')
+    # Axis ticks
+    xticks = np.arange(30, 130, 20)
+    yticks = np.arange(-40, 50, 20)
+    ax.set_xticks(xticks, crs=ccrs.PlateCarree())
+    ax.set_yticks(yticks, crs=ccrs.PlateCarree())
+    ax.set_xticklabels([f"{x}°E" for x in xticks], fontsize=10)
+    ax.set_yticklabels([f"{y}°N" for y in yticks], fontsize=10)
+
+    ax.gridlines(draw_labels=False, linewidth=0.5, color='gray', linestyle='--')
+
+    # Titles
+    ax.set_title(f'Init: {init_time}', loc='left', fontsize=11)
+    ax.set_title(f'Valid: {valid_time}', loc='right', fontsize=11)
+    plt.suptitle('AIFS: 200 hPa Wind', fontsize=12, y=0.87)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.94])
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.close()
+        logging.info(f"Saved: {save_path}")
+    else:
+        plt.show()
+
+
 def plot_aifs(input_path, save_dir):
     # Data directory [Make dyanmic for different day forecast]
     # data_dir = '/glade/derecho/scratch/marchakitus/monsoon/full_field_ref' # Directory where the data is stored
@@ -312,7 +445,7 @@ def plot_aifs(input_path, save_dir):
     tcw_daily = compute_daily_mean(ds['tcw'])
 
     for day in lead_days:
-        tp_save_name = save_dir / f"precip_mslp_lead_day_{day}.png" ### Path needs to be changed for automation
+        tp_save_name = save_dir / f"AIFS_precip_mslp_lead_day_{day}.png" ### Path needs to be changed for automation
         plot_tp_with_mslp_contours(
             tp_daily=tp_daily,
             mslp_daily=mslp_daily,
@@ -320,14 +453,20 @@ def plot_aifs(input_path, save_dir):
             forecast_day_index=day,
             save_path=tp_save_name
         )
-        tcw_save_name = save_dir / f"tcw_lead_day_{day}.png" ### Path needs to be changed for automation
+        tcw_save_name = save_dir / f"AIFS_tcw_lead_day_{day}.png" ### Path needs to be changed for automation
         plot_tcw_contourf(tcw_daily, init_time_index=0, forecast_day_index=day, 
                     save_path = tcw_save_name, cmap='Blues', vmin=0, vmax=70)
         
-        wind850_filename = save_dir / f'u850_v850_wind_day_{day}.png' ### Path needs to be changed for automation
+        wind850_filename = save_dir / f'AIFS_u850_v850_wind_day_{day}.png' ### Path needs to be changed for automation
         plot_circulation_quiver(u850_daily, v850_daily, init_time_index=0,
                             forecast_day_index=day, save_path=wind850_filename)
-        wind200_filename = save_dir / f'u200_v200_wind_day_{day}.png' ### Path needs to be changed for automation
+        windspd850_filename = save_dir / f'AIFS_windspd850_day_{day}.png' ### Path needs to be changed for automation
+        plot_wndspd850_aifs(u850_daily, v850_daily, init_time_index=0,
+                            forecast_day_index=day, save_path=windspd850_filename)
+        wind200_filename = save_dir/ f'AIFS_u200_v200_wind_day_{day}.png' ### Path needs to be changed for automation
         plot_circulation_quiver_200hpa(u200_daily, v200_daily, init_time_index=0,
                             forecast_day_index=day, save_path=wind200_filename)
+        windspd200_filename = save_dir / f'AIFS_windspd200_day_{day}.png' ### Path needs to be changed for automation
+        plot_wndspd200_aifs(u200_daily, v200_daily, init_time_index=0,
+                            forecast_day_index=day, save_path=windspd200_filename)
 
