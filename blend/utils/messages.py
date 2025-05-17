@@ -475,7 +475,7 @@ def generate_messages(base, out_path, onset_times):
         how='inner'
     )
 
-    odi_ivrs_out_path = out_path / "message_templates_output_odi_ivrs.csv"
+    odi_ivrs_out_path = out_path / "message_templates_output_odi_ivrs.xlsx"
     logging.info(f"Writing Odisha IVRS message templates output to {odi_ivrs_out_path}")
     odi_ivrs_out.to_excel(
         odi_ivrs_out_path,
