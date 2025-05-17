@@ -144,7 +144,7 @@ def plot_circulation_quiver_850(u_daily, v_daily, init_time_index, forecast_day_
     ax.coastlines(resolution='10m', linewidth=1)
 
     # Quiver and legend
-    q = ax.quiver(lon2d, lat2d, u_plot.values, v_plot.values, scale=500, width=0.0015)
+    q = ax.quiver(lon2d, lat2d, u_plot.T.values, v_plot.T.values, scale=500, width=0.0015)
     rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
                          facecolor='white', edgecolor='none', zorder=1)
     ax.add_patch(rect)
@@ -201,7 +201,7 @@ def plot_circulation_quiver_200(u_daily, v_daily, init_time_index, forecast_day_
     ax.coastlines(resolution='10m', linewidth=1)
 
     # Quiver and legend
-    q = ax.quiver(lon2d, lat2d, u_plot.values, v_plot.values, scale=800, width=0.0015)
+    q = ax.quiver(lon2d, lat2d, u_plot.T.values, v_plot.T.values, scale=800, width=0.0015)
     rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
                          facecolor='white', edgecolor='none', zorder=1)
     ax.add_patch(rect)
