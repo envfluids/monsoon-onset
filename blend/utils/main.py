@@ -3,7 +3,8 @@ from pathlib import Path
 import pandas as pd
 from utils import compute_roll_sum
 from ngcm import process_ngcm
-from aifs import process_aifs
+from aifs import process_aifs_offset
+# from aifs import process_aifs
 import numpy as np
 import argparse
 import os
@@ -12,7 +13,24 @@ from maps import make_maps
 from plot_precip import plot_precip
 from circulation.circulation_main import plot_circulation
 from messages import generate_messages
+from datetime import datetime, timedelta
 
+def parse_date(date_str):
+    """
+    Parses a date string in the format 'YYYYMMDDTHH' and returns a datetime object.
+
+    Args:
+        date_str (str): The date string to parse, e.g., '20250428T14'.
+
+    Returns:
+        datetime: A datetime object representing the parsed date and time.
+    """
+    try:
+        return datetime.strptime(date_str, "%Y%m%dT%H")
+    except ValueError as e:
+        raise ValueError(
+            f"Invalid date format: {date_str}. Expected format 'YYYYMMDDTHH'."
+        ) from e
 
 def get_data(date, base):
     logging.basicConfig(
@@ -21,13 +39,21 @@ def get_data(date, base):
     out_path = base / "blend" / "output" / date
     out_file = out_path / f"all_data.csv"
     # copies of each of these files are in the py folder I sent Adam
-    thresholds_file = base / "blend" / "data" / "support" / "thresholds_df.csv"
-    clusters_file = base / "blend" / "data" / "support" / "onset_clusters.csv"
-    mat_file = base / "blend" / "data" / "support" / "onset_five_day_thres_2deg.mat"
-    clim_file = base / "blend" / "data" / "support" / "ensemble_outputs_clim_2025.csv"
-    allowed_cells_file = base / "blend" / "data" / "support" / "allowed_cells.csv"
-    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
+    support_dir = base / "blend" / "data" / "support"
+    thresholds_file = support_dir / "thresholds_df.csv"
+    clusters_file = support_dir / "onset_clusters.csv"
+    mat_file = support_dir / "onset_five_day_thres_2deg.mat"
+    clim_file = support_dir / "ensemble_outputs_clim_2025.csv"
+    allowed_cells_file = support_dir / "allowed_cells.csv"
+
+    AIFS_date = parse_date(date) - timedelta(hours=12)
+    AIFS_date = AIFS_date.strftime("%Y%m%dT%H")
+    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{AIFS_date}.nc"
+    logging.info(f"Using AIFS file: {aifs_tp_file} for base date: {date}")
+
+    # aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
     ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
+    logging.info(f"Using NGCM file: {ngcm_precip_file} for base date: {date}")
 
     if aifs_tp_file.exists() and ngcm_precip_file.exists():
         logging.info(f"Blending AIFS and NGCM data for {date}")
@@ -41,8 +67,14 @@ def get_data(date, base):
     allowed_cells = pd.read_csv(allowed_cells_file)
 
     # Process forecasts
+    print("WITH OFFSET")
     ngcm_df = process_ngcm(ngcm_precip_file, mat_file, allowed_cells)
-    aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
+    print("NGCM DF")
+    print(ngcm_df)
+    # aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
+    aifs_df = process_aifs_offset(aifs_tp_file, mat_file, allowed_cells)
+    print("AIFS DF")
+    print(aifs_df)
     ngcm_df["time"] = pd.to_datetime(ngcm_df["time"]).dt.normalize()
     aifs_df["time"] = pd.to_datetime(aifs_df["time"]).dt.normalize()
 
@@ -59,6 +91,8 @@ def get_data(date, base):
         on=["time", "day", "lat", "lon"],
         how="inner",
     )
+    print("MERGED")
+    print(merged)
 
     # read in climatology data
     clim_wide = clim.pivot_table(
