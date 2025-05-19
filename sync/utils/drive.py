@@ -8,6 +8,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 import logging
+import argparse
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
@@ -490,13 +491,27 @@ def drive_sync_IMERG(date, cluster): # Added cluster parameter with default
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
 
 def main():
-    # Example usage:
-    sync_date = "20250430T12" # Or get dynamically, e.g., from command line args
+    parser = argparse.ArgumentParser(
+        description="Process weather data for a given year"
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Dates for the upload in YYYYMMDDTHH format",
+        nargs="+"
+    )
+    args = parser.parse_args()
+    sync_dates = args.date
+    logging.info(f"Syncing for dates: {sync_dates}")
     sync_cluster = "midway"   # Or get dynamically
-    # drive_sync(date=sync_date, cluster=sync_cluster)
-    IMERG_sync_date = "20250507" # Or get dynamically, e.g., from command line args
-    IMERG_sync_cluster = "midway"   # Or get dynamically
-    drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
+    for sync_date in sync_dates:
+        # Call the drive_sync function with the provided date and cluster
+        logging.info(f"Syncing for date: {sync_date}, cluster: {sync_cluster}")
+        # Call the drive_sync function with the provided date and cluster
+        drive_sync(date=sync_date, cluster=sync_cluster)
+    # IMERG_sync_date = "20250507" # Or get dynamically, e.g., from command line args
+    # IMERG_sync_cluster = "midway"   # Or get dynamically
+    # drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
 
 
 if __name__ == "__main__":
