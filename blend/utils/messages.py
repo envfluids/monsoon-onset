@@ -66,6 +66,7 @@ def generate_messages(base, out_path, onset_times):
     qual_df    = pd.read_excel(xlsx_path, sheet_name='qualitative', engine='openpyxl', header=0)
     grid_state = pd.read_excel(xlsx_path, sheet_name='grid_box', engine='openpyxl', header=0)
 
+    grid_state.rename(columns={'campaign':'campaign_name'}, inplace=True)
     #Sheets containing message templates
     #LS1: three bins (LS = "Late Season")
     #LS3: two bins, emphasize first (when "week1" or "week1 + week2" is selected
@@ -320,6 +321,7 @@ def generate_messages(base, out_path, onset_times):
                     tmpl_name = 'Promotional Message 1'
                 if flag_val == 'PM2':
                     tmpl_name = 'Promotional Message 2'
+
             else:
                 tmpl  = pick_template(first_week, second_week, ivrs)
                 tmpl_name = pick_template_name(first_week, second_week, ivrs)
@@ -345,8 +347,8 @@ def generate_messages(base, out_path, onset_times):
                     'lon': lon,
                     'lat': lat,
                     'language': lang,
-                    'message': msg,
-                    'template': tmpl_name
+                    'forecast_message': msg,
+                    'message_template': tmpl_name
                 })
                 continue
 
@@ -405,7 +407,7 @@ def generate_messages(base, out_path, onset_times):
                     .replace('<qual 2>',     get_qualifier(percent_before * 100, mon_col))
                 )
 
-            messages.append({'lon': lon, 'lat': lat, 'language': lang,'template' : tmpl_name, 'message': msg})
+            messages.append({'lon': lon, 'lat': lat, 'language': lang,'message_template' : tmpl_name, 'forecast_message': msg})
 
 
     ######################
@@ -423,14 +425,21 @@ def generate_messages(base, out_path, onset_times):
 
 
     #main output file
-    out_df = pd.DataFrame(messages)
-
-    out_df = grid_state[['final_grid_box_name','lon','lat','abbreviation']].merge(
-                out_df,
-                left_on=['lon','lat','abbreviation'],
-                right_on=['lon','lat','language'],
-                how='inner')
-    out_df = out_df.drop(columns=['abbreviation'])
+    out_df = grid_state[
+        ['campaign_name','lon','lat','abbreviation','language']
+    ].merge(
+        pd.DataFrame(messages),
+        left_on=['lon','lat','abbreviation'],
+        right_on=['lon','lat','language'],
+        how='inner',
+        suffixes=('_grid','_msg')
+    )
+    # drop technical columns, keep only the grid_state.language, and remove lat/lon
+    out_df = (
+        out_df
+        .drop(columns=['abbreviation','lon','lat','language_msg'])
+        .rename(columns={'language_grid':'language'})
+    )
 
 
     message_templates_out_path = out_path / "message_templates_output.xlsx"
@@ -448,10 +457,10 @@ def generate_messages(base, out_path, onset_times):
     eng_msgs = [m for m in messages if m['language']=='Eng']
     eng_df   = pd.DataFrame(eng_msgs)
 
-    # …then merge on lon/lat to get the final_grid_box_name
+    # …then merge on lon/lat to get the campaign_name
     eng_out = (
-        grid_state[['final_grid_box_name','lon','lat']]
-        .merge(eng_df[['lon','lat','template', 'message']], on=['lon','lat'], how='inner')
+        grid_state[['campaign_name','lon','lat']]
+        .merge(eng_df[['lon','lat','message_template', 'forecast_message']], on=['lon','lat'], how='inner')
     )
     #we just want one output per lat/lon pair, since these are all in english
     eng_out = eng_out.groupby(['lon','lat'], as_index=False).first()
@@ -472,10 +481,10 @@ def generate_messages(base, out_path, onset_times):
     odi_ivrs_df   = pd.DataFrame(odi_ivrs_msgs)
 
     # only keep those grid cells in Odisha
-    grid_odisha = grid_state[grid_state['final_grid_box_name'].str.startswith('ODISHA')]
+    grid_odisha = grid_state[grid_state['campaign_name'].str.contains('ODISHA', case=False, na=False)]
 
     odi_ivrs_out = grid_odisha.merge(
-        odi_ivrs_df[['lon','lat', 'template', 'message']],
+        odi_ivrs_df[['lon','lat', 'message_template', 'forecast_message']],
         on=['lon','lat'],
         how='inner'
     )
