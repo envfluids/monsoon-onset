@@ -192,6 +192,12 @@ def get_data(date, base):
     final = wide.merge(clusters, on=["lat", "lon"], how="left").merge(
         thresholds, on=["lat", "lon"], how="left"
     )
+
+    for src in ['ngcm', 'aifs']:
+        for wk in labels:
+            max_col  = f'max_{src}_5day_{wk}'
+            diff_col = f'diff_{src}_{wk}'
+            final[diff_col] = final[max_col] - final['onset_threshold']
     # -------------------------------------------------------------------------
     # TRANSFORM climatology probabilities per week
     #  - npc: logit only

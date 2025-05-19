@@ -96,12 +96,12 @@ def make_maps(summary, date):
     # SECTION: Max-Period Map & Bar-Glyph Map ------
     pdays = {'just_week1':(1,7),'weeks12':(1,14),'weeks23':(8,21),'weeks34':(15,28),'weeks4later':(22,None),'later':(29,None)}
     def max_period(vf):
-        if vf[0]>=0.7: return 'just_week1'
-        if vf[4]>=0.7: return 'later'
+        if vf[0]>=0.65: return 'just_week1'
+        if vf[4]>=0.65: return 'later'
         sums=[vf[0]+vf[1], vf[1]+vf[2], vf[2]+vf[3], vf[3]+vf[4]]
         keys=['weeks12','weeks23','weeks34','weeks4later']
         idx=int(np.argmax(sums))
-        return keys[idx] if sums[idx]>=0.5 else 'none'
+        return keys[idx] 
 
     for t, grp in preds_df.groupby('time'):
         ds = t.strftime('%Y-%m-%d')

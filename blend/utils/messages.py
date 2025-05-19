@@ -12,15 +12,15 @@ logging.basicConfig(
 def pick_template_name(first, second, ivrs):
     if ivrs == False:
         if first=='week1' or second=='week1':
-            return "LS3"
+            return "Late Season 3"
         if first=='later' or second=='later':
-            return "ES1"
-        return "LS1"
+            return "Early Season 1"
+        return "Late Season 1"
     if first=='week1' or second=='week1':
-        return "LS3_IVRS"
+        return "Late Season 3 (IVRS)"
     if first=='later' or second=='later':
-        return "ES1_IVRS"
-    return "LS1_IVRS"
+        return "Early Season 1 (IVRS)"
+    return "Late Season 1 (IVRS)"
 
 def round_5(x):
     return round(x * 20) / 20
@@ -314,7 +314,12 @@ def generate_messages(base, out_path, onset_times):
             if flag_val in ['NM', 'PM1', 'PM2']:
                 sheet = flag_val + ('_IVRS' if ivrs else '')
                 tmpl  = pd.read_excel(xlsx_path, sheet_name=sheet, engine='openpyxl', header=None)
-                tmpl_name = sheet
+                if flag_val == 'NM':
+                    tmpl_name = 'Null Message'
+                if flag_val == 'PM1':
+                    tmpl_name = 'Promotional Message 1'
+                if flag_val == 'PM2':
+                    tmpl_name = 'Promotional Message 2'
             else:
                 tmpl  = pick_template(first_week, second_week, ivrs)
                 tmpl_name = pick_template_name(first_week, second_week, ivrs)
