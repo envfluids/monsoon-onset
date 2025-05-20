@@ -140,7 +140,7 @@ def make_maps(summary, date):
                 ax2.add_patch(Rectangle((bx,by), bw, bar_h, facecolor='black', edgecolor='black', linewidth=0.3, zorder=3))
         fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
         ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max); ax2.axis('off')
-        fname = output_dir / f"map_bars_with_probs_{ds}.png"
+        fname = output_dir / f"map_bars_with_probs_country_{ds}.png"
         plt.tight_layout(); plt.savefig(fname,dpi=150); plt.close(fig2)
         logging.info(f"Saved bar-glyph map to {fname}")
         # Zoomed Regions
