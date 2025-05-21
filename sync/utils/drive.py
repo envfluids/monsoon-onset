@@ -490,6 +490,58 @@ def drive_sync_IMERG(date, cluster): # Added cluster parameter with default
     else:
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
 
+def drive_sync_IMD(date): # Added cluster parameter with default
+    """Main function to perform the sync operation for a given date and cluster."""
+
+    # Define the base Google Drive folder path using date and cluster
+    # Example: /MO Forecast Benchmarking/operational_data/midway
+    DRIVE_IMD_BASE_PATH = f"/MO Forecast Benchmarking/operational_data/imd-bulletins/IMD_AllIndiaWeatherBulletins"
+
+    # Define local paths
+    try:
+        # Assumes script is like project_root/scripts/sync_script.py
+        # Adjust if your structure is different
+        script_dir = Path(__file__).resolve().parent
+        base = script_dir.parent.parent # project_root
+    except NameError:
+        # Fallback for interactive sessions or environments where __file__ isn't set
+        logging.warning("Using current working directory's parent as project base.")
+        # This assumes you run interactively from the 'scripts' dir
+        base = Path.cwd().parent
+        if not (base / "AIFS").exists(): # Basic sanity check
+             logging.warning("Base path might be incorrect. Expected AIFS folder not found.")
+
+
+    logging.info(f"Using project base path: {base}")
+    logging.info(f"Syncing for date: {date}")
+    logging.info(f"Target Drive path: {DRIVE_IMD_BASE_PATH}")
+
+
+    # --- Define Local File/Directory Sources ---
+    IMD_output_path = base / "IMD" / "output"
+    IMD_FILE_TO_UPLOAD = IMD_output_path / f"AIWFB_{date}.pdf"
+    logging.info("Starting Google Drive authentication process...")
+    drive_service = authenticate()
+
+    if drive_service:
+        logging.info("Google Drive authentication successful.")
+        logging.info(f"Starting Google Drive sync process...")
+        # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
+        IMD_base_drive_folder_id = get_folder_id_by_path(drive_service, DRIVE_IMD_BASE_PATH)
+
+        if IMD_base_drive_folder_id:
+            # --- Sync Operations ---
+            # 3. Upload AIFS files
+            logging.info("Processing IMD files...")
+            logging.info(f"Uploading IMD file to folder ID: {IMD_base_drive_folder_id}")
+            upload_file(drive_service, IMD_FILE_TO_UPLOAD, IMD_base_drive_folder_id)
+            logging.info("Sync process finished.")
+
+        else:
+            logging.error(f"CRITICAL: Could not create or find the cluster base path '{DRIVE_IMD_BASE_PATH}'. Aborting.")
+    else:
+        logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
