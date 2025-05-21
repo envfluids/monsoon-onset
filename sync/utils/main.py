@@ -167,9 +167,16 @@ def main():
         command = f"cp {latest_maps} {maps_dir}"
         os.system(command)
 
-        latest_data = latest_dir + "/blend_output_summary.csv"
-        command = f"cp {latest_data} {data_dir}"
+        # latest_data = latest_dir + "/blend_output_summary.csv"
+        # command = f"cp {latest_data} {data_dir}"
+        # os.system(command)
+
+        current_name = glob(str(maps_dir / "*"))[0]
+        remove_str = "_" + current_name.split("/")[-1].split("_")[-1].split(".")[0]
+        new_name = current_name.replace(remove_str, "")
+        command = f"mv {current_name} {new_name}"
         os.system(command)
+        logging.info(f"Renamed {current_name} file to {new_name}")
 
         latest_messages = latest_dir + "/messages" + "/message_templates_output_eng.csv"
         command = f"cp {latest_messages} {data_dir}"
