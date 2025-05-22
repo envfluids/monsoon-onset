@@ -8,6 +8,7 @@
 */.auth/*
 **/Thumbs.db
 __pycache__/
+.DS_Store
 
 # Allow placeholder files to keep directory structure
 !weights/.gitkeep
