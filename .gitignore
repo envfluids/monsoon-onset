@@ -4,4 +4,17 @@
 */EKR/*
 */logs/*
 */raw/*
+*/latest/*
+*/.auth/*
+**/Thumbs.db
+.config/
 __pycache__/
+.DS_Store
+
+# Allow placeholder files to keep directory structure
+!weights/.gitkeep
+!output/.gitkeep
+!data/.gitkeep
+!EKR/.gitkeep
+!logs/.gitkeep
+!raw/.gitkeep
