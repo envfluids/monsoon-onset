@@ -6,9 +6,8 @@ from datetime import datetime
 import logging
 import json
 
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
+
 
 def parse_date(date_str):
     """
@@ -71,7 +70,11 @@ def find_most_recent_date(date_list):
 
     for date_str in date_list:
         # Basic validation for format (8 digits)
-        if not isinstance(date_str, str) or len(date_str) != 8 or not date_str.isdigit():
+        if (
+            not isinstance(date_str, str)
+            or len(date_str) != 8
+            or not date_str.isdigit()
+        ):
             raise ValueError(
                 f"Invalid date format: '{date_str}'. Expected 'YYYYMMDD' numeric string."
             )
@@ -102,12 +105,17 @@ def sync_IMERG(cluster):
             drive_dates = f.read()
             dates_list = drive_dates.split("\n")
             if date in dates_list:
-                logging.info(f"Date {date} already exists in drive sync reference file.")
+                logging.info(
+                    f"Date {date} already exists in drive sync reference file."
+                )
                 return
             else:
-                logging.info(f"Date {date} does not exist in drive sync reference file.")
+                logging.info(
+                    f"Date {date} does not exist in drive sync reference file."
+                )
                 try:
                     from drive import drive_sync_IMERG
+
                     drive_sync_IMERG(date, cluster)
                     logging.info("IMERG data synced successfully.")
                     logging.info(f"Adding date {date} to drive sync reference file.")
@@ -124,7 +132,7 @@ def main():
     live_dir = operational_dir / "docs" / "assets"
     maps_dir = live_dir / "images"
     data_dir = live_dir / "data"
-    
+
     config_file = base / ".config" / "config.json"
     with open(config_file, "r") as f:
         config = json.load(f)
@@ -226,18 +234,23 @@ def main():
             drive_dates = f.read()
             dates_list = drive_dates.split("\n")
             if date in dates_list:
-                logging.info(f"Date {date} already exists in drive sync reference file.")
+                logging.info(
+                    f"Date {date} already exists in drive sync reference file."
+                )
             else:
-                logging.info(f"Date {date} does not exist in drive sync reference file.")
+                logging.info(
+                    f"Date {date} does not exist in drive sync reference file."
+                )
                 try:
                     from drive import drive_sync
+
                     drive_sync(date, cluster)
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
                         f.write(date + "\n")
                 except Exception as e:
                     logging.error(f"Failed to sync with Google Drive: {e}")
-    
+
     # Sync IMERG data
     try:
         logging.info("Syncing IMERG data...")

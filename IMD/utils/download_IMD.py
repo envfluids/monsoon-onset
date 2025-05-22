@@ -9,6 +9,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def get_data(out_dir):
     # URL of the web page containing the download link
     page_url = "https://mausam.imd.gov.in/responsive/all_india_forcast_bulletin.php"
@@ -39,17 +40,24 @@ def get_data(out_dir):
             # Check if the request was successful
             if file_response.status_code == 200:
                 # Open a local file in binary write mode
-                with open(local_filename, 'wb') as f:
+                with open(local_filename, "wb") as f:
                     f.write(file_response.content)
-                logging.info(f"File downloaded successfully and saved as {local_filename}")
+                logging.info(
+                    f"File downloaded successfully and saved as {local_filename}"
+                )
             else:
-                logging.error(f"Failed to download the file. Status code: {file_response.status_code}")
+                logging.error(
+                    f"Failed to download the file. Status code: {file_response.status_code}"
+                )
         else:
             logging.error("Download link not found on the page.")
     else:
-        logging.error(f"Failed to retrieve the web page. Status code: {response.status_code}")
-    
+        logging.error(
+            f"Failed to retrieve the web page. Status code: {response.status_code}"
+        )
+
     return current_date
+
 
 def main():
     base = Path(__file__).resolve().parent.parent.parent
@@ -60,10 +68,12 @@ def main():
         logging.info("Syncing IMD with Google Drive...")
         sys.path.append(str(drive_dir))
         from drive import drive_sync_IMD
+
         try:
             drive_sync_IMD(current_date)
         except Exception as e:
             logging.error(f"Error during Google Drive sync: {e}")
+
 
 if __name__ == "__main__":
     main()

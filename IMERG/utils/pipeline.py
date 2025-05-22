@@ -8,6 +8,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+
 def get_cluster():
     base = Path(__file__).resolve().parent.parent.parent
     config_file = base / ".config" / "config.json"
@@ -16,6 +17,7 @@ def get_cluster():
     cluster = config["cluster"]
     logging.info(f"Cluster: {cluster}")
     return cluster
+
 
 def main():
     DATE_F = get_data()
@@ -51,9 +53,7 @@ def main():
         logging.info("Processing data")
 
     else:
-        logging.info(
-            "No new data. Will not submit compute job. Retrying in 15 minutes"
-        )
+        logging.info("No new data. Will not submit compute job. Retrying in 15 minutes")
 
 
 if __name__ == "__main__":

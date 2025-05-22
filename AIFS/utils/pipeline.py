@@ -9,6 +9,7 @@ logging.basicConfig(
 )
 ALLOWED_HOURS = ["00", "12"]
 
+
 def get_cluster():
     base = Path(__file__).resolve().parent.parent.parent
     config_file = base / ".config" / "config.json"
@@ -17,6 +18,7 @@ def get_cluster():
     cluster = config["cluster"]
     logging.info(f"Cluster: {cluster}")
     return cluster
+
 
 def main():
     DATE_F = get_data()
