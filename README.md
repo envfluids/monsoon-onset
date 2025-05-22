@@ -16,16 +16,16 @@ The system is composed of four primary components orchestrated via cron jobs and
 The system's operation is driven by cron jobs defined in `cron.txt`:
 
 * `*/5 * * * *`: Runs the `sync` process every 5 minutes via `sync/utils/cron_job.sh`.
-* `*/15 * * * *`: Runs the AIFS pipeline every 15 minutes via `AIFS/chron_job.sh`.
-* `*/30 * * * *`: Runs the NeuralGCM pipeline every 30 minutes via `NeuralGCM/chron_job.sh`.
+* `*/15 * * * *`: Runs the AIFS pipeline every 15 minutes via `AIFS/utils/chron_job.sh`.
+* `*/30 * * * *`: Runs the NeuralGCM pipeline every 30 minutes via `NeuralGCM/utils/chron_job.sh`.
 
-Each `chron_job.sh` script activates the appropriate Conda environment and executes the respective `pipeline.py` script with a timeout. The pipelines check for new input data before submitting the main model execution script (`run_model.sh`) to a batch scheduling system (SLURM, indicated by `sbatch`).
+Each `chron_job.sh` script activates the appropriate Conda environment and executes the respective `pipeline.py` script with a timeout. The pipelines check for new input data before submitting the main model execution script (`run_model.sh`) to a batch scheduling system.
 
 ```mermaid
 graph TD
     subgraph Cron Scheduling
-        CronAIFS(*/15 * * * *) --> AIFS_cron[AIFS/chron_job.sh]
-        CronNGCM(*/30 * * * *) --> NGCM_cron[NeuralGCM/chron_job.sh]
+        CronAIFS(*/15 * * * *) --> AIFS_cron[AIFS/utils/chron_job.sh]
+        CronNGCM(*/30 * * * *) --> NGCM_cron[NeuralGCM/utils/chron_job.sh]
         CronSync(*/5 * * * *) --> Sync_cron[sync/utils/cron_job.sh]
     end
 
