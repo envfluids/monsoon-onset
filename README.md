@@ -80,8 +80,6 @@ graph TD
  class Verify1,Verify2 process;
 ```
 
-*(Note: Mermaid diagram above describes the workflow visually)*
-
 ### 2. Component Details
 
 #### 2.1. AIFS Component
