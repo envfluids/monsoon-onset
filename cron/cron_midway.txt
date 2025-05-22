@@ -1,4 +1,4 @@
 */10 * * * * /project/pedramh/monsoon/monsoon-onset/sync/utils/cron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/sync/logs/cron.log 2>&1
-*/15 * * * * /project/pedramh/monsoon/monsoon-onset/AIFS/utils/chron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/AIFS/logs/cron.log 2>&1
-*/30 * * * * /project/pedramh/monsoon/monsoon-onset/NeuralGCM/utils/chron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/NeuralGCM/logs/cron.log 2>&1
-0 * * * * /project/pedramh/monsoon/monsoon-onset/IMERG/utils/chron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/IMERG/logs/cron.log 2>&1
+*/15 * * * * /project/pedramh/monsoon/monsoon-onset/AIFS/utils/cron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/AIFS/logs/cron.log 2>&1
+*/30 * * * * /project/pedramh/monsoon/monsoon-onset/NeuralGCM/utils/cron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/NeuralGCM/logs/cron.log 2>&1
+0 * * * * /project/pedramh/monsoon/monsoon-onset/IMERG/utils/cron_job_midway.sh >> /project/pedramh/monsoon/monsoon-onset/IMERG/logs/cron.log 2>&1
