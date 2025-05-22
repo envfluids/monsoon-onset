@@ -4,11 +4,11 @@ from glob import glob
 import socket
 from datetime import datetime
 import logging
+import json
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
 )
-CLUSTER = "midway"
 
 def parse_date(date_str):
     """
@@ -82,7 +82,7 @@ def find_most_recent_date(date_list):
     return most_recent
 
 
-def sync_IMERG():
+def sync_IMERG(cluster):
     base = Path(__file__).resolve().parent.parent.parent
     IMERG_output = base / "IMERG" / "output"
     try:
@@ -108,7 +108,7 @@ def sync_IMERG():
                 logging.info(f"Date {date} does not exist in drive sync reference file.")
                 try:
                     from drive import drive_sync_IMERG
-                    drive_sync_IMERG(date, CLUSTER)
+                    drive_sync_IMERG(date, cluster)
                     logging.info("IMERG data synced successfully.")
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
@@ -124,6 +124,14 @@ def main():
     live_dir = operational_dir / "docs" / "assets"
     maps_dir = live_dir / "images"
     data_dir = live_dir / "data"
+    
+    config_file = base / ".config" / "config.json"
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    cluster = config["cluster"]
+    logging.info(f"Cluster: {cluster}")
+    cluster_id = config["cluster_id"]
+    logging.info(f"Cluster ID: {cluster_id}")
 
     latest = base / "sync" / "latest"
     try:
@@ -145,7 +153,7 @@ def main():
         result = os.system(command)
         if result != 0:
             raise RuntimeError(f"Command failed with exit code {result}: {command}")
-        logging.info(f"Pulled latest changes from operational repo.")
+        logging.info("Pulled latest changes from operational repo.")
     except Exception as e:
         logging.error(f"Failed to pull changes from operational repo: {e}")
         return
@@ -186,7 +194,7 @@ def main():
             f.write(date)
 
         with open(data_dir / "cluster.txt", "w") as f:
-            f.write("A")
+            f.write(cluster_id)
             # f.write(socket.gethostname())
 
         logging.info(f"Updated live date to {date}.")
@@ -196,7 +204,7 @@ def main():
             result = os.system(command)
             if result != 0:
                 raise RuntimeError(f"Command failed with exit code {result}: {command}")
-            logging.info(f"Pushed changes to operational repo.")
+            logging.info("Pushed changes to operational repo.")
         except Exception as e:
             logging.error(f"Failed to push changes to operational repo: {e}")
     elif is_more_recent(date, live_date):
@@ -223,7 +231,7 @@ def main():
                 logging.info(f"Date {date} does not exist in drive sync reference file.")
                 try:
                     from drive import drive_sync
-                    drive_sync(date, CLUSTER)
+                    drive_sync(date, cluster)
                     logging.info(f"Adding date {date} to drive sync reference file.")
                     with open(drive_log, "a") as f:
                         f.write(date + "\n")
@@ -233,11 +241,11 @@ def main():
     # Sync IMERG data
     try:
         logging.info("Syncing IMERG data...")
-        sync_IMERG()
+        sync_IMERG(cluster)
     except Exception as e:
         logging.error(f"Failed to sync IMERG data: {e}")
         return
-    logging.info(f"Sync process completed successfully.")
+    logging.info("Sync process completed successfully.")
 
 
 if __name__ == "__main__":

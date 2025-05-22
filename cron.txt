@@ -1,4 +1,0 @@
-*/10 * * * * /project/pedramh/monsoon/monsoon-onset/sync/utils/cron_job.sh >> /project/pedramh/monsoon/monsoon-onset/sync/logs/cron.log 2>&1
-*/15 * * * * /project/pedramh/monsoon/monsoon-onset/AIFS/chron_job.sh >> /project/pedramh/monsoon/monsoon-onset/AIFS/logs/cron.log 2>&1
-*/30 * * * * /project/pedramh/monsoon/monsoon-onset/NeuralGCM/chron_job.sh >> /project/pedramh/monsoon/monsoon-onset/NeuralGCM/logs/cron.log 2>&1
-0 * * * * /project/pedramh/monsoon/monsoon-onset/IMERG/utils/chron_job.sh >> /project/pedramh/monsoon/monsoon-onset/IMERG/logs/cron.log 2>&1
