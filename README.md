@@ -1,6 +1,6 @@
 ## Monsoon Onset Prediction System Documentation
 
-This document details the architecture, components, and operational workflow of the data-driven monsoon onset prediction system housed in the `monsoon-onset-adam-dev` repository. The system integrates two distinct forecasting models (AIFS and NeuralGCM), blends their outputs, generates visualizations, and synchronizes the results for operational use.
+This document details the architecture, components, and operational workflow of the data-driven monsoon onset prediction system housed in the `monsoon-onset` repository. The system integrates two distinct forecasting models (AIFS and NeuralGCM), blends their outputs, generates visualizations, and synchronizes the results for operational use.
 
 ### 1. Overall System Architecture
 
