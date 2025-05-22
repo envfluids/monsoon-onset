@@ -6,18 +6,13 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
 )
 
-def write_public(df, coef_orig, output_dir, date):
+def write_public(df, coef_orig):
     df = df.dropna(subset=coef_orig.index, how="all")
     df = df.round(4)
     order = ["lat", "lon", "time", "week1", "week2", "week3", "week4", "later"]
     df = df[order]
     # note = ("The numbers represent the forecasted probabilities of monsoon onset in each interval after the onset date. All probabilities rounded to 4 digits after the decimal point. For more details see [link]")
-    output_file = output_dir / f"blend_output_summary_{date[0:8]}.csv"
-    df.to_csv(output_file, index=False)
-    # with open(output_file, "w") as f:
-    #     f.write(f"IMPORTANT, INFO:, {note}\n")
-    #     df.to_csv(f, index=False)
-    logging.info(f"Wrote public-facing output to {output_file}")
+    return df
 
 def blend(df_raw, date):
     base = Path(__file__).resolve().parent.parent
@@ -122,6 +117,6 @@ def blend(df_raw, date):
         f"Wrote blend_output_with_clim.csv and blend_output_summary.csv to {output_dir}"
     )
     public = summary.copy()
-    write_public(public, coef_orig, output_dir, date)
+    summary_p = write_public(public, coef_orig)
 
-    return summary
+    return summary, summary_p

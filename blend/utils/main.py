@@ -12,6 +12,7 @@ from blend import blend
 from maps import make_maps
 from plot_precip import plot_precip
 from circulation.circulation_main import plot_circulation
+from zenodo import write_public
 from messages import generate_messages
 from datetime import datetime, timedelta
 
@@ -67,14 +68,11 @@ def get_data(date, base):
     allowed_cells = pd.read_csv(allowed_cells_file)
 
     # Process forecasts
-    print("WITH OFFSET")
+
     ngcm_df = process_ngcm(ngcm_precip_file, mat_file, allowed_cells)
-    print("NGCM DF")
-    print(ngcm_df)
+
     # aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
     aifs_df = process_aifs_offset(aifs_tp_file, mat_file, allowed_cells)
-    print("AIFS DF")
-    print(aifs_df)
     ngcm_df["time"] = pd.to_datetime(ngcm_df["time"]).dt.normalize()
     aifs_df["time"] = pd.to_datetime(aifs_df["time"]).dt.normalize()
 
@@ -91,8 +89,6 @@ def get_data(date, base):
         on=["time", "day", "lat", "lon"],
         how="inner",
     )
-    print("MERGED")
-    print(merged)
 
     # read in climatology data
     clim_wide = clim.pivot_table(
@@ -285,12 +281,14 @@ def main():
         logging.error("No data to process")
         return
     else:
-        logging.info(f"Initializing blend")
-        summary = blend(final, date)
+        logging.info("Initializing blend")
+        summary, summary_p = blend(final, date)
         logging.info(f"Blending completed for {date}")
-        logging.info(f"Generating messages")
-        generate_messages(base, out_path, summary)
+        logging.info("Generating messages")
+        messages = generate_messages(base, out_path, summary)
         logging.info(f"Messages generated for {date}")
+        logging.info("Attempting to prepare files for Zenodo")
+        write_public(summary_p, messages, out_path, parse_date(date))
         logging.info("Creating maps")
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")

@@ -496,3 +496,5 @@ def generate_messages(base, out_path, onset_times):
         index=False,
         engine='openpyxl'
     )
+
+    return eng_out

@@ -114,33 +114,22 @@ def process_aifs_offset(
         return pd.DataFrame()
     with Dataset(tp_file) as nc:
         tp_data = nc.variables["tp"][:]  # [day, time, lat, lon]
-        #BEGIN MODIFICATION
         tp_data = tp_data[1:]  # Skip the first day
-        #END MODIFICATION
-        print("tp_data", tp_data.shape)
         tvals = nc.variables["time"][:]
-        print("tvals", tvals)
         dvals = nc.variables["day"][:]
-        #BEGIN MODIFICATION
         dvals = dvals[1:] - 1 # Adjust date array
-        #END MODIFICATION
-        print("dvals", dvals)
         time_units = nc.variables["time"].units
-        print("time_units", time_units)
+
 
     tp = np.transpose(tp_data, (3, 2, 1, 0))  # (nlon, nlat, ntime, nday)
 
     # Build forecast dates
     origin = pd.to_datetime(time_units.split(" since ")[1])
     fdates = origin + pd.to_timedelta(tvals, unit="D")
-    #BEGIN MODIFICATION
     fdates = fdates + pd.DateOffset(hours=12)  # Adjust to next day
-    #END MODIFICATION
-    print("fdates", fdates)
 
     # Filter days by min/max + window
     valid_days = np.where((dvals >= min_day) & (dvals <= max_day + window - 1))[0]
-    print("valid_days", valid_days)
 
     # Identify coordinates directly from allowed_cells
     coords = []
