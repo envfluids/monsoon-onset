@@ -43,7 +43,7 @@ def get_data(date, base):
     thresholds_file = support_dir / "thresholds_df.csv"
     clusters_file = support_dir / "onset_clusters.csv"
     mat_file = support_dir / "onset_five_day_thres_2deg.mat"
-    clim_file = support_dir / "ensemble_outputs_clim_2025.csv"
+    clim_file = support_dir / "large" /"ensemble_outputs_clim_2025.csv"
     allowed_cells_file = support_dir / "allowed_cells.csv"
 
     AIFS_date = parse_date(date) - timedelta(hours=12)

@@ -1,6 +1,8 @@
 */weights/*
 */output/*
-*/data/*
+**/forcings/*
+**/model_ds/*
+**/large/*
 */EKR/*
 */logs/*
 */raw/*
