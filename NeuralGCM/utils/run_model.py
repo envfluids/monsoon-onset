@@ -178,23 +178,36 @@ def main():
     args = parser.parse_args()
     logging.info(f"MPI Rank{args.mpi}")
     mpi = args.mpi
-    if mpi > 3:
-        logging.error("MPI can only be 0, 1, 2, 3")
-        return
-    os.environ["CUDA_VISIBLE_DEVICES"] = str(mpi)
-    devices = jax.local_devices()
-    logging.info(f"Using device: {devices}")
-    date_f = args.date
-    date = datetime.strptime(date_f, "%Y%m%dT%H")
+    if mpi is not None:
+        if mpi > 3:
+            logging.error("MPI can only be 0, 1, 2, 3")
+            return
+        os.environ["CUDA_VISIBLE_DEVICES"] = str(mpi)
+        devices = jax.local_devices()
+        logging.info(f"Using device: {devices}")
+        date_f = args.date
+        date = datetime.strptime(date_f, "%Y%m%dT%H")
 
-    forcings_clim = get_forcings_clim(date.year)
+        forcings_clim = get_forcings_clim(date.year)
 
-    if not os.path.exists(output_path + f"/{date_f}"):
-        os.makedirs(output_path + f"/{date_f}", exist_ok=True)
+        if not os.path.exists(output_path + f"/{date_f}"):
+            os.makedirs(output_path + f"/{date_f}", exist_ok=True)
 
-    all_members = np.arange(1, N_MEMBERS + 1)
-    members = np.array_split(all_members, 4)[mpi]
-    run_model(date, date_f, forcings_clim, members)
+        all_members = np.arange(1, N_MEMBERS + 1)
+        members = np.array_split(all_members, 4)[mpi]
+        run_model(date, date_f, forcings_clim, members)
+    else:
+        date_f = args.date
+        date = datetime.strptime(date_f, "%Y%m%dT%H")
+
+        forcings_clim = get_forcings_clim(date.year)
+
+        if not os.path.exists(output_path + f"/{date_f}"):
+            os.makedirs(output_path + f"/{date_f}", exist_ok=True)
+
+        all_members = np.arange(1, N_MEMBERS + 1)
+        # members = np.array_split(all_members, 4)[mpi]
+        run_model(date, date_f, forcings_clim, all_members)
 
 
 if __name__ == "__main__":
