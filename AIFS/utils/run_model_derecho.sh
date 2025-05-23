@@ -7,9 +7,8 @@
 #PBS -j oe
 
 # source /home/marchakitus/.bashrc
-
+ml unload cuda
 ml conda
-ml cuda
 ml cdo
 
 conda activate /glade/work/marchakitus/conda-envs/AIFS

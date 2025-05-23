@@ -7,8 +7,8 @@
 
 # source /home/marchakitus/.bashrc
 
+ml unload cuda
 ml conda
-ml cuda
 ml cdo
 ml ncl
 
