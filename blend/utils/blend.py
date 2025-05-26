@@ -14,10 +14,20 @@ def write_public(df, coef_orig):
     # note = ("The numbers represent the forecasted probabilities of monsoon onset in each interval after the onset date. All probabilities rounded to 4 digits after the decimal point. For more details see [link]")
     return df
 
-def blend(df_raw, date):
+def blend(df_raw, date, mok=False):
     base = Path(__file__).resolve().parent.parent
-    coef_file = base / "data" / "coefs" / "multinom_coefs_full.csv"
-    coef_clim_file = base / "data" / "coefs" / "multinom_coefs_full_clim.csv"
+
+    if mok:
+        logging.info("Running blend in MOK mode")
+        coef_file = base / "data" / "coefs" / "multinom_coefs_full_mok.csv"
+        coef_clim_file = base / "data" / "coefs" / "multinom_coefs_full_clim_mok.csv"
+        clim_file_out = "blend_output_with_clim_mok.csv"
+        summary_file_out = "blend_output_summary_mok.csv"
+    else:
+        coef_file = base / "data" / "coefs" / "multinom_coefs_full.csv"
+        coef_clim_file = base / "data" / "coefs" / "multinom_coefs_full_clim.csv"
+        clim_file_out = "blend_output_with_clim.csv"
+        summary_file_out = "blend_output_summary.csv"
     output_dir = base / "output" / date
     # processed_data_file = "/scratch/midway3/marchakitus/monsoon-onset/blend/utils/intermediate/all_data.csv"
     # ------------------------------------------------------------------------------
@@ -99,7 +109,7 @@ def blend(df_raw, date):
         axis=1,
     )
 
-    clim_out = output_dir / "blend_output_with_clim.csv"
+    clim_out = output_dir / clim_file_out
     combined.to_csv(clim_out, index=False)
 
     # summary: only lat, lon, time + predictions
@@ -110,7 +120,7 @@ def blend(df_raw, date):
     )
     summary = combined[keep]
 
-    summary_out = output_dir / "blend_output_summary.csv"
+    summary_out = output_dir / summary_file_out
     summary.to_csv(summary_out, index=False)
 
     logging.info(

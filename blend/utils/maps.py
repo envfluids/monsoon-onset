@@ -18,14 +18,17 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
 )
 
-def make_maps(summary, date):
+def make_maps(summary, date, mok=False):
     base = Path(__file__).resolve().parent.parent
     india_shapefile = base / "data" / "india_shapefile" / "India_Country_Boundary.shp"
     india_gdf = gpd.read_file(india_shapefile).to_crs("EPSG:4326")
     # ------------------------------------------------------------------------------
     # 0) Ensure output folder exists
     # ------------------------------------------------------------------------------
-    output_dir = base / "output" / date / "maps"
+    if mok:
+        output_dir = base / "output" / date / "maps_mok"
+    else:
+        output_dir = base / "output" / date / "maps"
     os.makedirs(output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------------------
@@ -88,7 +91,10 @@ def make_maps(summary, date):
         legend_handles = [Patch(facecolor='none', edgecolor=c, linewidth=3, label=l) for c, l in [('red','≥10% lower than climatology'),('green','≥10% higher than climatology')]]
         fig.legend(handles=legend_handles, loc='lower right', bbox_to_anchor=(0.98,0.02))
         fig.subplots_adjust(left=0.02, right=0.98, top=0.90, bottom=0.15)
-        fname = output_dir / f"prob_weeks1-4_{ds}.png"
+        if mok:
+            fname = output_dir / f"prob_weeks1-4_{ds}_mok.png"
+        else:
+            fname = output_dir / f"prob_weeks1-4_{ds}.png"
         plt.savefig(fname, dpi=150)
         logging.info(f"Saved weekly probability map to {fname}")
         plt.close(fig)
@@ -118,7 +124,10 @@ def make_maps(summary, date):
         handles.append(Patch(facecolor=period_colors['none'], edgecolor='black', label='Uncertain'))
         fig.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
         ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max); ax.axis('off')
-        fname = output_dir / f"map_max_period_{ds}.png"
+        if mok:
+            fname = output_dir / f"map_max_period_{ds}_mok.png"
+        else:
+            fname = output_dir / f"map_max_period_{ds}.png"
         plt.tight_layout(); plt.savefig(fname,dpi=150); plt.close(fig)
         logging.info(f"Saved max-period map to {fname}")
         # Bar-glyph
@@ -140,7 +149,10 @@ def make_maps(summary, date):
                 ax2.add_patch(Rectangle((bx,by), bw, bar_h, facecolor='black', edgecolor='black', linewidth=0.3, zorder=3))
         fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
         ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max); ax2.axis('off')
-        fname = output_dir / f"map_bars_with_probs_country_{ds}.png"
+        if mok:
+            fname = output_dir / f"map_bars_with_probs_country_{ds}_mok.png"
+        else:
+            fname = output_dir / f"map_bars_with_probs_country_{ds}.png"
         plt.tight_layout(); plt.savefig(fname,dpi=150); plt.close(fig2)
         logging.info(f"Saved bar-glyph map to {fname}")
         # Zoomed Regions
@@ -185,7 +197,10 @@ def make_maps(summary, date):
             axR.set_xlim(lon_min_r-3, lon_max_r+3)
             axR.set_ylim(lat_min_r-3, lat_max_r+3)
             axR.axis('off'); plt.tight_layout()
-            fname = output_dir / f"map_bars_with_probs_{name}_{ds}.png"
+            if mok:
+                fname = output_dir / f"map_bars_with_probs_{name}_{ds}_mok.png"
+            else:
+                fname = output_dir / f"map_bars_with_probs_{name}_{ds}.png"
             plt.savefig(fname,dpi=150); plt.close(figR)
             logging.info(f"Saved zoomed region map to {fname}")
 
@@ -224,7 +239,10 @@ def make_maps(summary, date):
             plt.setp(ax.get_xticklabels(), rotation=45, ha='right'); fig.tight_layout()
             individual_bar_plots_dir = output_dir / "individual_bar_plots"
             os.makedirs(individual_bar_plots_dir, exist_ok=True)
-            fname= individual_bar_plots_dir / f"bar_{r['lat']:.1f}_{r['lon']:.1f}_{ds}.png"
+            if mok:
+                fname = individual_bar_plots_dir / f"bar_{r['lat']:.1f}_{r['lon']:.1f}_{ds}_mok.png"
+            else:
+                fname= individual_bar_plots_dir / f"bar_{r['lat']:.1f}_{r['lon']:.1f}_{ds}.png"
             plt.savefig(fname,dpi=150); plt.close(fig)
             logging.info(f"Saved individual bar plot to {fname}")
     logging.info(f"Maps and bar plots saved under {output_dir}")

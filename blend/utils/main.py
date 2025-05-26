@@ -33,18 +33,24 @@ def parse_date(date_str):
             f"Invalid date format: {date_str}. Expected format 'YYYYMMDDTHH'."
         ) from e
 
-def get_data(date, base):
+def get_data(date, base, mok=False):
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
     )
     out_path = base / "blend" / "output" / date
-    out_file = out_path / f"all_data.csv"
     # copies of each of these files are in the py folder I sent Adam
     support_dir = base / "blend" / "data" / "support"
     thresholds_file = support_dir / "thresholds_df.csv"
     clusters_file = support_dir / "onset_clusters.csv"
     mat_file = support_dir / "onset_five_day_thres_2deg.mat"
-    clim_file = support_dir / "large" / "ensemble_outputs_clim_2025.csv"
+    if mok:
+        logging.info("Using MOK configuration")
+        out_file = out_path / f"all_data_mok.csv"
+        # For MOK, use the large ensemble outputs
+        clim_file = support_dir / "large" / "ensemble_outputs_clim_2025_mok.csv"
+    else:
+        out_file = out_path / f"all_data.csv"
+        clim_file = support_dir / "large" / "ensemble_outputs_clim_2025.csv"
     allowed_cells_file = support_dir / "allowed_cells.csv"
 
     AIFS_date = parse_date(date) - timedelta(hours=12)
@@ -293,6 +299,17 @@ def main():
         logging.info("Creating maps")
         make_maps(summary, date)
         logging.info(f"Maps created for {date}")
+
+        ## MOK routine
+        logging.info("Running MOK routine")
+        logging.info("Processing MOK data")
+        out_path, final_mok = get_data(date, base, mok=True)
+        logging.info("Blending MOK data")
+        summary_mok, summary_p_mok = blend(final_mok, date, mok=True)
+        logging.info("Making MOK maps")
+        make_maps(summary_mok, date, mok=True)
+        logging.info("Exiting MOK routine")
+
         logging.info("Plotting precipitation")
         plot_precip(date)
         logging.info(f"Precipitation plots created for {date}")
