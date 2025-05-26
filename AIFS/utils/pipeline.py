@@ -31,7 +31,8 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250511T12" # Uncomment for testing a specific date
+    # DATE_F = "20250522T12"
+    # DATE_F = "20250523T00" # Uncomment for testing a specific date
 
     if DATE_F:
         hour = DATE_F.split("T")[-1]

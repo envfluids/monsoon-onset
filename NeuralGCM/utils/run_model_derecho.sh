@@ -7,7 +7,10 @@
 
 # source /home/marchakitus/.bashrc
 
-ml unload cuda
+hostname -f
+
+# ml unload cuda
+ml cuda
 ml conda
 ml cdo
 ml ncl

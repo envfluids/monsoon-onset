@@ -175,6 +175,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, help="Year to forecast")
     parser.add_argument("--mpi", type=int, help="MPI rank")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
     args = parser.parse_args()
     logging.info(f"MPI Rank{args.mpi}")
     mpi = args.mpi
@@ -194,6 +195,11 @@ def main():
             os.makedirs(output_path + f"/{date_f}", exist_ok=True)
 
         all_members = np.arange(1, N_MEMBERS + 1)
+        if args.seed is not None:
+            logging.info(f"Using seed: {args.seed}")
+            all_members = all_members + (args.seed * N_MEMBERS)
+        else:
+            logging.info("No seed provided, using default members")
         members = np.array_split(all_members, 4)[mpi]
         run_model(date, date_f, forcings_clim, members)
     else:
@@ -206,6 +212,11 @@ def main():
             os.makedirs(output_path + f"/{date_f}", exist_ok=True)
 
         all_members = np.arange(1, N_MEMBERS + 1)
+        if args.seed is not None:
+            logging.info(f"Using seed: {args.seed}")
+            all_members = all_members + (args.seed * N_MEMBERS)
+        else:
+            logging.info("No seed provided, using default members")
         # members = np.array_split(all_members, 4)[mpi]
         run_model(date, date_f, forcings_clim, all_members)
 
