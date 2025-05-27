@@ -150,7 +150,7 @@ def make_maps(summary, date, mok=False):
         fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
         ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max); ax2.axis('off')
         if mok:
-            fname = output_dir / f"map_bars_with_probs_country_{ds}_mok.png"
+            fname = output_dir / f"mok_map_bars_with_probs_country_{ds}.png"
         else:
             fname = output_dir / f"map_bars_with_probs_country_{ds}.png"
         plt.tight_layout(); plt.savefig(fname,dpi=150); plt.close(fig2)
