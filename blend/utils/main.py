@@ -95,8 +95,8 @@ def get_data(date, base, mok=False):
         on=["time", "day", "lat", "lon"],
         how="inner",
     )
-    intermediate_merged_out = out_path / "intermediate_merged_DIAGNOSTIC.csv"
-    merged.to_csv(intermediate_merged_out, index=False)
+    # intermediate_merged_out = out_path / "intermediate_merged_DIAGNOSTIC.csv"
+    # merged.to_csv(intermediate_merged_out, index=False)
     # read in climatology data
     clim_wide = clim.pivot_table(
         index=["time", "day", "lat", "lon"], columns="model", values="predicted_prob"
