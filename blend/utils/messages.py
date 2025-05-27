@@ -9,19 +9,6 @@ logging.basicConfig(
 )
 
 
-def pick_template_name(first, second, ivrs):
-    if ivrs == False:
-        if first=='week1' or second=='week1':
-            return "Late Season 3"
-        if first=='later' or second=='later':
-            return "Early Season 1"
-        return "Late Season 1"
-    if first=='week1' or second=='week1':
-        return "Late Season 3 (IVRS)"
-    if first=='later' or second=='later':
-        return "Early Season 1 (IVRS)"
-    return "Late Season 1 (IVRS)"
-
 def round_5(x):
     return round(x * 20) / 20
 
@@ -75,13 +62,17 @@ def generate_messages(base, out_path, onset_times):
     LS3_raw   = pd.read_excel(xlsx_path, sheet_name='LS3', engine='openpyxl', header=None)
     ES1_raw   = pd.read_excel(xlsx_path, sheet_name='ES1', engine='openpyxl', header=None)
 
+    ES2_raw     = pd.read_excel(xlsx_path, sheet_name='ES2', engine='openpyxl', header=None)
+    LS2_raw     = pd.read_excel(xlsx_path, sheet_name='LS2', engine='openpyxl', header=None)
+    LS4_raw     = pd.read_excel(xlsx_path, sheet_name='LS4', engine='openpyxl', header=None)
+
     LS1_ivrs  = pd.read_excel(xlsx_path, sheet_name='LS1_IVRS', engine='openpyxl', header=None)
     LS3_ivrs  = pd.read_excel(xlsx_path, sheet_name='LS3_IVRS', engine='openpyxl', header=None)
     ES1_ivrs  = pd.read_excel(xlsx_path, sheet_name='ES1_IVRS', engine='openpyxl', header=None)
 
     # Supported language columns
     #These need to match the languages in master_translation_sheet.xlsx"
-    languages = ['Eng','Hin', 'Kan', 'Mar', 'Odi','Pun','Ben','Tel', 'Odi_ivrs']
+    languages = ['Eng','Hin', 'Kan', 'Mar', 'Odi','Pun','Ben','Tel', 'Odi_ivrs', 'Eng_ivrs']
 
     # Map months_df rows to month numbers (May=5 … August=8)
     month_nums = [5, 6, 7, 8]
@@ -93,21 +84,56 @@ def generate_messages(base, out_path, onset_times):
     high_conf_1     = 0.65  # threshold to return a single week instead of two weeks
     high_conf_later = 0.65  # threshold to return "later" instead of "week 4 + later" 
 
-    # Qualitative bins: (percent cutoff, qual_df row index)
-    qual_bins = [(15,0), (35,1), (65,2), (85,3), (100,4)]
+    short_msg_cutoff = 1
 
-    def pick_template(first, second, ivrs):
-        if ivrs == False:
+    # Qualitative bins: (percent cutoff, qual_df row index)
+    qual_bins = [(14,0), (34,1), (65,2), (85,3), (100,4)]
+
+    def pick_template(first, second, ivrs, use_set2=False):
+        if ivrs:
+            if use_set2:
+                if first=='week1' or second=='week1':
+                    return LS3_ivrs
+                if first=='later' or second=='later':
+                    return ES1_ivrs
+                return LS1_ivrs
+            else:
+                if first=='week1' or second=='week1':
+                    return LS3_ivrs
+                if first=='later' or second=='later':
+                    return ES1_ivrs
+                return LS1_ivrs
+        else:
+            if use_set2:
+                if first=='week1' or second=='week1':
+                    return LS4_raw
+                if first=='later' or second=='later':
+                    return ES2_raw
+                return LS2_raw
+            else:
+                if first=='week1' or second=='week1':
+                    return LS3_raw
+                if first=='later' or second=='later':
+                    return ES1_raw
+                return LS1_raw
+
+    def pick_template_name(first, second, ivrs, use_set2=False):
+        base = ""
+        if ivrs:
+            base = "(IVR)"
+            use_set2 = False
+        if use_set2:
             if first=='week1' or second=='week1':
-                return LS3_raw
+                return f"Late Season 4 {base}".strip()
             if first=='later' or second=='later':
-                return ES1_raw
-            return LS1_raw
-        if first=='week1' or second=='week1':
-            return LS3_ivrs
-        if first=='later' or second=='later':
-            return ES1_ivrs
-        return LS1_ivrs
+                return f"Early Season 2 {base}".strip()
+            return f"Late Season 2 {base}".strip()
+        else:
+            if first=='week1' or second=='week1':
+                return f"Late Season 3 {base}".strip()
+            if first=='later' or second=='later':
+                return f"Early Season 1 {base}".strip()
+            return f"Late Season 1 {base}".strip()
 
     def get_qualifier(pct, col):
         for threshold, idx in qual_bins:
@@ -310,8 +336,18 @@ def generate_messages(base, out_path, onset_times):
     
         # Generate messages for each language
         # Restructured this to use a template instead of hardcoding languages (there are 9 languages)
+
+        highest_bin = max(
+            rounded_before or 0,
+            rounded_mid    or 0,
+            rounded_after  or 0
+        )
+        use_set2 = (highest_bin <= short_msg_cutoff)
         for lang in languages:
-            ivrs = (lang == 'Odi_ivrs')
+            # print(lang)
+            ivrs = lang in ('Odi_ivrs', 'Eng_ivrs')      
+            lang_ivrs = {'Odi_ivrs': 'Odi',              
+                'Eng_ivrs': 'Eng'}.get(lang)
             if flag_val in ['NM', 'PM1', 'PM2']:
                 sheet = flag_val + ('_IVRS' if ivrs else '')
                 tmpl  = pd.read_excel(xlsx_path, sheet_name=sheet, engine='openpyxl', header=None)
@@ -323,9 +359,9 @@ def generate_messages(base, out_path, onset_times):
                     tmpl_name = 'Promotional Message 2'
 
             else:
-                tmpl  = pick_template(first_week, second_week, ivrs)
-                tmpl_name = pick_template_name(first_week, second_week, ivrs)
-            lookup_lang = 'Odi' if ivrs else lang 
+                tmpl  = pick_template(first_week, second_week, ivrs, use_set2)
+                tmpl_name = pick_template_name(first_week, second_week, ivrs, use_set2)
+            lookup_lang = lang_ivrs if ivrs else lang
 
 
             cols = [str(x).strip().lower() for x in tmpl.iloc[0]]
@@ -353,21 +389,20 @@ def generate_messages(base, out_path, onset_times):
                 continue
 
             # Compute percent values
-            # Note qualitative tags are not appropriate for "before" in LS3 or "after" in ES1
             pct_mid    = int(round(rounded_mid   *100))
             if percent_before is not None:
                 pct_before = int(round(rounded_before*100))
-                q1 = get_qualifier(percent_before*100, mon_col) # Qualitative tags for before
+                q1 = get_qualifier(rounded_before*100, mon_col) # Qualitative tags for before
             else:
                 pct_before = None
             if rounded_after is not None: 
                 pct_after  = int(round(rounded_after *100))
-                q2 = get_qualifier(percent_after *100, mon_col) # Qualitative tags for after
+                q2 = get_qualifier(rounded_after *100, mon_col) # Qualitative tags for after
             else:
                 pct_after = None
     
 
-            if tmpl is LS1_raw or tmpl is LS1_ivrs: #3 periods
+            if tmpl is LS1_raw or tmpl is LS1_ivrs or tmpl is LS2_raw: #3 periods
                 msg = (template
                     .replace('<SMS Date>', sms_day)
                     .replace('<SMS Month>', sms_mon)
@@ -381,7 +416,7 @@ def generate_messages(base, out_path, onset_times):
                     .replace('<qual 1>', q1)
                     .replace('<qual 2>', q2)
                 )
-            elif tmpl is LS3_raw or tmpl is LS3_ivrs: #2 periods (selected period contains week1)
+            elif tmpl is LS3_raw or tmpl is LS3_ivrs or tmpl is LS4_raw: #2 periods (selected period contains week1)
                 #combined_before = percent_before + percent_mid
                 #pct_comb = int(round(percent_mid*100))
                 msg = (template
@@ -391,8 +426,8 @@ def generate_messages(base, out_path, onset_times):
                     .replace('<Month B>', months_df.loc[months_df['month_num']==date2.month, mon_col].values[0])
                     .replace('XX', str(pct_mid))
                     .replace('YY', str(pct_after))
-                    .replace('<qual 1>',     get_qualifier(percent_mid * 100, mon_col))
-                    .replace('<qual 2>',     get_qualifier(percent_after * 100, mon_col))
+                    .replace('<qual 1>',     get_qualifier(rounded_mid * 100, mon_col))
+                    .replace('<qual 2>',     get_qualifier(rounded_after * 100, mon_col))
                 
                 )
             else:  # ES1_raw, 2 periods (selected period contains "later")
@@ -403,8 +438,8 @@ def generate_messages(base, out_path, onset_times):
                     .replace('<Month B>', months_df.loc[months_df['month_num']==date1.month, mon_col].values[0])
                     .replace('XX', str(pct_mid))
                     .replace('YY', str(pct_before))
-                    .replace('<qual 1>',     get_qualifier(percent_mid * 100, mon_col))
-                    .replace('<qual 2>',     get_qualifier(percent_before * 100, mon_col))
+                    .replace('<qual 1>',     get_qualifier(rounded_mid * 100, mon_col))
+                    .replace('<qual 2>',     get_qualifier(rounded_before * 100, mon_col))
                 )
 
             messages.append({'lon': lon, 'lat': lat, 'language': lang,'message_template' : tmpl_name, 'forecast_message': msg})
@@ -496,5 +531,25 @@ def generate_messages(base, out_path, onset_times):
         index=False,
         engine='openpyxl'
     )
+
+    ##############################
+    #English IVRS CSV 
+    ##############################
+    eng_ivrs_msgs = [m for m in messages if m['language']=='Eng_ivrs']
+    eng_ivrs_df   = pd.DataFrame(eng_ivrs_msgs)
+
+    eng_ivrs_out = grid_odisha.merge(
+        eng_ivrs_df[['lon','lat', 'message_template', 'forecast_message']],
+        on=['lon','lat'],
+        how='inner'
+    )
+    eng_ivrs_out_path = out_path / "message_templates_output_odi_eng_ivrs.xlsx"
+    eng_ivrs_out.to_excel(
+        eng_ivrs_out_path,
+        index=False,
+        engine='openpyxl'
+    )
+
+
 
     return eng_out

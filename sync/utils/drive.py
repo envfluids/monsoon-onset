@@ -9,6 +9,7 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 import logging
 import argparse
+import json
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
 
@@ -686,13 +687,20 @@ def main():
     )
     args = parser.parse_args()
     sync_dates = args.date
-    logging.info(f"Syncing for dates: {sync_dates}")
-    sync_cluster = "midway"  # Or get dynamically
+
+    base = Path(__file__).resolve().parent.parent.parent
+    config_file = base / ".config" / "config.json"
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    cluster = config["cluster"]
+    logging.info(f"Cluster: {cluster}")
+
+    logging.info(f"Syncing for dates: {sync_dates}")    
     for sync_date in sync_dates:
         # Call the drive_sync function with the provided date and cluster
-        logging.info(f"Syncing for date: {sync_date}, cluster: {sync_cluster}")
+        logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
         # Call the drive_sync function with the provided date and cluster
-        drive_sync(date=sync_date, cluster=sync_cluster)
+        drive_sync(date=sync_date, cluster=cluster)
     # IMERG_sync_date = "20250507" # Or get dynamically, e.g., from command line args
     # IMERG_sync_cluster = "midway"   # Or get dynamically
     # drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
