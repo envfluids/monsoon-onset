@@ -33,11 +33,14 @@ def parse_date(date_str):
             f"Invalid date format: {date_str}. Expected format 'YYYYMMDDTHH'."
         ) from e
 
-def get_data(date, base, mok=False):
+def get_data(date, base, mok=False, source=None):
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
     )
-    out_path = base / "blend" / "output" / date
+    if source == "google":
+        out_path = base / "blend" / "output_google" / date
+    else:
+        out_path = base / "blend" / "output" / date
     # copies of each of these files are in the py folder I sent Adam
     support_dir = base / "blend" / "data" / "support"
     thresholds_file = support_dir / "thresholds_df.csv"
@@ -59,7 +62,10 @@ def get_data(date, base, mok=False):
     logging.info(f"Using AIFS file: {aifs_tp_file} for base date: {date}")
 
     # aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
-    ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
+    if source == "google":
+        ngcm_precip_file = base / "NeuralGCM_google" / "output" / "tp" / f"tp_{date}.nc"
+    else:
+        ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
     logging.info(f"Using NGCM file: {ngcm_precip_file} for base date: {date}")
 
     if aifs_tp_file.exists() and ngcm_precip_file.exists():
@@ -279,17 +285,23 @@ def main():
         type=str,
         help="Date for the inference in YYYYMMDDTHH format",
     )
+    parser.add_argument(
+        "--source",
+        type=str,
+        help="Data source to use. eg: 'google'. Default is 'None'.",
+    )
     args = parser.parse_args()
     date = args.date
     base = Path(__file__).resolve().parent.parent.parent
     sync_path = base / "sync" / "latest"
-    out_path, final = get_data(date, base)
+    source = args.source if args.source else None
+    out_path, final = get_data(date, base, source=source)
     if final is None:
         logging.error("No data to process")
         return
     else:
         logging.info("Initializing blend")
-        summary, summary_p = blend(final, date)
+        summary, summary_p = blend(final, out_path)
         logging.info(f"Blending completed for {date}")
         logging.info("Generating messages")
         messages = generate_messages(base, out_path, summary)
@@ -297,27 +309,30 @@ def main():
         logging.info("Attempting to prepare files for Zenodo")
         write_public(summary_p, messages, out_path, parse_date(date))
         logging.info("Creating maps")
-        make_maps(summary, date)
+        make_maps(summary, out_path)
         logging.info(f"Maps created for {date}")
 
         ## MOK routine
         logging.info("Running MOK routine")
         logging.info("Processing MOK data")
-        out_path, final_mok = get_data(date, base, mok=True)
+        out_path, final_mok = get_data(date, base, mok=True, source=source)
         logging.info("Blending MOK data")
-        summary_mok, summary_p_mok = blend(final_mok, date, mok=True)
+        summary_mok, summary_p_mok = blend(final_mok, out_path, mok=True)
         logging.info("Making MOK maps")
-        make_maps(summary_mok, date, mok=True)
+        make_maps(summary_mok, out_path, mok=True)
         logging.info("Exiting MOK routine")
 
         logging.info("Plotting precipitation")
         plot_precip(date)
         logging.info(f"Precipitation plots created for {date}")
-        logging.info("Plotting circulation")
-        plot_circulation(base, date)
-        logging.info(f"Circulation plots created for {date}")
-        copy_to_latest(out_path, sync_path)
-        logging.info(f"FINAL: COMPUTE PIPELINE COMPLETE FOR {date}")
+        if source == "google":
+            logging.info(f"FINAL: GOOGLE COMPUTE PIPELINE COMPLETE FOR {date}")
+        else:
+            logging.info("Plotting circulation")
+            plot_circulation(base, date)
+            logging.info(f"Circulation plots created for {date}")
+            copy_to_latest(out_path, sync_path)
+            logging.info(f"FINAL: COMPUTE PIPELINE COMPLETE FOR {date}")
 
 if __name__ == "__main__":
     main()

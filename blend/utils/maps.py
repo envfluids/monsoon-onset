@@ -18,7 +18,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
 )
 
-def make_maps(summary, date, mok=False):
+def make_maps(summary, output_path, mok=False):
     base = Path(__file__).resolve().parent.parent
     india_shapefile = base / "data" / "india_shapefile" / "India_Country_Boundary.shp"
     india_gdf = gpd.read_file(india_shapefile).to_crs("EPSG:4326")
@@ -26,9 +26,9 @@ def make_maps(summary, date, mok=False):
     # 0) Ensure output folder exists
     # ------------------------------------------------------------------------------
     if mok:
-        output_dir = base / "output" / date / "maps_mok"
+        output_dir = output_path / "maps_mok"
     else:
-        output_dir = base / "output" / date / "maps"
+        output_dir = output_path / "maps"
     os.makedirs(output_dir, exist_ok=True)
 
     # ------------------------------------------------------------------------------

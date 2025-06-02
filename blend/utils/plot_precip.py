@@ -124,7 +124,7 @@ def NGCM_Prob_Calc_first(df_ngcm, lat, lon, df):
     df_melted["row"] = df_melted["Date_Init"].map(time_to_row)
     return df_melted
 
-def plot_precip(date):
+def plot_precip(date, source=None):
     base = Path(__file__).resolve().parent.parent.parent
     onsets_2024_path = base / "blend" / "data" / "support" / "onsets_2024.csv"
     df_onset_dates = pd.read_csv(onsets_2024_path)
@@ -133,15 +133,15 @@ def plot_precip(date):
 
     
     aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
-    ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
+    if source == "google":
+        ngcm_precip_file = base / "NeuralGCM_google" / "output" / "tp" / f"tp_{date}.nc"
+        path_out = base / "blend" / "output_google" / date / "precip_plots" 
+    else:
+        ngcm_precip_file = base / "NeuralGCM" / "output" / "tp" / f"tp_{date}.nc"
+        path_out = base / "blend" / "output" / date / "precip_plots" 
 
     df_ngcm = xr.open_dataset(ngcm_precip_file)
     df_AIFS = xr.open_dataset(aifs_tp_file)
-
-    # Final Ensemble Plots
-    # dateF = "20250427"
-
-    path_out = base / "blend" / "output" / date / "precip_plots" 
 
     if not os.path.exists(path_out):
         os.makedirs(path_out)

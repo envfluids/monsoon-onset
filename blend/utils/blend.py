@@ -14,7 +14,7 @@ def write_public(df, coef_orig):
     # note = ("The numbers represent the forecasted probabilities of monsoon onset in each interval after the onset date. All probabilities rounded to 4 digits after the decimal point. For more details see [link]")
     return df
 
-def blend(df_raw, date, mok=False):
+def blend(df_raw, output_dir, mok=False):
     base = Path(__file__).resolve().parent.parent
 
     if mok:
@@ -28,7 +28,7 @@ def blend(df_raw, date, mok=False):
         coef_clim_file = base / "data" / "coefs" / "multinom_coefs_full_clim.csv"
         clim_file_out = "blend_output_with_clim.csv"
         summary_file_out = "blend_output_summary.csv"
-    output_dir = base / "output" / date
+
     # processed_data_file = "/scratch/midway3/marchakitus/monsoon-onset/blend/utils/intermediate/all_data.csv"
     # ------------------------------------------------------------------------------
     # 1) load raw data + both coefficient matrices
