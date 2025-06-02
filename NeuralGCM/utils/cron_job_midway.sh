@@ -5,8 +5,18 @@ cd /project/pedramh/monsoon/monsoon-onset/NeuralGCM/utils
 source /home/marchakitus/.bashrc
 
 conda activate /home/marchakitus/.conda/envs/neuralgcm
-timeout 29m python ./pipeline.py
+timeout 15m python ./pipeline.py
 
 if [ $? -eq 124 ]; then
-  echo "ERROR Job timed out after 29 minutes."
+  echo "ERROR NeuralGCM Job timed out after 29 minutes."
+fi
+
+cd /project/pedramh/monsoon/monsoon-onset/NeuralGCM_google/utils
+
+conda deactivate
+conda activate /project/pedramh/monsoon/conda-envs/monsoon
+timeout 15m python ./pipeline.py
+
+if [ $? -eq 124 ]; then
+  echo "ERROR NeuralGCM-Google Job timed out after 29 minutes."
 fi
