@@ -77,7 +77,8 @@ def process_data(base, date):
 
     output_ds = xr.open_dataset(regrid_output_path)
     processed = post_process_tp(output_ds, ds_time)
-    processed.to_netcdf("/project/pedramh/monsoon/monsoon-onset/NeuralGCM_google/output/tp/tp_20250602T12.nc")
+    final_output_path = output_path / f"tp_{date}.nc"
+    processed.to_netcdf(final_output_path)
 
     os.remove(regrid_input_path)
     os.remove(regrid_output_path)

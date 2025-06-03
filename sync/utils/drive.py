@@ -419,6 +419,13 @@ def drive_sync(date, cluster):  # Added cluster parameter with default
         "blend": blend_date_dir_local_path
     }
 
+    blend_google_output_path = base / "blend" / "output_google"
+    blend_google_date_dir_local_path = blend_google_output_path / date
+    BLEND_GOOGLE_DIR_TO_UPLOAD = {
+        # Key is the target folder name in Drive under the date folder
+        "blend_google": blend_google_date_dir_local_path
+    }
+
     logging.info("Starting Google Drive authentication process...")
     drive_service = authenticate()
 
@@ -509,6 +516,35 @@ def drive_sync(date, cluster):  # Added cluster parameter with default
                 else:
                     logging.error(
                         f"ERROR: Could not create/find folder '{blend_target_folder_name}', skipping blend upload."
+                    )
+                
+                # 6. Upload blend-google directory contents
+                logging.info("Processing blend-google directory...")
+                blend_google_target_folder_name = list(BLEND_GOOGLE_DIR_TO_UPLOAD.keys())[0]
+                blend_google_local_source_dir = BLEND_GOOGLE_DIR_TO_UPLOAD[blend_google_target_folder_name]
+                logging.info(
+                    f"Ensuring Drive folder '{blend_google_target_folder_name}' exists..."
+                )
+                blend_google_drive_folder_id = get_or_create_folder_id(
+                    drive_service, blend_google_target_folder_name, date_folder_id
+                )
+
+                if blend_google_drive_folder_id:
+                    if blend_google_local_source_dir.is_dir():
+                        logging.info(
+                            f"Uploading contents of '{blend_google_local_source_dir}' to Drive folder ID: {blend_google_drive_folder_id}"
+                        )
+                        # Pass the starting local path and the target Drive folder ID
+                        upload_directory_recursive(
+                            drive_service, blend_google_local_source_dir, blend_google_drive_folder_id
+                        )
+                    else:
+                        logging.error(
+                            f"ERROR: Local blend directory '{blend_google_local_source_dir}' not found or is not a directory. Skipping blend upload."
+                        )
+                else:
+                    logging.error(
+                        f"ERROR: Could not create/find folder '{blend_google_target_folder_name}', skipping blend upload."
                     )
 
                 logging.info("Sync process finished.")

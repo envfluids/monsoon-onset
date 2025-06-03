@@ -30,7 +30,7 @@ def get_cluster():
 
 def main():
     DATE_F = get_forecast()
-    # DATE_F = "20250602T12" # Uncomment for testing a specific date
+    # DATE_F = "20250603T00" # Uncomment for testing a specific date
 
     if DATE_F:
         hour = DATE_F.split("T")[-1]

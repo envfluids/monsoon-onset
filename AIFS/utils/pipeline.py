@@ -132,6 +132,25 @@ def main():
             else:
                 logging.error(f"Ultimately failed to submit job {JOB_NAME} to {cluster} after {MAX_RETRIES} attempts.")
 
+            if cluster == "midway":
+                logging.info(
+                    "Attempting to run the model using the cloud resources"
+                )
+                command = (
+                    f"cd /project/pedramh/monsoon/cloud && "
+                    f"python paperspace.py"
+                )
+                try:
+                    cloud_p = subprocess.run(command, shell=True, check=True)
+                    logging.info("Model run pipeline completed successfully.")
+                    cloud_p_output = cloud_p.stdout.strip()
+                    cloud_p_error = cloud_p.stderr.strip()
+                    logging.info(f"Cloud output: {cloud_p_output}")
+                    if cloud_p_error:
+                        logging.warning(f"Cloud stderr: {cloud_p_error}")
+                except subprocess.CalledProcessError as e:
+                    logging.error(f"Failed to run model on cloud: {e}")
+
         else:
             logging.info(f"New data available for {DATE_F}, but hour {hour} is not in allowed hours: {ALLOWED_HOURS}")
             logging.info("Exiting model run pipeline for this cycle.")
