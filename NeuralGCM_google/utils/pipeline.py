@@ -49,10 +49,6 @@ def main():
                     f"{SCRIPT_BASE}_{cluster}.sh"
                 )
             elif cluster == "derecho":
-                raise NotImplementedError(
-                    "Derecho cluster is not yet supported for this script. Please use Midway."
-                )
-                return
                 command = (
                     f"qsub "
                     f"-N {JOB_NAME} "
