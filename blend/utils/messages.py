@@ -84,7 +84,7 @@ def generate_messages(base, out_path, onset_times):
     high_conf_1     = 0.65  # threshold to return a single week instead of two weeks
     high_conf_later = 0.65  # threshold to return "later" instead of "week 4 + later" 
 
-    short_msg_cutoff = 1
+    short_msg_cutoff = .51 #cutoff to use "short" messages instead of long
 
     # Qualitative bins: (percent cutoff, qual_df row index)
     qual_bins = [(14,0), (34,1), (65,2), (85,3), (100,4)]
@@ -109,7 +109,8 @@ def generate_messages(base, out_path, onset_times):
                     return LS4_raw
                 if first=='later' or second=='later':
                     return ES2_raw
-                return LS2_raw
+                #return LS2_raw
+                return LS1_raw
             else:
                 if first=='week1' or second=='week1':
                     return LS3_raw
@@ -127,7 +128,8 @@ def generate_messages(base, out_path, onset_times):
                 return f"Late Season 4 {base}".strip()
             if first=='later' or second=='later':
                 return f"Early Season 2 {base}".strip()
-            return f"Late Season 2 {base}".strip()
+            #return f"Late Season 2 {base}".strip()
+            return f"Late Season 1 {base}".strip()
         else:
             if first=='week1' or second=='week1':
                 return f"Late Season 3 {base}".strip()
@@ -342,7 +344,7 @@ def generate_messages(base, out_path, onset_times):
             rounded_mid    or 0,
             rounded_after  or 0
         )
-        use_set2 = (highest_bin <= short_msg_cutoff)
+        use_set2 = (highest_bin >= short_msg_cutoff)
         for lang in languages:
             # print(lang)
             ivrs = lang in ('Odi_ivrs', 'Eng_ivrs')      
@@ -549,7 +551,5 @@ def generate_messages(base, out_path, onset_times):
         index=False,
         engine='openpyxl'
     )
-
-
 
     return eng_out

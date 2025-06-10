@@ -3,6 +3,8 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 from matplotlib.patches import Rectangle, Patch
 from matplotlib.colors import (
     TwoSlopeNorm,
@@ -22,6 +24,15 @@ def make_maps(summary, output_path, mok=False):
     base = Path(__file__).resolve().parent.parent
     india_shapefile = base / "data" / "india_shapefile" / "India_Country_Boundary.shp"
     india_gdf = gpd.read_file(india_shapefile).to_crs("EPSG:4326")
+
+    all_cells_file = base / "data" / "support" / "all_cells.csv"
+    all_cells = pd.read_csv(all_cells_file)
+
+    exclude_cells_file = base / "data" / "support" / "exclude_cells.csv"
+    df_exclude = pd.read_csv(exclude_cells_file, dtype={'lon': np.uint8, 'lat': np.uint8, 'flag': str})
+    exclude_set = set(df_exclude.loc[df_exclude['flag']=='exclude', ['lon','lat']].itertuples(index=False, name=None))
+    logging.info(f"Excluding {exclude_set} cells from the map generation.")
+
     # ------------------------------------------------------------------------------
     # 0) Ensure output folder exists
     # ------------------------------------------------------------------------------
@@ -36,6 +47,7 @@ def make_maps(summary, output_path, mok=False):
     # ------------------------------------------------------------------------------
     # summary = pd.read_csv("blend_output_summary.csv", parse_dates=["time"])
     preds_df = summary.copy()
+    preds_df = preds_df[~preds_df.set_index(['lon', 'lat']).index.isin(exclude_set)]
 
     # SECTION: Forecast & Climatology Fields ------
     for i in range(1,5):
@@ -68,6 +80,13 @@ def make_maps(summary, output_path, mok=False):
         fig, axes = plt.subplots(1,4,figsize=(18,5), sharex=True, sharey=True, gridspec_kw={'wspace':0.03})
         for i, ax in enumerate(axes, 1):
             india_gdf.boundary.plot(ax=ax, linewidth=0.5, edgecolor='black')
+            cells_present = set(zip(grp['lat'], grp['lon']))
+            for _, ac in all_cells.iterrows():
+                if (ac['lat'], ac['lon']) not in cells_present:
+                    lon0, lat0 = ac['lon'] - 1, ac['lat'] - 1
+                    ax.add_patch(Rectangle((lon0, lat0), 2, 2,
+                                        facecolor=period_colors['none'],
+                                        edgecolor='none', zorder=2))
             for _, r in grp.iterrows():
                 v = r[f'Forecast_p_{i}']
                 if pd.isna(v): continue
@@ -83,7 +102,9 @@ def make_maps(summary, output_path, mok=False):
                     continue
                 ax.add_patch(Rectangle((lon0, lat0), w, h, fill=False, edgecolor=ec, linewidth=lw, zorder=zo))
             ax.set_title(week_titles[i], fontsize=10, pad=6)
-            ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max); ax.axis('off')
+            ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
+            ax.set_xlabel('Longitude')
+            ax.set_ylabel('Latitude')
         sm = plt.cm.ScalarMappable(norm=prob_norm, cmap=prob_cmap)
         sm.set_array([])
         cbar = fig.colorbar(sm, ax=list(axes), orientation='horizontal', fraction=0.04, pad=0.08)
@@ -114,6 +135,13 @@ def make_maps(summary, output_path, mok=False):
         # Max-period
         fig, ax = plt.subplots(figsize=(6,6))
         india_gdf.boundary.plot(ax=ax, linewidth=0.5, edgecolor='black')
+        cells_present = set(zip(grp['lat'], grp['lon']))
+        for _, ac in all_cells.iterrows():
+                if (ac['lat'], ac['lon']) not in cells_present:
+                    lon0, lat0 = ac['lon'] - 1, ac['lat'] - 1
+                    ax.add_patch(Rectangle((lon0, lat0), 2, 2,
+                                    facecolor=period_colors['none'],
+                                    edgecolor='black', linewidth=0.5, zorder=10))
         for _, r in grp.iterrows():
             vf=[r[f'Forecast_p_{i}'] for i in range(1,5)]+[r['Forecast_p_later']]
             if any(pd.isna(vf)): continue
@@ -121,9 +149,11 @@ def make_maps(summary, output_path, mok=False):
             lon0,lat0, w,h = r['lon_min'], r['lat_min'], r['lon_max']-r['lon_min'], r['lat_max']-r['lat_min']
             ax.add_patch(Rectangle((lon0,lat0), w,h, facecolor=period_colors[cf], edgecolor='black', linewidth=0.5, zorder=2))
         handles=[Patch(facecolor=period_colors[k], edgecolor='black', label=f"{(t+timedelta(days=pdays[k][0])).strftime('%m/%d/%Y')}{(' - '+(t+timedelta(days=pdays[k][1])).strftime('%m/%d/%Y')) if pdays[k][1] else '+'}") for k in period_order]
-        handles.append(Patch(facecolor=period_colors['none'], edgecolor='black', label='Uncertain'))
-        fig.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
-        ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max); ax.axis('off')
+        handles.append(Patch(facecolor=period_colors['none'], edgecolor='black', label='Onset already declared by IMD'))
+        fig.legend(handles=handles, title='Period with max probability of onset', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, columnspacing=0.5, fontsize=9)
+        ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude')
         if mok:
             fname = output_dir / f"map_max_period_{ds}_mok.png"
         else:
@@ -133,6 +163,12 @@ def make_maps(summary, output_path, mok=False):
         # Bar-glyph
         fig2, ax2 = plt.subplots(figsize=(6,6))
         india_gdf.boundary.plot(ax=ax2, linewidth=0.5, edgecolor='black')
+        for _, ac in all_cells.iterrows():
+            if (ac['lat'], ac['lon']) not in cells_present:
+                  lon0, lat0 = ac['lon'] - 1, ac['lat'] - 1
+                  ax2.add_patch(Rectangle((lon0, lat0), 2, 2,
+                                 facecolor=period_colors['none'],
+                                 edgecolor='black', linewidth=0.5, zorder=1))
         for _, r in grp.iterrows():
             vf=[r[f'Forecast_p_{i}'] for i in range(1,5)]+[r['Forecast_p_later']]
             if any(pd.isna(vf)): continue
@@ -147,8 +183,10 @@ def make_maps(summary, output_path, mok=False):
             for pi,p in enumerate(probs):
                 bx=lon0+spacing+pi*(bw+spacing); by=lat0; bar_h=h*p
                 ax2.add_patch(Rectangle((bx,by), bw, bar_h, facecolor='black', edgecolor='black', linewidth=0.3, zorder=3))
-        fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.02,0.02), ncol=2)
-        ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max); ax2.axis('off')
+        fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, columnspacing=0.5, fontsize=9)
+        ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max)
+        ax2.set_xlabel('Longitude')
+        ax2.set_ylabel('Latitude')
         if mok:
             fname = output_dir / f"mok_map_bars_with_probs_country_{ds}.png"
         else:
