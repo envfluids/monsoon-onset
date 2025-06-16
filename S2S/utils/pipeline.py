@@ -1,4 +1,4 @@
-from download_ic import get_data
+from download_forecast import get_data
 import os
 import logging
 import json
@@ -11,7 +11,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-SCRIPT_BASE = "run_model"
+SCRIPT_BASE = "process_forecast"
 
 ALLOWED_HOURS = ["00", "12"]
 MAX_RETRIES = 5  # Max number of submission attempts
@@ -31,19 +31,24 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250522T12"
-    # DATE_F = "20250523T00" # Uncomment for testing a specific date
+    # DATE_F = "20250611T00" # Uncomment for testing a specific date
 
     if DATE_F:
         hour = DATE_F.split("T")[-1]
         if hour in ALLOWED_HOURS:
             logging.info("IC download script was successful, new data available")
+            base = Path(__file__).resolve().parent.parent
+            output_path = base / "output" / DATE_F
+            if output_path.exists():
+                logging.info(f"Output path {output_path} already exists. Exiting.")
+                return
             logging.info(f"Initializing compute job for date: {DATE_F}")
             cluster = get_cluster()
-            JOB_NAME = f"AIFS_fc_{DATE_F}"
+            JOB_NAME = f"IFSS2S{DATE_F}"
             if cluster == "midway":
-                logging.info("Midway cluster is no longer supported")
-                return 
+                raise NotImplementedError(
+                    "Midway cluster support is not implemented in this script."
+                )
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -133,25 +138,6 @@ def main():
                 logging.info(f"The job {job_id_str} to run the model has been queued on {cluster}.")
             else:
                 logging.error(f"Ultimately failed to submit job {JOB_NAME} to {cluster} after {MAX_RETRIES} attempts.")
-
-            # if cluster == "midway":
-            #     logging.info(
-            #         "Attempting to run the model using the cloud resources"
-            #     )
-            #     command = (
-            #         f"cd /project/pedramh/monsoon/cloud && "
-            #         f"python paperspace.py"
-            #     )
-            #     try:
-            #         cloud_p = subprocess.run(command, shell=True, check=True)
-            #         logging.info("Model run pipeline completed successfully.")
-            #         cloud_p_output = cloud_p.stdout.strip()
-            #         cloud_p_error = cloud_p.stderr.strip()
-            #         logging.info(f"Cloud output: {cloud_p_output}")
-            #         if cloud_p_error:
-            #             logging.warning(f"Cloud stderr: {cloud_p_error}")
-            #     except subprocess.CalledProcessError as e:
-            #         logging.error(f"Failed to run model on cloud: {e}")
 
         else:
             logging.info(f"New data available for {DATE_F}, but hour {hour} is not in allowed hours: {ALLOWED_HOURS}")

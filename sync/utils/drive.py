@@ -657,6 +657,84 @@ def drive_sync_IMERG(date, cluster):  # Added cluster parameter with default
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
 
 
+def drive_sync_S2S(date, cluster):  # Added cluster parameter with default
+    """Main function to perform the sync operation for a given date and cluster."""
+
+    # Define the base Google Drive folder path using date and cluster
+    # Example: /MO Forecast Benchmarking/operational_data/midway
+    DRIVE_CLUSTER_BASE_PATH = f"/MO Forecast Benchmarking/operational_data/{cluster}/S2S"
+
+    # Define local paths
+    try:
+        # Assumes script is like project_root/scripts/sync_script.py
+        # Adjust if your structure is different
+        script_dir = Path(__file__).resolve().parent
+        base = script_dir.parent.parent  # project_root
+    except NameError:
+        # Fallback for interactive sessions or environments where __file__ isn't set
+        logging.warning("Using current working directory's parent as project base.")
+        # This assumes you run interactively from the 'scripts' dir
+        base = Path.cwd().parent
+        if not (base / "S2S").exists():  # Basic sanity check
+            logging.warning(
+                "Base path might be incorrect. Expected S2S folder not found."
+            )
+
+    logging.info(f"Using project base path: {base}")
+    logging.info(f"Syncing for date: {date}, cluster: {cluster}")
+    logging.info(f"Target Drive path: {DRIVE_CLUSTER_BASE_PATH}/{date}")
+
+    output_path = base / "S2S" / "output"
+    date_dir_local_path = output_path / date
+    DIR_TO_UPLOAD = {
+        # Key is the target folder name in Drive under the date folder
+        "S2S": date_dir_local_path
+    }
+
+    logging.info("Starting Google Drive authentication process...")
+    drive_service = authenticate()
+
+    if drive_service:
+        logging.info("Google Drive authentication successful.")
+        logging.info(f"Starting Google Drive sync process...")
+        # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
+        cluster_base_drive_folder_id = get_folder_id_by_path(
+            drive_service, DRIVE_CLUSTER_BASE_PATH
+        )
+
+        if cluster_base_drive_folder_id:
+            # 2. Create or get the date-specific folder inside the cluster base path
+            logging.info(
+                f"Ensuring date folder '{date}' exists under '{DRIVE_CLUSTER_BASE_PATH}'..."
+            )
+            date_folder_id = get_or_create_folder_id(
+                drive_service, date, cluster_base_drive_folder_id
+            )
+
+            if date_folder_id:
+                if date_dir_local_path.is_dir():
+                    logging.info(
+                        f"Uploading contents of '{date_dir_local_path}' to Drive folder ID: {date_folder_id}"
+                    )
+                    # Pass the starting local path and the target Drive folder ID
+                    upload_directory_recursive(
+                        drive_service, date_dir_local_path, date_folder_id
+                    )
+                else:
+                    logging.error(
+                        f"ERROR: Local S2S directory '{date_dir_local_path}' not found or is not a directory. Skipping S2S upload."
+                    )
+            else:
+                logging.error(
+                    f"CRITICAL: Could not create or find the main date folder '{date}' under '{DRIVE_CLUSTER_BASE_PATH}'. Aborting."
+                )
+        else:
+            logging.error(
+                f"CRITICAL: Could not create or find the cluster base path '{DRIVE_CLUSTER_BASE_PATH}'. Aborting."
+            )
+    else:
+        logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
+
 def drive_sync_IMD(date):  # Added cluster parameter with default
     """Main function to perform the sync operation for a given date and cluster."""
 
@@ -741,6 +819,32 @@ def main():
     # IMERG_sync_cluster = "midway"   # Or get dynamically
     # drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
 
+def debug():
+    parser = argparse.ArgumentParser(
+        description="Process weather data for a given year"
+    )
+    parser.add_argument(
+        "--date", type=str, help="Dates for the upload in YYYYMMDDTHH format", nargs="+"
+    )
+    args = parser.parse_args()
+    sync_dates = args.date
+
+    base = Path(__file__).resolve().parent.parent.parent
+    config_file = base / ".config" / "config.json"
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    cluster = config["cluster"]
+    logging.info(f"Cluster: {cluster}")
+
+    logging.info(f"Syncing for dates: {sync_dates}")    
+    for sync_date in sync_dates:
+        # Call the drive_sync function with the provided date and cluster
+        logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
+        # Call the drive_sync function with the provided date and cluster
+        # drive_sync(date=sync_date, cluster=cluster)
+        drive_sync_S2S(date=sync_date, cluster=cluster)
+
 
 if __name__ == "__main__":
     main()
+    # debug()

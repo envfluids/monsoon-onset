@@ -41,6 +41,8 @@ def main():
             cluster = get_cluster()
             JOB_NAME = f"NGCM_fc_{DATE_F}"
             if cluster == "midway":
+                logging.info("Midway cluster is no longer supported")
+                return 
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "

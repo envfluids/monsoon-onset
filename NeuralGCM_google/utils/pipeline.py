@@ -40,6 +40,8 @@ def main():
             cluster = get_cluster()
             JOB_NAME = f"NGCM_G_{DATE_F}"
             if cluster == "midway":
+                logging.info("Midway cluster is no longer supported")
+                return 
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -49,10 +51,6 @@ def main():
                     f"{SCRIPT_BASE}_{cluster}.sh"
                 )
             elif cluster == "derecho":
-                raise NotImplementedError(
-                    "Derecho cluster is not yet supported for this script. Please use Midway."
-                )
-                return
                 command = (
                     f"qsub "
                     f"-N {JOB_NAME} "
