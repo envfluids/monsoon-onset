@@ -150,7 +150,7 @@ def make_maps(summary, output_path, mok=False):
             ax.add_patch(Rectangle((lon0,lat0), w,h, facecolor=period_colors[cf], edgecolor='black', linewidth=0.5, zorder=2))
         handles=[Patch(facecolor=period_colors[k], edgecolor='black', label=f"{(t+timedelta(days=pdays[k][0])).strftime('%m/%d/%Y')}{(' - '+(t+timedelta(days=pdays[k][1])).strftime('%m/%d/%Y')) if pdays[k][1] else '+'}") for k in period_order]
         handles.append(Patch(facecolor=period_colors['none'], edgecolor='black', label='Onset already declared by IMD'))
-        fig.legend(handles=handles, title='Period with max probability of onset', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, columnspacing=0.5, fontsize=9)
+        fig.legend(handles=handles, title='Period with Max Probability of Onset', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, fontsize=9)
         ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
         ax.set_xlabel('Longitude')
         ax.set_ylabel('Latitude')
@@ -168,7 +168,7 @@ def make_maps(summary, output_path, mok=False):
                   lon0, lat0 = ac['lon'] - 1, ac['lat'] - 1
                   ax2.add_patch(Rectangle((lon0, lat0), 2, 2,
                                  facecolor=period_colors['none'],
-                                 edgecolor='black', linewidth=0.5, zorder=1))
+                                 edgecolor='black', linewidth=0.5, zorder=2))
         for _, r in grp.iterrows():
             vf=[r[f'Forecast_p_{i}'] for i in range(1,5)]+[r['Forecast_p_later']]
             if any(pd.isna(vf)): continue
@@ -183,8 +183,10 @@ def make_maps(summary, output_path, mok=False):
             for pi,p in enumerate(probs):
                 bx=lon0+spacing+pi*(bw+spacing); by=lat0; bar_h=h*p
                 ax2.add_patch(Rectangle((bx,by), bw, bar_h, facecolor='black', edgecolor='black', linewidth=0.3, zorder=3))
-        fig2.legend(handles=handles, title='Max Period', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, columnspacing=0.5, fontsize=9)
+        fig2.legend(handles=handles, title='Period with Max Probability of Onset', loc='lower left', bbox_to_anchor=(0.12,0.1), ncol=2, fontsize=9)
         ax2.set_xlim(x_min, x_max); ax2.set_ylim(y_min, y_max)
+        ax2.set_yticks(np.arange(18, 32+1, 2)); ax2.set_xticks(np.arange(76, 88+1, 2))
+        ax2.grid(which='both', linestyle='--', linewidth=0.5, color='gray', alpha=0.5)
         ax2.set_xlabel('Longitude')
         ax2.set_ylabel('Latitude')
         if mok:
