@@ -3,11 +3,11 @@ lon,lat,flag
 78,18,exclude
 80,18,exclude
 82,18,exclude
-76,20,
-78,20,
-80,20,
-82,20,
-84,20,
+76,20,exclude
+78,20,exclude
+80,20,exclude
+82,20,exclude
+84,20,exclude
 76,22,
 78,22,
 80,22,
