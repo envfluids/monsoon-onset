@@ -13,6 +13,6 @@ source /home/marchakitus/.bashrc
 conda activate /project/pedramh/monsoon/conda-envs/monsoon
 python ./plot.py --date $DATE_F
 
-conda deactivate
-conda activate /home/marchakitus/.conda/envs/ncl_stable
-python ./plot_bias.py
+# conda deactivate
+# conda activate /home/marchakitus/.conda/envs/ncl_stable
+# python ./plot_bias.py
