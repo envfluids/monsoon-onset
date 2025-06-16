@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 import argparse
 import logging
+import json
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -230,6 +231,18 @@ def plot_graph_mod(
     plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
  
+def get_onset_csv(O1, dat_ap, out_path):
+    O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
+    O1set = xr.DataArray(
+            O1_name,
+            coords={"lat": dat_ap["lat"].astype(int), "lon": dat_ap["lon"].astype(int)},
+            dims=["lat", "lon"],
+            name="Onset_Occurrence"
+        )
+    O1set = O1set.transpose("lon", "lat")
+    odatepath = out_path / f'OnsetDates.csv'
+    O1set.to_dataframe().to_csv(odatepath)
+
 # Main Workflow:
 def process(date_f):
     base = Path(__file__).resolve().parent.parent
@@ -275,31 +288,117 @@ def process(date_f):
     plot_graph_mod(rainfall_5, "5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "Five_day_rain", yesdate)
     plot_graph_mod(rainfall_1, "1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "One_day_rain", yesdate)
 
+    get_onset_csv(O1, dat_ap, output_dir)
+    logging.info("Graphs plotted successfully.")
+
+
+def process_IMD_IMERG(date_f):
+    #Step (1) Downloading the IMD Data: 
+    base = Path(__file__).resolve().parent.parent
+    data_dir = base / "raw" / "IMERG_daily"
+    
+    #Step(2) IMERG Whole Plots
+    
+    file_pattern = os.path.join(data_dir, '*2025*.nc4')
+    nc_files = sorted(glob.glob(file_pattern))
+    #print(nc_files)
+    filtered_files = []
+    for file in nc_files:
+        basename = os.path.basename(file)
+        try:
+            date_str = basename.split('.')[4][:8] 
+            if int(date_str) >= 20250401:
+                filtered_files.append(file)
+        except:
+            continue
+    yesdate = date_f
+    logging.info(f"Processing IMERG data for date: {yesdate}")
+    output_dir = base / "output" / yesdate
+    logging.info(f"Output directory: {output_dir}")
+    os.makedirs(output_dir, exist_ok=True)
+    dat = xr.open_mfdataset(filtered_files, combine='by_coords')
+    MWmean_dir = base / "data" / "MWmean.npy"
+    mwmean = np.load(MWmean_dir)
+    dat_ap_IMERG = dat.sel(lat= slice(7, 39), lon=slice(67, 101)).coarsen(lat=20, lon=20, boundary="trim").mean()
+    dat_5 = dat_ap_IMERG.isel(time=slice(-5, None))
+    dat_1 = dat_ap_IMERG.isel(time=slice(-1, None))
+    
+    rainfall_5 = dat_5["precipitation"].mean(dim='time')
+    rainfall_5 = np.transpose(np.where(rainfall_5 < 0, np.nan, rainfall_5.values))
+    rainfall_1 = dat_1["precipitation"].mean(dim='time')
+    rainfall_1 = np.transpose(np.where(rainfall_1 < 0, np.nan, rainfall_1.values))
+    O1, O2, MWmean = onset_agro_bis(dat_ap_IMERG["precipitation"].stack(grid=["lat", "lon"]).values, dat_ap_IMERG['time'].values.shape[0], 1, 5, mwmean, 10, 5, 30)
+    O1 = O1[0].reshape((len(dat_ap_IMERG["lat"]), len(dat_ap_IMERG["lon"])))
+    O2 = O2[0].reshape((len(dat_ap_IMERG["lat"]), len(dat_ap_IMERG["lon"])))
+    plot_graph_mod(O1, "[IMERG] Onset Occurences - Without Dryspell", [], dat_ap_IMERG, "IMERG_onset_occ_wo_dryspell", yesdate)
+    plot_graph_mod(O2, "[IMERG] Onset Occurences - With Dryspell", [], dat_ap_IMERG, "IMERG_onset_occ_w_dryspell", yesdate)  
+    plot_graph_mod(rainfall_5, "[IMERG] 5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "IMERG_five_day_rain", yesdate)
+    plot_graph_mod(rainfall_1, "[IMERG] 1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "IMERG_one_day_rain", yesdate)
+    
+    get_onset_csv(O1, dat_ap_IMERG, output_dir)
+    # Step (3) IMD Plots
+    file_dir= base / "raw" / "IMD"
+    file_pattern = os.path.join(file_dir, 'regrid_2025*.nc4')
+    nc_files = sorted(glob.glob(file_pattern))
+    
+    filtered_files = []
+    for file in nc_files:
+        basename = os.path.basename(file)
+        try:
+            date_str = basename.split('_')[1].split('.')[0]  # '2025-04-01'
+            date_int = int(date_str)        # '20250401'
+            if date_int >= 20250401:
+                filtered_files.append(file)
+        except Exception as e:
+            logging.error(f"Error processing file {file}: {e}")
+            continue
+    dat = xr.open_mfdataset(filtered_files, combine='by_coords')
+    dat_ap = dat
+    dat_5 = dat_ap.isel(time=slice(-5, None))
+    dat_1 = dat_ap.isel(time=slice(-1, None))
+    rainfall_5 = dat_5["rain"].mean(dim='time')
+    rainfall_5 = np.where(rainfall_5 < 0, np.nan, rainfall_5.values)
+    rainfall_1 = dat_1["rain"].mean(dim='time')
+    rainfall_1 = np.where(rainfall_1 < 0, np.nan, rainfall_1.values)
+    O1, O2, MWmean = onset_agro_bis(dat_ap["rain"].stack(grid=["lat", "lon"]).values, dat_ap['time'].values.shape[0], 1, 5, mwmean, 10, 5, 30)
+    O1 = O1[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
+    O2 = O2[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
+    plot_graph_mod(O1, "[IMD] Onset Occurences - Without Dryspell", [], dat_ap, "IMD_onset_occ_wo_dryspell", yesdate)
+    plot_graph_mod(O2, "[IMD] Onset Occurences - With Dryspell", [], dat_ap, "IMD_onset_occ_w_dryspell", yesdate)  
+    plot_graph_mod(rainfall_5, "[IMD] 5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "IMD_five_day_rain", yesdate)
+    plot_graph_mod(rainfall_1, "[IMD] 1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "IMD_one_day_rain", yesdate)
+    
+    # Step (4) Timeseries Plots
+    
+    dat_ap['time'] = dat_ap['time'] - pd.Timedelta(days=1) # This is needed because the IMD date predicts the previous 24 hours UTC but IMERG produces the 24 hours of that date (ie. IMD of 6/3 counts for 6/2)
+    
     df_path = base / "data" / "grid_2x2_dissem.csv"
     df = pd.read_csv(df_path)
+
     df_1d = df[df["dissem33_15"] == 1]
     coords = list(df_1d[['lat', 'lon']].itertuples(index=False, name=None))
     for lat, lon in coords:
         fig, ax = plt.subplots(figsize=(6, 4))
-        dat_ap.sel(lat=lat, lon=lon, method="nearest")["precipitation"].plot(ax=ax, marker='.')
+        # dat_ap.sel(lat=lat, lon=lon, method="nearest")["precipitation"].plot(ax=ax, marker='.')
+        dat_ap.sel(lat=lat, lon=lon, method="nearest")["rain"].plot(ax=ax, marker='.', label="IMD")
+        dat_ap_IMERG.sel(lat=lat, lon=lon, method="nearest")["precipitation"].plot(ax=ax, marker='.', label="IMERG")
         fig.autofmt_xdate()
         ax.set_xlabel("Date")
         ax.set_title(f'{lat}N, {lon}E, Rainfall')
+        ax.legend()
         fp = f'{lat}N_{lon}E_TS'
-        save_path = base / "output" / yesdate / fp
+        save_path = output_dir / fp
         fig.savefig(save_path, dpi=100, bbox_inches='tight')
         plt.close()
-    O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
-    O1set = xr.DataArray(
-            O1_name,
-            coords={"lat": dat_ap["lat"].astype(int), "lon": dat_ap["lon"].astype(int)},
-            dims=["lat", "lon"],
-            name="Onset_Occurrence"
-        )
-    O1set = O1set.transpose("lon", "lat")
-    odatepath = base / "output" / yesdate / f'OnsetDates.csv'
-    O1set.to_dataframe().to_csv(odatepath)
 
+def get_cluster():
+    base = Path(__file__).resolve().parent.parent.parent
+    config_file = base / ".config" / "config.json"
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    cluster = config["cluster"]
+    logging.info(f"Cluster: {cluster}")
+    return cluster
 
 def main():
     parser = argparse.ArgumentParser(
@@ -312,7 +411,11 @@ def main():
     )
     args = parser.parse_args()
     date_f = args.date
-    process(date_f)
+    cluster = get_cluster()
+    if cluster == "derecho":
+        process_IMD_IMERG(date_f)
+    else:
+        process(date_f)
 
     logging.info("Processing completed successfully.")
 

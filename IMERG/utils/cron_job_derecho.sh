@@ -4,7 +4,8 @@ ssh derecho <<'EOF'
 cd /glade/derecho/scratch/marchakitus/monsoon-onset/IMERG/utils
 # source /home/marchakitus/.bashrc
 ml conda
-conda activate npl-2025a
+ml cdo
+conda activate /glade/work/marchakitus/conda-envs/IMD
 timeout 10m python ./pipeline.py
 if [ $? -eq 124 ]; then
   echo "ERROR IMERG Job timed out after 10 minutes."

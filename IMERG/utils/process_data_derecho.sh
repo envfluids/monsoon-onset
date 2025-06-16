@@ -8,8 +8,11 @@
 
 # source /home/marchakitus/.bashrc
 ml conda
+ml cdo
 
-conda activate npl-2025a
+conda activate /glade/work/marchakitus/conda-envs/IMD
 python ./plot.py --date $DATE_F
 
+conda deactivate
+conda activate npl-2025a
 python ./plot_bias.py

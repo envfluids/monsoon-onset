@@ -11,7 +11,9 @@ from matplotlib.cm import ScalarMappable
 from pathlib import Path
 import logging
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 def get_IMERG(IMERG_data_dir):

@@ -30,7 +30,7 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250510"
+    # DATE_F = "20250615"
     # print(DATE_F)
     if DATE_F:
         logging.info("IMERG download script was successful, new data available")
@@ -47,6 +47,10 @@ def main():
                 f"{SCRIPT_BASE}_{cluster}.sh"
             )
         elif cluster == "derecho":
+            logging.info("Downloading IMD data for the current date before submitting job.")
+            from download_imd import get_imd_data
+            get_imd_data()
+            logging.info("IMD data download complete, proceeding to submit job.")
             command = (
                     f"qsub "
                     f"-N {JOB_NAME} "
