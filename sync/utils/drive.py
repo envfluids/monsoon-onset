@@ -793,31 +793,31 @@ def drive_sync_IMD(date):  # Added cluster parameter with default
 
 
 def main():
-    # parser = argparse.ArgumentParser(
-    #     description="Process weather data for a given year"
-    # )
-    # parser.add_argument(
-    #     "--date", type=str, help="Dates for the upload in YYYYMMDDTHH format", nargs="+"
-    # )
-    # args = parser.parse_args()
-    # sync_dates = args.date
+    parser = argparse.ArgumentParser(
+        description="Process weather data for a given year"
+    )
+    parser.add_argument(
+        "--date", type=str, help="Dates for the upload in YYYYMMDDTHH format", nargs="+"
+    )
+    args = parser.parse_args()
+    sync_dates = args.date
 
-    # base = Path(__file__).resolve().parent.parent.parent
-    # config_file = base / ".config" / "config.json"
-    # with open(config_file, "r") as f:
-    #     config = json.load(f)
-    # cluster = config["cluster"]
-    # logging.info(f"Cluster: {cluster}")
+    base = Path(__file__).resolve().parent.parent.parent
+    config_file = base / ".config" / "config.json"
+    with open(config_file, "r") as f:
+        config = json.load(f)
+    cluster = config["cluster"]
+    logging.info(f"Cluster: {cluster}")
 
-    # logging.info(f"Syncing for dates: {sync_dates}")    
-    # for sync_date in sync_dates:
-    #     # Call the drive_sync function with the provided date and cluster
-    #     logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
-    #     # Call the drive_sync function with the provided date and cluster
-    #     drive_sync(date=sync_date, cluster=cluster)
-    IMERG_sync_date = "20250615" # Or get dynamically, e.g., from command line args
-    IMERG_sync_cluster = "derecho"   # Or get dynamically
-    drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
+    logging.info(f"Syncing for dates: {sync_dates}")    
+    for sync_date in sync_dates:
+        # Call the drive_sync function with the provided date and cluster
+        logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
+        # Call the drive_sync function with the provided date and cluster
+        drive_sync(date=sync_date, cluster=cluster)
+    # IMERG_sync_date = "20250615" # Or get dynamically, e.g., from command line args
+    # IMERG_sync_cluster = "derecho"   # Or get dynamically
+    # drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
 
 def debug():
     parser = argparse.ArgumentParser(

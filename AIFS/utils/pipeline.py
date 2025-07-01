@@ -31,7 +31,7 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250522T12"
+    # DATE_F = "20250620T00"
     # DATE_F = "20250523T00" # Uncomment for testing a specific date
 
     if DATE_F:

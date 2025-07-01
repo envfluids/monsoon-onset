@@ -70,13 +70,13 @@ def main():
 
     logging.info("Merging tcwv")
     tcw_files = glob.glob(f"../output/tcw/*_{date}_INTERMEDIATE_3.nc")
-    tcw = xr.open_mfdataset(tcw_files)
+    tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
     tcw.to_netcdf(f"../output/tcw/tcw_{date}.nc")
     tcw.close()
 
     logging.info("Merging tp")
     tp_files = glob.glob(f"../output/tp/*_{date}_INTERMEDIATE_3.nc")
-    tp = xr.open_mfdataset(tp_files)
+    tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
     tp.to_netcdf(f"../output/tp/tp_{date}.nc")
     tp.close()
 

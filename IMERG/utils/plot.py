@@ -122,7 +122,7 @@ def onset_agro_bis(X, lseason, defdry, sw, wet, sd, dry, window):
             tab = np.column_stack([sample[:, j], wsample[:,j], SW_extension, SD_extension])
             if i == 123: print(f"Tab for year {i}, station {j}:", pd.DataFrame(tab).to_string())
             nrtab, nctab = np.shape(tab)
-            o1 = np.where((tab[:, 2] >= wet[j]) & (tab[:, 1] == 1) & (np.arange(tab.shape[0]) >= 30))[0]
+            o1 = np.where((tab[:, 2] >= wet[j]) & (tab[:, 1] == 1) & (np.arange(tab.shape[0]) >= 54))[0]
             #if i == 123: print(o1)
             D = tab[:, 3]
             #if (i == 81): print(D.shape)
