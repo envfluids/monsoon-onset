@@ -231,7 +231,7 @@ def plot_graph_mod(
     plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
  
-def get_onset_csv(O1, dat_ap, out_path):
+def get_onset_csv(O1, dat_ap, out_path,filen):
     O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
     O1set = xr.DataArray(
             O1_name,
@@ -240,7 +240,10 @@ def get_onset_csv(O1, dat_ap, out_path):
             name="Onset_Occurrence"
         )
     O1set = O1set.transpose("lon", "lat")
-    odatepath = out_path / f'OnsetDates.csv'
+# wrb:
+#    odatepath = out_path / f'OnsetDates.csv'
+    odatepath = out_path / filen
+    
     O1set.to_dataframe().to_csv(odatepath)
 
 # Main Workflow:
@@ -288,7 +291,11 @@ def process(date_f):
     plot_graph_mod(rainfall_5, "5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "Five_day_rain", yesdate)
     plot_graph_mod(rainfall_1, "1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "One_day_rain", yesdate)
 
-    get_onset_csv(O1, dat_ap, output_dir)
+# wrb:
+#    get_onset_csv(O1, dat_ap, output_dir)
+    get_onset_csv(O1, dat_ap, output_dir,'OnsetDatesIMERGwithoutDrySpell.csv')
+    get_onset_csv(O2, dat_ap, output_dir,'OnsetDatesIMERGwithDrySpell.csv')
+
     logging.info("Graphs plotted successfully.")
 
 
@@ -335,7 +342,11 @@ def process_IMD_IMERG(date_f):
     plot_graph_mod(rainfall_5, "[IMERG] 5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "IMERG_five_day_rain", yesdate)
     plot_graph_mod(rainfall_1, "[IMERG] 1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "IMERG_one_day_rain", yesdate)
     
-    get_onset_csv(O1, dat_ap_IMERG, output_dir)
+# wrb:
+#    get_onset_csv(O1, dat_ap_IMERG, output_dir)
+    get_onset_csv(O1, dat_ap, output_dir,'OnsetDatesIMERGwithoutDrySpell.csv')
+    get_onset_csv(O2, dat_ap, output_dir,'OnsetDatesIMERGwithDrySpell.csv')
+    
     # Step (3) IMD Plots
     file_dir= base / "raw" / "IMD"
     file_pattern = os.path.join(file_dir, 'regrid_2025*.nc4')
@@ -367,6 +378,10 @@ def process_IMD_IMERG(date_f):
     plot_graph_mod(O2, "[IMD] Onset Occurences - With Dryspell", [], dat_ap, "IMD_onset_occ_w_dryspell", yesdate)  
     plot_graph_mod(rainfall_5, "[IMD] 5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "IMD_five_day_rain", yesdate)
     plot_graph_mod(rainfall_1, "[IMD] 1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "IMD_one_day_rain", yesdate)
+
+# wrb:
+    get_onset_csv(O1, dat_ap, output_dir,'OnsetDatesIMDwithoutDrySpell.csv')
+    get_onset_csv(O2, dat_ap, output_dir,'OnsetDatesIMDwithDrySpell.csv')
     
     # Step (4) Timeseries Plots
     
