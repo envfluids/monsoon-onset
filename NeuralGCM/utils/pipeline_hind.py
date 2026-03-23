@@ -1,4 +1,3 @@
-from download_forecast import get_data
 import os
 import logging
 import json
@@ -6,14 +5,13 @@ from pathlib import Path
 import subprocess
 import time
 import re
-import argparse
-import datetime
+import glob
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-SCRIPT_BASE = "process_forecast"
+SCRIPT_BASE = "hind_run_model"
 
 ALLOWED_HOURS = ["00", "12"]
 MAX_RETRIES = 5  # Max number of submission attempts
@@ -31,26 +29,18 @@ def get_cluster():
     return cluster
 
 
-def run_pipeline(date=None):
-    DATE_F = get_data(date)
-    # DATE_F = "20250615T00" # Uncomment for testing a specific date
+def main(DATE_F):
 
     if DATE_F:
         hour = DATE_F.split("T")[-1]
         if hour in ALLOWED_HOURS:
             logging.info("IC download script was successful, new data available")
-            base = Path(__file__).resolve().parent.parent
-            output_path = base / "output" / DATE_F
-            if output_path.exists():
-                logging.info(f"Output path {output_path} already exists. Exiting.")
-                return
             logging.info(f"Initializing compute job for date: {DATE_F}")
             cluster = get_cluster()
-            JOB_NAME = f"IFSS2S{DATE_F}"
+            JOB_NAME = f"NGCM_fc_{DATE_F}"
             if cluster == "midway":
-                raise NotImplementedError(
-                    "Midway cluster support is not implemented in this script."
-                )
+                logging.info("Midway cluster is no longer supported")
+                return 
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -150,29 +140,37 @@ def run_pipeline(date=None):
             "Will not attempt to run model, as no new data was downloaded."
         )
 
-def get_dates(start_date, end_date=None):
-    if end_date is None:
-        end_date = start_date
+def init_hindcast():
+    ic_dir = "/glade/derecho/scratch/marchakitus/monsoon-onset/NeuralGCM/raw/ncep_ic/download"
+    ic_files = sorted(glob.glob(os.path.join(ic_dir, "*.pgrb2")))
+    if not ic_files:
+        logging.error("No initial condition files found in the specified directory.")
+        return
+    ic_dates = [os.path.basename(f).split("_")[1].split(".")[0] for f in ic_files]
+    print(f"Found {len(ic_dates)} initial condition files for hindcast: {ic_dates}")
 
-    start = datetime.datetime.strptime(start_date, "%Y%m%d")
-    end = datetime.datetime.strptime(end_date, "%Y%m%d")
+    existing_forecast_dir = "/glade/derecho/scratch/marchakitus/monsoon-onset/blend/output"
+    existing_dates = sorted(glob.glob(os.path.join(existing_forecast_dir, "*")))
 
-    delta = end - start
-    return [start + datetime.timedelta(days=i) for i in range(delta.days + 1)]
+    existing_dates = [os.path.basename(f) for f in existing_dates]
+    print(f"Found {len(existing_dates)} existing forecast directories: {existing_dates}")
+    allowed_hours = ["00", "12"]
+    allowed_months = ["06"]
+    ic_dates = [d for d in ic_dates if d[-2:] in allowed_hours]
+    ic_dates = [d for d in ic_dates if d[4:6] in allowed_months]
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--start_date', type=str, help='Start Date (YYYYMMDD)')
-    parser.add_argument('--end_date', type=str, help='End Date (YYYYMMDD)')
-    args = parser.parse_args()
+    init_dates = []
 
-    if args.start_date:
-        dates = get_dates(args.start_date, args.end_date)
-        for date in dates:
-            run_pipeline(date)
-    else:
-        run_pipeline()
-
+    for ic_date in ic_dates:
+        if ic_date not in existing_dates:
+            logging.info(f"Processing initial condition for date: {ic_date}")
+            main(ic_date)
+            init_dates.append(ic_date)
+        else:
+            logging.info(f"Forecast for date {ic_date} already exists, skipping.")
+    
+    if init_dates:
+        logging.info(f"Successfully initialized hindcast for {len(init_dates)} dates: {init_dates}")
 
 if __name__ == "__main__":
-    main()
+    init_hindcast()

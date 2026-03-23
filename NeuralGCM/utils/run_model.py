@@ -10,7 +10,6 @@ from dinosaur import xarray_utils
 import neuralgcm
 import os
 import argparse
-import time
 from datetime import datetime
 import logging
 

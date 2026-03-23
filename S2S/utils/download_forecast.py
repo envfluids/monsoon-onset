@@ -74,7 +74,7 @@ def download_forecast(date: str, raw_data_path: Path, server: ECMWFDataServer):
     return True
 
 
-def get_data(max_retries: int = 3):
+def get_data(date, max_retries: int = 3):
     """
     Attempts to download the latest available forecast, trying recent days.
 
@@ -98,23 +98,34 @@ def get_data(max_retries: int = 3):
         logging.error(f"Failed to initialize ECMWFDataServer. Check API key. Error: {e}")
         return None
 
-    # --- FIX 3: Replace repeated try/except blocks with a clean loop ---
-    # This loop attempts to download data, going back one day at a time.
-    for days_ago in range(1, max_retries + 1):
-        target_date = datetime.datetime.now() - datetime.timedelta(days=days_ago)
-        date_str = target_date.strftime("%Y-%m-%d")
-
+    if date:
+        date_str = date.strftime("%Y-%m-%d")
+        logging.info(f"Attempting to download data for specified date: {date}")
         try:
-            # Attempt to download all necessary files for the target date
             success = download_forecast(date_str, raw_data_path, server)
             if success:
-                logging.info(f"Data acquisition successful for date: {date_str}")
-                # Return the date in the originally desired format and exit
-                return target_date.strftime("%Y%m%dT00")
+                logging.info(f"Data acquisition successful for date: {date}")
+                return date.strftime("%Y%m%dT00")
         except Exception as e:
-            # This will catch errors from the API (e.g., data not yet available)
-            logging.warning(f"Could not retrieve data for {date_str}. Error: {e}")
-            logging.info("Trying previous day...")
+            logging.error(f"Error occurred while downloading data for {date}: {e}")
+    else:
+        # --- FIX 3: Replace repeated try/except blocks with a clean loop ---
+        # This loop attempts to download data, going back one day at a time.
+        for days_ago in range(1, max_retries + 1):
+            target_date = datetime.datetime.now() - datetime.timedelta(days=days_ago)
+            date_str = target_date.strftime("%Y-%m-%d")
+
+            try:
+                # Attempt to download all necessary files for the target date
+                success = download_forecast(date_str, raw_data_path, server)
+                if success:
+                    logging.info(f"Data acquisition successful for date: {date_str}")
+                    # Return the date in the originally desired format and exit
+                    return target_date.strftime("%Y%m%dT00")
+            except Exception as e:
+                # This will catch errors from the API (e.g., data not yet available)
+                logging.warning(f"Could not retrieve data for {date_str}. Error: {e}")
+                logging.info("Trying previous day...")
 
     logging.error(f"Failed to download forecast after trying the last {max_retries} days.")
     return None
