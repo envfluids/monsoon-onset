@@ -1,5 +1,4 @@
 from download_forecast import get_data
-import os
 import logging
 import json
 from pathlib import Path
@@ -47,10 +46,7 @@ def run_pipeline(date=None):
             logging.info(f"Initializing compute job for date: {DATE_F}")
             cluster = get_cluster()
             JOB_NAME = f"IFSS2S{DATE_F}"
-            if cluster == "midway":
-                raise NotImplementedError(
-                    "Midway cluster support is not implemented in this script."
-                )
+            if cluster == "dsi":
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -94,7 +90,7 @@ def run_pipeline(date=None):
 
                     current_attempt_job_id = None
 
-                    if cluster == "midway":
+                    if cluster == "dsi":
                         if process.returncode == 0 and "Submitted batch job" in stdout_str:
                             match = re.search(r"Submitted batch job (\d+)", stdout_str)
                             if match:
@@ -107,7 +103,7 @@ def run_pipeline(date=None):
                         job_id_str = current_attempt_job_id
                         submission_successful = True
                         logging.info(f"Successfully submitted job {job_id_str} for {JOB_NAME} on attempt {attempt + 1} on {cluster}.")
-                        if cluster == "midway" and stderr_str:
+                        if cluster == "dsi" and stderr_str:
                              logging.info(f"Slurm stderr (may contain verification info): {stderr_str}")
                         elif cluster == "derecho" and stderr_str:
                              logging.warning(f"PBS job {job_id_str} submitted, but stderr was not empty: '{stderr_str}'. Proceeding as job ID was obtained.")

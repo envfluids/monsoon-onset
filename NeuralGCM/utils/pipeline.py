@@ -1,5 +1,4 @@
 from download_ncep import get_data
-import os
 import logging
 import json
 from pathlib import Path
@@ -31,7 +30,7 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250523T00" # Uncomment for testing a specific date
+    # DATE_F = "20260322T12" # Uncomment for testing a specific date
 
     if DATE_F:
         hour = DATE_F.split("T")[-1]
@@ -40,9 +39,7 @@ def main():
             logging.info(f"Initializing compute job for date: {DATE_F}")
             cluster = get_cluster()
             JOB_NAME = f"NGCM_fc_{DATE_F}"
-            if cluster == "midway":
-                logging.info("Midway cluster is no longer supported")
-                return 
+            if cluster == "dsi":
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -86,7 +83,7 @@ def main():
 
                     current_attempt_job_id = None
 
-                    if cluster == "midway":
+                    if cluster == "dsi":
                         if process.returncode == 0 and "Submitted batch job" in stdout_str:
                             match = re.search(r"Submitted batch job (\d+)", stdout_str)
                             if match:
@@ -99,7 +96,7 @@ def main():
                         job_id_str = current_attempt_job_id
                         submission_successful = True
                         logging.info(f"Successfully submitted job {job_id_str} for {JOB_NAME} on attempt {attempt + 1} on {cluster}.")
-                        if cluster == "midway" and stderr_str:
+                        if cluster == "dsi" and stderr_str:
                              logging.info(f"Slurm stderr (may contain verification info): {stderr_str}")
                         elif cluster == "derecho" and stderr_str:
                              logging.warning(f"PBS job {job_id_str} submitted, but stderr was not empty: '{stderr_str}'. Proceeding as job ID was obtained.")

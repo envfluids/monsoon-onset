@@ -179,7 +179,7 @@ def plot_graph_mod(
             #rint("Here")
            
             if not np.isnan(z):
-                date = (datetime(2025, 1, 1) + timedelta(z + 90)).strftime('%m/%d')
+                date = (datetime(2026, 1, 1) + timedelta(z + 90)).strftime('%m/%d')
                 lat = dat["lat"][i]
                 lon = dat["lon"][j]
                 ax.text(lon, lat, '{:s}'.format(str(date)), ha='center', va='center', transform=ccrs.PlateCarree(), fontsize=6, rotation=45, color='black', fontweight='bold')
@@ -231,8 +231,8 @@ def plot_graph_mod(
     plt.savefig(save_path, dpi=100, bbox_inches='tight')
     plt.close()
  
-def get_onset_csv(O1, dat_ap, out_path,filen):
-    O1_name = np.array([[(datetime(2025,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
+def get_onset_csv(O1, dat_ap, out_path, filen):
+    O1_name = np.array([[(datetime(2026,1,1) + timedelta(days=int(x) + 91)).strftime('%Y/%m/%d') if not np.isnan(x) else None for x in row] for row in O1])
     O1set = xr.DataArray(
             O1_name,
             coords={"lat": dat_ap["lat"].astype(int), "lon": dat_ap["lon"].astype(int)},
@@ -250,7 +250,7 @@ def get_onset_csv(O1, dat_ap, out_path,filen):
 def process(date_f):
     base = Path(__file__).resolve().parent.parent
     data_dir = base / "raw" / "IMERG_daily"
-    file_pattern = os.path.join(data_dir, '*2025*.nc4')
+    file_pattern = os.path.join(data_dir, '*2026*.nc4')
     nc_files = sorted(glob.glob(file_pattern))
     #print(nc_files)
     filtered_files = []
@@ -258,7 +258,8 @@ def process(date_f):
         basename = os.path.basename(file)
         try:
             date_str = basename.split('.')[4][:8] 
-            if int(date_str) >= 20250401:
+            # if int(date_str) >= 20260401:
+            if int(date_str) >= 20260301:
                 filtered_files.append(file)
         except:
             continue
@@ -306,7 +307,7 @@ def process_IMD_IMERG(date_f):
     
     #Step(2) IMERG Whole Plots
     
-    file_pattern = os.path.join(data_dir, '*2025*.nc4')
+    file_pattern = os.path.join(data_dir, '*2026*.nc4')
     nc_files = sorted(glob.glob(file_pattern))
     #print(nc_files)
     filtered_files = []
@@ -314,7 +315,8 @@ def process_IMD_IMERG(date_f):
         basename = os.path.basename(file)
         try:
             date_str = basename.split('.')[4][:8] 
-            if int(date_str) >= 20250401:
+            # if int(date_str) >= 20260401:
+            if int(date_str) >= 20260301:
                 filtered_files.append(file)
         except:
             continue
@@ -349,16 +351,17 @@ def process_IMD_IMERG(date_f):
     
     # Step (3) IMD Plots
     file_dir= base / "raw" / "IMD"
-    file_pattern = os.path.join(file_dir, 'regrid_2025*.nc4')
+    file_pattern = os.path.join(file_dir, 'regrid_2026*.nc4')
     nc_files = sorted(glob.glob(file_pattern))
     
     filtered_files = []
     for file in nc_files:
         basename = os.path.basename(file)
         try:
-            date_str = basename.split('_')[1].split('.')[0]  # '2025-04-01'
-            date_int = int(date_str)        # '20250401'
-            if date_int >= 20250401:
+            date_str = basename.split('_')[1].split('.')[0]  # '2026-04-01'
+            date_int = int(date_str)        # '20260401'
+            # if date_int >= 20260401:
+            if date_int >= 20260301:
                 filtered_files.append(file)
         except Exception as e:
             logging.error(f"Error processing file {file}: {e}")
@@ -427,10 +430,12 @@ def main():
     args = parser.parse_args()
     date_f = args.date
     cluster = get_cluster()
-    if cluster == "derecho":
-        process_IMD_IMERG(date_f)
-    else:
-        process(date_f)
+    # if cluster == "derecho":
+    #     process_IMD_IMERG(date_f)
+    # else:
+    #     process(date_f)
+
+    process_IMD_IMERG(date_f)
 
     logging.info("Processing completed successfully.")
 

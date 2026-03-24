@@ -11,7 +11,7 @@ logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
-SCRIPT_BASE = "hind_run_model"
+SCRIPT_BASE = "run_model"
 
 ALLOWED_HOURS = ["00", "12"]
 MAX_RETRIES = 5  # Max number of submission attempts
@@ -40,9 +40,7 @@ def main(DATE_F):
             logging.info(f"Initializing compute job for date: {DATE_F}")
             cluster = get_cluster()
             JOB_NAME = f"AIFS_fc_{DATE_F}"
-            if cluster == "midway":
-                logging.info("Midway cluster is no longer supported")
-                return 
+            if cluster == "dsi":
                 command = (
                     f"sbatch "
                     f"--job-name={JOB_NAME} "
@@ -86,7 +84,7 @@ def main(DATE_F):
 
                     current_attempt_job_id = None
 
-                    if cluster == "midway":
+                    if cluster == "dsi":
                         if process.returncode == 0 and "Submitted batch job" in stdout_str:
                             match = re.search(r"Submitted batch job (\d+)", stdout_str)
                             if match:
@@ -99,7 +97,7 @@ def main(DATE_F):
                         job_id_str = current_attempt_job_id
                         submission_successful = True
                         logging.info(f"Successfully submitted job {job_id_str} for {JOB_NAME} on attempt {attempt + 1} on {cluster}.")
-                        if cluster == "midway" and stderr_str:
+                        if cluster == "dsi" and stderr_str:
                              logging.info(f"Slurm stderr (may contain verification info): {stderr_str}")
                         elif cluster == "derecho" and stderr_str:
                              logging.warning(f"PBS job {job_id_str} submitted, but stderr was not empty: '{stderr_str}'. Proceeding as job ID was obtained.")
@@ -162,7 +160,7 @@ def main(DATE_F):
         )
 
 def init_hindcast():
-    ic_dir = "/glade/derecho/scratch/marchakitus/monsoon-onset/AIFS/raw/ifs_ic"
+    ic_dir = "/net/monsoon/operational/monsoon-onset/AIFS/raw/ifs_ic"
     ic_files = sorted(glob.glob(os.path.join(ic_dir, "*.pkl")))
     if not ic_files:
         logging.error("No initial condition files found in the specified directory.")
@@ -170,13 +168,13 @@ def init_hindcast():
     ic_dates = [os.path.basename(f).split("_")[2].split(".")[0] for f in ic_files]
     print(f"Found {len(ic_dates)} initial condition files for hindcast: {ic_dates}")
 
-    existing_forecast_dir = "/glade/derecho/scratch/marchakitus/monsoon-onset/AIFS/raw/output"
+    existing_forecast_dir = "/net/monsoon/operational/monsoon-onset/AIFS/raw/output"
     existing_dates = sorted(glob.glob(os.path.join(existing_forecast_dir, "*.nc")))
 
     existing_dates = [os.path.basename(f).split("_")[1].split(".")[0] for f in existing_dates]
     print(f"Found {len(existing_dates)} existing forecast directories: {existing_dates}")
     allowed_hours = ["00", "12"]
-    allowed_months = ["06"]
+    allowed_months = ["03"]
     ic_dates = [d for d in ic_dates if d[-2:] in allowed_hours]
     ic_dates = [d for d in ic_dates if d[4:6] in allowed_months]
     for ic_date in ic_dates:
