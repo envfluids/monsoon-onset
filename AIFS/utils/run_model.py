@@ -1,5 +1,4 @@
 import datetime
-from collections import defaultdict
 from scipy.sparse import load_npz
 import numpy as np
 import xarray as xr
@@ -58,6 +57,8 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
         local_checkpoint_path = "../weights/aifs_single_v0.2.1.ckpt"
     elif version == 1:
         local_checkpoint_path = "../weights/AIFS_v1.ckpt"
+    elif version == 2:
+        local_checkpoint_path = "../weights/aifs-single-mse-1.1.ckpt"
     else:
         raise ValueError("Invalid version number")
     year = date.year
@@ -140,7 +141,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     date_f = args.date
 
-    version = 1
+    version = 2
     lead_time = 41 * 24
 
     logging.info(f"Date: {date_f}")
@@ -159,4 +160,4 @@ if __name__ == "__main__":
     ]
 
     main(version, date_f, OUTPUT_DIR, lead_time, save_fields=save_fields)
-    logging.info(f"Exiting inference script")
+    logging.info("Exiting inference script")

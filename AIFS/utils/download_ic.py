@@ -18,6 +18,7 @@ def check_new_data():
     logging.info(f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
 
     DATE = OpendataClient().latest()
+    # DATE = datetime.datetime(2026, 3, 21, 12)
     DATE_FORMATTED = DATE.strftime("%Y%m%dT%H")
 
     logging.info(f"Latest available date: {DATE.strftime('%Y-%m-%d %H:%M:%S')}")

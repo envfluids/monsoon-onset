@@ -17,7 +17,7 @@ logging.basicConfig(
 
 
 def get_IMERG(IMERG_data_dir):
-    file_pattern = os.path.join(IMERG_data_dir, "*2025*.nc4")
+    file_pattern = os.path.join(IMERG_data_dir, "*2026*.nc4")
     nc_files = sorted(glob.glob(str(file_pattern)))
 
     filtered_files = []
@@ -25,7 +25,7 @@ def get_IMERG(IMERG_data_dir):
         basename = os.path.basename(file)
         try:
             date_str = basename.split(".")[4][:8]
-            if int(date_str) >= 20250401:
+            if int(date_str) >= 20260301:
                 filtered_files.append(file)
         except ValueError as e:
             logging.error(f"Error parsing date from filename {basename}: {e}")

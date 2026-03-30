@@ -1,29 +1,18 @@
-import xarray as xr
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
-import matplotlib.colors as mcolors
-from matplotlib.colors import ListedColormap
-from matplotlib.patches import Polygon
-import cartopy.crs as ccrs
-import cartopy.feature as cfeature
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
-import glob
 from datetime import datetime
 import imdlib as imd
 
 
 
-# Create date range from April 1 to today
-start_date = datetime(datetime.today().year, 4, 1)
+# Create date range from March 1 to today
+start_date = datetime(datetime.today().year, 3, 1)
 end_date = datetime.today()
 
 # Generate all dates in range
 dates = pd.date_range(start=start_date, end=end_date)
-dates
-
 
 
 # cdo sinfo 
@@ -52,12 +41,6 @@ for date in dates:
             ]
         command = " ".join(command)
         os.system(command)
-        # command = [
-        #     cdo_path,
-        #     "sinfo",
-        #     f"/global/cfs/cdirs/m3310/tyang25/IMD_cur/regrid_rain_{date_str}.nc4",
-        # ]
-        # command = " ".join(command)
-        # os.system(command)
+
     except Exception as e:
         print(f"Failed on {date_str}: {e}")

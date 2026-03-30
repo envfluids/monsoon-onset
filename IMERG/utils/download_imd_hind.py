@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import numpy as np
 import logging
@@ -11,9 +11,8 @@ logging.basicConfig(
 
 CDO_PATH = "/net/scratch2/marchakitus/conda-envs/operational/bin/cdo"
 
-def get_imd_data():
+def get_imd_data(date):
     base = Path(__file__).resolve().parent.parent
-    date = datetime.today()
     date_str = date.strftime('%Y-%m-%d')
     date_IMD_formatted = date.strftime('%Y%m%d')
     print(f"Fetching data for: {date_str}")
@@ -41,8 +40,25 @@ def get_imd_data():
             ]
         command = " ".join(command)
         os.system(command)
+        return date_IMD_formatted
     except Exception as e:
         print(f"Failed on {date_str}: {e}")
+        return None
 
 if __name__ == "__main__":
-    get_imd_data()
+    logging.info("Starting IMERG data download process...")
+    # Define base_dir for testing if __file__ is not available (e.g. running selection in IDE)
+
+    start_date = datetime(2026, 3, 1)
+    end_date = datetime(2026, 3, 31)
+
+    while start_date <= end_date:
+        downloaded_date = get_imd_data(start_date)
+        if downloaded_date:
+            logging.info(f"New data downloaded for date: {downloaded_date}")
+        start_date += timedelta(days=1)
+
+    if downloaded_date:
+        logging.info(f"New data downloaded for date: {downloaded_date}")
+    else:
+        logging.info("No new data downloaded. Exiting process.")

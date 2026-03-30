@@ -71,8 +71,8 @@ def get_data(max_days_to_check=7):
         date_str_compact = f"{year}{month}{day}"
 
         # Construct filename and URL (as per GPM_3IMERGDL.07)
-        # Example filename: 3B-DAY-L.MS.MRG.3IMERG.20230501-S000000-E235959.V07B.nc4
-        filename = f"3B-DAY-L.MS.MRG.3IMERG.{date_str_compact}-S000000-E235959.V07B.nc4"
+        # Example filename: 3B-DAY-L.MS.MRG.3IMERG.20230501-S000000-E235959.V07C.nc4
+        filename = f"3B-DAY-L.MS.MRG.3IMERG.{date_str_compact}-S000000-E235959.V07C.nc4"
         url = f"https://gpm1.gesdisc.eosdis.nasa.gov/data/GPM_L3/GPM_3IMERGDL.07/{year}/{month}/{filename}"
 
         local_file_path = raw_dir / filename

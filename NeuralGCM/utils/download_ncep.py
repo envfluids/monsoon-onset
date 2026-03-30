@@ -52,6 +52,14 @@ def get_latest_available_cycle(pattern, num_cycles_to_check, cycles, timeout):
             tzinfo=datetime.timezone.utc,
         )
 
+        # check_dt = datetime.datetime(
+        #     approx_cycle_time.year,
+        #     approx_cycle_time.month,
+        #     24,
+        #     0,
+        #     tzinfo=datetime.timezone.utc,
+        # )
+
         # Format date and cycle for URL and filename
         date_str = check_dt.strftime("%Y%m%d")
         cycle_str = check_dt.strftime("%H")  # Should be '00', '06', '12', or '18'
@@ -95,7 +103,7 @@ def check_local_file_exists(filepath):
 
 def download_file(url, save_path, filename, chunk_size, timeout):
     """Downloads a file from a URL to a specified path with a progress bar."""
-    logging.info(f"Starting download:")
+    logging.info("Starting download:")
     logging.info(f"  Source: {url}")
     logging.info(f"  Destination: {save_path}")
 
@@ -191,7 +199,7 @@ def get_data():
         logging.info("--- Check Complete (Already Present) ---")
     else:
         # 4. Download the file if it doesn't exist locally
-        logging.info(f"Latest available file not found locally. Attempting download.")
+        logging.info("Latest available file not found locally. Attempting download.")
         success = download_file(
             latest_url,
             latest_save_path,
