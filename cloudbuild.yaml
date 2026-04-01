@@ -1,0 +1,178 @@
+# -----------------------------------------------------------------------------
+# Cloud Build Configuration
+# Builds and pushes Docker images to Artifact Registry
+# -----------------------------------------------------------------------------
+#
+# Trigger this build with:
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions=_ENV=dev,_REGION=us-central1
+#
+# Or set up a trigger in Cloud Build for automatic builds on push
+# -----------------------------------------------------------------------------
+
+substitutions:
+  _REGION: us-central1
+  _REPO: monsoon-dev-containers
+  _SHORT_SHA: local
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+
+steps:
+  # -----------------------------------------------------------------------------
+  # Build lightweight images in parallel
+  # -----------------------------------------------------------------------------
+
+  # All builds use the repo root as context so Dockerfiles can COPY from
+  # sibling directories (AIFS/, NeuralGCM/, blend/, sync/ etc.)
+
+  - id: build-downloader
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
+      - -f
+      - docker/downloader/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  - id: build-sync
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest
+      - -f
+      - docker/sync/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  - id: build-blend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest
+      - -f
+      - docker/blend/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  - id: build-postprocess
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest
+      - -f
+      - docker/postprocess/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  # -----------------------------------------------------------------------------
+  # Build GPU images (heavier, but can run in parallel)
+  # -----------------------------------------------------------------------------
+
+  - id: build-aifs
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest
+      - -f
+      - docker/aifs/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  - id: build-neuralgcm
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest
+      - -f
+      - docker/neuralgcm/Dockerfile
+      - .
+    waitFor: ["-"]  # Start immediately
+
+  # -----------------------------------------------------------------------------
+  # Push all images
+  # -----------------------------------------------------------------------------
+
+  - id: push-downloader
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader
+    waitFor: [build-downloader]
+
+  - id: push-sync
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync
+    waitFor: [build-sync]
+
+  - id: push-blend
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend
+    waitFor: [build-blend]
+
+  - id: push-postprocess
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess
+    waitFor: [build-postprocess]
+
+  - id: push-aifs
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs
+    waitFor: [build-aifs]
+
+  - id: push-neuralgcm
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm
+    waitFor: [build-neuralgcm]
+
+images:
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest
+
+timeout: 3600s  # 1 hour max

@@ -1,0 +1,10 @@
+# GCS integration
+google-cloud-storage>=2.10.0
+gcsfs>=2023.6.0
+
+# Additional data processing (beyond conda)
+zarr>=2.16.0
+
+# Utilities
+python-dateutil>=2.8.0
+click>=8.1.0
