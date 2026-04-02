@@ -3,7 +3,7 @@
 This document describes the GCP-based cloud pipeline that replaces the original cron/HPC-based system.
 
 ```mermaid
-graph LR
+graph TD
     Sched["Cloud Scheduler\n(per forecast region)"]
     Workflow["Cloud Workflows\nMain Pipeline"]
 
