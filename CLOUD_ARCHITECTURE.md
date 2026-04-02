@@ -10,8 +10,6 @@ graph TD
 
     subgraph Orchestration
         Sched -- "HTTP POST\n(region arg)" --> Workflow["Cloud Workflows\nMain Pipeline"]
-        Workflow --> PubTrigger["Pub/Sub\npipeline-triggers"]
-        PubComplete["Pub/Sub\npipeline-completions"] --> Workflow
     end
 
     subgraph "Compute"
@@ -40,7 +38,7 @@ classDef storage fill:#34a853,color:#fff,stroke:#137333
 classDef compute fill:#fbbc04,color:#000,stroke:#f9ab00
 classDef orchestration fill:#ea4335,color:#fff,stroke:#c5221f
 
-class Sched,Workflow,PubTrigger,PubComplete orchestration
+class Sched,Workflow orchestration
 class Downloader,Postprocess,Blend,Sync,TPU compute
 class MainBucket,WeightsBucket storage
 ```
