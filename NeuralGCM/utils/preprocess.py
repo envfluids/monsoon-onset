@@ -4,6 +4,7 @@ import xarray as xr
 import datetime
 import argparse
 import logging
+import numpy as np
 
 # Configure logging - This setup is good.
 logging.basicConfig(
@@ -123,23 +124,14 @@ def make_ds(out_file_interp, out_file_ic, date_f):
     """
     logging.info(f"Starting dataset processing for {out_file_interp}")
     ds_ncep = None  # Initialize to None
-    ds_ERA = None  # Initialize to None
 
     try:
-        # --- Load Reference Dataset ---
-        path_ERA = "../data/model_ds/"
-        era_file = os.path.join(
-            path_ERA, "ERA5_2018_05_16_00.nc"
-        )  # Use a specific file
-        logging.info(f"Loading reference ERA5 dataset: {era_file}")
-        if not os.path.exists(era_file):
-            logging.error(f"Reference ERA5 file not found: {era_file}")
-            return False
-        ds_ERA = xr.open_dataset(era_file)
-        levels = ds_ERA["level"].values
-        lats = ds_ERA["latitude"].values
-        lons = ds_ERA["longitude"].values
-        logging.info("Reference dataset loaded successfully.")
+        levels = np.array([1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125,
+                           150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600,
+        650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975,
+        1000], dtype=np.int64)
+        lats = np.arange(90, -90.1, -0.25, dtype=np.float32)  # 721 latitudes from 90 to -90
+        lons = np.arange(0, 360, 0.25, dtype=np.float32)  # 1440 longitudes from 0 to 359.75
 
         # --- Load NCL Output Dataset ---
         logging.info(f"Loading intermediate NCL output dataset: {out_file_interp}")
@@ -289,9 +281,6 @@ def make_ds(out_file_interp, out_file_ic, date_f):
         if ds_ncep is not None:
             ds_ncep.close()
             logging.debug("Closed intermediate dataset.")
-        if ds_ERA is not None:
-            ds_ERA.close()
-            logging.debug("Closed reference ERA5 dataset.")
 
 
 def main():
