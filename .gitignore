@@ -14,6 +14,8 @@
 __pycache__/
 .DS_Store
 
+.terraform
+
 # Allow placeholder files to keep directory structure
 !weights/.gitkeep
 !output/.gitkeep

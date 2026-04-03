@@ -1,0 +1,21 @@
+# AIFS inference
+anemoi-inference>=0.1.0
+anemoi-utils>=0.3.0
+
+# Data processing
+xarray>=2023.6.0
+scipy>=1.11.0
+numpy>=1.24.0
+netcdf4>=1.6.0
+
+# ECMWF tools
+earthkit-data>=0.5.0
+eccodes>=1.6.0
+
+# GCS integration
+google-cloud-storage>=2.10.0
+gcsfs>=2023.6.0
+
+# Utilities
+python-dateutil>=2.8.0
+click>=8.1.0
