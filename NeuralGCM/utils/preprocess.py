@@ -1,10 +1,11 @@
+import argparse
+import datetime
+import logging
 import os
 import subprocess
-import xarray as xr
-import datetime
-import argparse
-import logging
+
 import numpy as np
+import xarray as xr
 
 # Configure logging - This setup is good.
 logging.basicConfig(
@@ -126,12 +127,54 @@ def make_ds(out_file_interp, out_file_ic, date_f):
     ds_ncep = None  # Initialize to None
 
     try:
-        levels = np.array([1, 2, 3, 5, 7, 10, 20, 30, 50, 70, 100, 125,
-                           150, 175, 200, 225, 250, 300, 350, 400, 450, 500, 550, 600,
-        650, 700, 750, 775, 800, 825, 850, 875, 900, 925, 950, 975,
-        1000], dtype=np.int64)
-        lats = np.arange(90, -90.1, -0.25, dtype=np.float32)  # 721 latitudes from 90 to -90
-        lons = np.arange(0, 360, 0.25, dtype=np.float32)  # 1440 longitudes from 0 to 359.75
+        levels = np.array(
+            [
+                1,
+                2,
+                3,
+                5,
+                7,
+                10,
+                20,
+                30,
+                50,
+                70,
+                100,
+                125,
+                150,
+                175,
+                200,
+                225,
+                250,
+                300,
+                350,
+                400,
+                450,
+                500,
+                550,
+                600,
+                650,
+                700,
+                750,
+                775,
+                800,
+                825,
+                850,
+                875,
+                900,
+                925,
+                950,
+                975,
+                1000,
+            ],
+            dtype=np.int64,
+        )
+        lats = np.arange(
+            90, -90.1, -0.25, dtype=np.float32
+        )  # 721 latitudes from 90 to -90
+        lons = np.arange(
+            0, 360, 0.25, dtype=np.float32
+        )  # 1440 longitudes from 0 to 359.75
 
         # --- Load NCL Output Dataset ---
         logging.info(f"Loading intermediate NCL output dataset: {out_file_interp}")

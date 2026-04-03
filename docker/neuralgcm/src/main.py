@@ -117,13 +117,6 @@ def _download_inputs(date: str, region: str, bucket: str, weights_bucket: str) -
         NGCM_UTILS.parent / "data" / "forcings" / "SST-SeaIce_clim_1979_2017_no_leap.nc",
     )
 
-    # 4. ERA5 reference grid (loaded at run_model.py module level and preprocess.py)
-    download_gcs_file(
-        weights_bucket,
-        "neuralgcm/data/ERA5_2018_05_16_00.nc",
-        NGCM_UTILS.parent / "data" / "model_ds" / "ERA5_2018_05_16_00.nc",
-    )
-
 
 def _run_science_scripts(date: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(NGCM_UTILS)}

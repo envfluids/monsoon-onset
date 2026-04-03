@@ -1,19 +1,17 @@
+import argparse
+import logging
+import os
+import pickle
+import warnings
+from datetime import datetime
+
 import jax
 import numpy as np
-import pickle
-import xarray
 import pandas as pd
+import xarray
+from dinosaur import horizontal_interpolation, spherical_harmonic, xarray_utils
 
-from dinosaur import horizontal_interpolation
-from dinosaur import spherical_harmonic
-from dinosaur import xarray_utils
 import neuralgcm
-import os
-import argparse
-from datetime import datetime
-import logging
-
-import warnings
 
 warnings.filterwarnings(
     "ignore", message="Consolidated metadata is currently not part.*"
@@ -73,13 +71,11 @@ ckpt["model_config_str"] = new_model_config_str
 model = neuralgcm.PressureLevelModel.from_checkpoint(ckpt)
 
 # ERA5 data on google cloud: Analysis-Ready & Cloud Optimized (ARCO) ERA5 datasets.
-era5_path = "../data/model_ds/ERA5_2018_05_16_00.nc"
-full_era5 = xarray.open_dataset(era5_path)
 era5_grid = spherical_harmonic.Grid(
-    latitude_nodes=full_era5.sizes["latitude"],
-    longitude_nodes=full_era5.sizes["longitude"],
-    latitude_spacing=xarray_utils.infer_latitude_spacing(full_era5.latitude),
-    longitude_offset=xarray_utils.infer_longitude_offset(full_era5.longitude),
+    latitude_nodes=721,
+    longitude_nodes=1440,
+    latitude_spacing="equiangular_with_poles",
+    longitude_offset=np.float32(0.0),
 )
 regridder = horizontal_interpolation.ConservativeRegridder(
     era5_grid, model.data_coords.horizontal, skipna=True
@@ -88,7 +84,6 @@ regridder = horizontal_interpolation.ConservativeRegridder(
 
 def run_model(date, date_f, forcings_clim, members):
     logging.info(f"Running model for date: {date_f}")
-    year = date.year
     path_gfs_Ini = f"../raw/ncep_ic/processed/gdas_{date_f}.nc"
     gfs_ds = xarray.open_dataset(path_gfs_Ini)
 
@@ -174,7 +169,9 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--date", type=str, help="Year to forecast")
     parser.add_argument("--mpi", type=int, help="MPI rank")
-    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument(
+        "--seed", type=int, default=None, help="Random seed for reproducibility"
+    )
     args = parser.parse_args()
     logging.info(f"MPI Rank{args.mpi}")
     mpi = args.mpi

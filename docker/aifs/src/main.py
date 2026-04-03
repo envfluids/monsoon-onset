@@ -115,8 +115,8 @@ def _download_inputs(aifs_date: str, region: str, bucket: str, weights_bucket: s
     # 2. Model weights
     download_gcs_file(
         weights_bucket,
-        "aifs/AIFS_v1.ckpt",
-        AIFS_UTILS.parent / "weights" / "AIFS_v1.ckpt",
+        "aifs/aifs-single-mse-1.1.ckpt",
+        AIFS_UTILS.parent / "weights" / "aifs-single-mse-1.1.ckpt",
     )
 
     # 3. Sparse transform matrix (filename hardcoded in download_ic.py / run_model.py)
