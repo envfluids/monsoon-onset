@@ -5,7 +5,7 @@
 # -----------------------------------------------------------------------------
 
 # Use NVIDIA PyTorch base image with CUDA
-FROM nvcr.io/nvidia/pytorch:24.01-py3
+FROM nvcr.io/nvidia/pytorch:26.01-py3
 
 WORKDIR /app
 
