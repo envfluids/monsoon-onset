@@ -27,6 +27,13 @@ resource "google_project_iam_member" "workflow_tpu_admin" {
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
+# Workflow SA can create Workflow executions (required for Cloud Scheduler -> Workflows)
+resource "google_project_iam_member" "workflow_invoker" {
+  project = var.project_id
+  role    = "roles/workflows.invoker"
+  member  = "serviceAccount:${google_service_account.workflow.email}"
+}
+
 # Workflow SA can write logs
 resource "google_project_iam_member" "workflow_logging" {
   project = var.project_id
