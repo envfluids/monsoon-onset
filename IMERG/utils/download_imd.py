@@ -1,6 +1,7 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 import numpy as np
+import pandas as pd
 import logging
 from pathlib import Path
 import imdlib as imd
@@ -11,22 +12,32 @@ logging.basicConfig(
 
 CDO_PATH = "/net/scratch2/marchakitus/conda-envs/operational/bin/cdo"
 
-def get_imd_data():
+# Note: IMD data is valid for the previous
+# 24 hours UTC relative to the requested date
+# (ie. IMD of 6/3 counts for 6/2)
+
+def get_imd_data(date_str=None):
     base = Path(__file__).resolve().parent.parent
-    date = datetime.today()
-    date_str = date.strftime('%Y-%m-%d')
-    date_IMD_formatted = date.strftime('%Y%m%d')
+    if date_str is None:
+        date = datetime.today() - timedelta(days=1)  # Default to yesterday's date
+        date_str = date.strftime('%Y%m%d')
+    else:
+        date = datetime.strptime(date_str, '%Y%m%d')
+
+    date_p1 = date + timedelta(days=1)
+    date_IMD_formatted = date_p1.strftime('%Y-%m-%d')
     print(f"Fetching data for: {date_str}")
     var_type = 'rain'
     file_dir= base / "raw" / "IMD"
     file_dir = str(file_dir)
     try:
         logging.info(f"Fetching IMD data for date: {date_str}")
-        data = imd.get_real_data(var_type, date_str, date_str, file_dir)
+        data = imd.get_real_data(var_type, date_IMD_formatted, date_IMD_formatted, file_dir)
         ds = data.get_xarray()
         ds["rain"] = ds["rain"].where(ds["rain"] != -999, np.nan)
-        filename = f"{date_IMD_formatted}.nc4"
-        filename_2 = f"regrid_{date_IMD_formatted}.nc4"
+        ds['time'] = ds['time'] - pd.Timedelta(days=1)
+        filename = f"{date_str}.nc4"
+        filename_2 = f"regrid_{date_str}.nc4"
         out_path = os.path.join(file_dir, filename)
         out_path_2 = os.path.join(file_dir,filename_2)
         ds.to_netcdf(out_path) 

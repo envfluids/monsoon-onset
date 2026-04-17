@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import time
 import re
+from download_imd import get_imd_data
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
@@ -29,16 +30,13 @@ def get_cluster():
 
 def main():
     DATE_F = get_data()
-    # DATE_F = "20250615"
-    # print(DATE_F)
     if DATE_F:
         logging.info("IMERG download script was successful, new data available")
         logging.info(f"Initializing compute job for date: {DATE_F}")
         cluster = get_cluster()
         JOB_NAME = f"IMERG_{DATE_F}"
         if cluster == "dsi":
-            from download_imd import get_imd_data
-            get_imd_data()
+            get_imd_data(date_str=DATE_F)
             command = (
                 f"sbatch "
                 f"--job-name={JOB_NAME} "
@@ -49,8 +47,7 @@ def main():
             )
         elif cluster == "derecho":
             logging.info("Downloading IMD data for the current date before submitting job.")
-            from download_imd import get_imd_data
-            get_imd_data()
+            get_imd_data(date_str=DATE_F)
             logging.info("IMD data download complete, proceeding to submit job.")
             command = (
                     f"qsub "

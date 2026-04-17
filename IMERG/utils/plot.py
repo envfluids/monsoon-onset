@@ -2,7 +2,6 @@ import xarray as xr
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdates
 import matplotlib.colors as mcolors
 from matplotlib.colors import ListedColormap
 from matplotlib.patches import Polygon
@@ -11,15 +10,33 @@ import cartopy.feature as cfeature
 from datetime import datetime, timedelta
 import os
 import glob
-from datetime import datetime
 from pathlib import Path
 import argparse
 import logging
 import json
+import re
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+MIN_DATE_FILTER = datetime(2026, 3, 31)
+DATE_PATTERN = re.compile(r'(\d{8})(?=[.-])')
+
+def get_files_for_date(file_pattern, date_f):
+
+    nc_files = sorted(glob.glob(file_pattern))
+
+    filtered_files = []
+    for file in nc_files:
+        basename = os.path.basename(file)
+        date_str = DATE_PATTERN.search(basename)
+        if date_str:
+            file_date = datetime.strptime(date_str.group(), '%Y%m%d')
+            if file_date >= MIN_DATE_FILTER and file_date <= datetime.strptime(date_f, '%Y%m%d'):
+                filtered_files.append(file)
+
+    return filtered_files
 
 def sequence_overlap(X, lseason, nday):
     nr, nv = np.shape(X)
@@ -175,9 +192,7 @@ def plot_graph_mod(
             cmap= ListedColormap(['lightgreen']),
             add_colorbar=False
         )
-        for (i, j), z in np.ndenumerate(array):
-            #rint("Here")
-           
+        for (i, j), z in np.ndenumerate(array):           
             if not np.isnan(z):
                 date = (datetime(2026, 1, 1) + timedelta(z + 90)).strftime('%m/%d')
                 lat = dat["lat"][i]
@@ -246,58 +261,6 @@ def get_onset_csv(O1, dat_ap, out_path, filen):
     
     O1set.to_dataframe().to_csv(odatepath)
 
-# Main Workflow:
-def process(date_f):
-    base = Path(__file__).resolve().parent.parent
-    data_dir = base / "raw" / "IMERG_daily"
-    file_pattern = os.path.join(data_dir, '*2026*.nc4')
-    nc_files = sorted(glob.glob(file_pattern))
-    #print(nc_files)
-    filtered_files = []
-    for file in nc_files:
-        basename = os.path.basename(file)
-        try:
-            date_str = basename.split('.')[4][:8] 
-            # if int(date_str) >= 20260401:
-            if int(date_str) >= 20260301:
-                filtered_files.append(file)
-        except:
-            continue
-
-    # yesdate = (datetime.now() - timedelta(days=1)).strftime('%Y%m%dT12')
-    yesdate = date_f
-    logging.info(f"Processing data for date: {yesdate}")
-    output_dir = base / "output" / yesdate
-    logging.info(f"Output directory: {output_dir}")
-    os.makedirs(output_dir, exist_ok=True)
-    dat = xr.open_mfdataset(filtered_files, combine='by_coords')
-    MWmean_dir = base / "data" / "MWmean.npy"
-    mwmean = np.load(MWmean_dir)
-    dat_ap = dat.sel(lat= slice(7, 39), lon=slice(67, 101)).coarsen(lat=20, lon=20, boundary="trim").mean()
-    dat_5 = dat_ap.isel(time=slice(-5, None))
-    dat_1 = dat_ap.isel(time=slice(-1, None))
-
-    rainfall_5 = dat_5["precipitation"].mean(dim='time')
-    rainfall_5 = np.transpose(np.where(rainfall_5 < 0, np.nan, rainfall_5.values))
-    rainfall_1 = dat_1["precipitation"].mean(dim='time')
-    rainfall_1 = np.transpose(np.where(rainfall_1 < 0, np.nan, rainfall_1.values))
-
-    logging.info("Plotting graphs")
-
-    O1, O2, MWmean = onset_agro_bis(dat_ap["precipitation"].stack(grid=["lat", "lon"]).values, dat_ap['time'].values.shape[0], 1, 5, mwmean, 10, 5, 30)
-    O1 = O1[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
-    O2 = O2[0].reshape((len(dat_ap["lat"]), len(dat_ap["lon"])))
-    plot_graph_mod(O1, "[IMERG] Onset Occurences - Without Dryspell", [], dat_ap, "Onset_occ_wo_dryspell", yesdate)
-    plot_graph_mod(O2, "[IMERG] Onset Occurences - With Dryspell", [], dat_ap, "Onset_occ_w_dryspell", yesdate)  
-    plot_graph_mod(rainfall_5, "5-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_5, "Five_day_rain", yesdate)
-    plot_graph_mod(rainfall_1, "1-day Rainfall Average", [0,1,2,3,4,5,6,7,8,9], dat_1, "One_day_rain", yesdate)
-
-# wrb:
-#    get_onset_csv(O1, dat_ap, output_dir)
-    get_onset_csv(O1, dat_ap, output_dir,'OnsetDatesIMERGwithoutDrySpell.csv')
-    get_onset_csv(O2, dat_ap, output_dir,'OnsetDatesIMERGwithDrySpell.csv')
-
-    logging.info("Graphs plotted successfully.")
 
 
 def process_IMD_IMERG(date_f):
@@ -308,18 +271,8 @@ def process_IMD_IMERG(date_f):
     #Step(2) IMERG Whole Plots
     
     file_pattern = os.path.join(data_dir, '*2026*.nc4')
-    nc_files = sorted(glob.glob(file_pattern))
-    #print(nc_files)
-    filtered_files = []
-    for file in nc_files:
-        basename = os.path.basename(file)
-        try:
-            date_str = basename.split('.')[4][:8] 
-            # if int(date_str) >= 20260401:
-            if int(date_str) >= 20260301:
-                filtered_files.append(file)
-        except:
-            continue
+    filtered_files = get_files_for_date(file_pattern, date_f)
+
     yesdate = date_f
     logging.info(f"Processing IMERG data for date: {yesdate}")
     output_dir = base / "output" / yesdate
@@ -350,22 +303,10 @@ def process_IMD_IMERG(date_f):
     get_onset_csv(O2, dat_ap_IMERG, output_dir,'OnsetDatesIMERGwithDrySpell.csv')
     
     # Step (3) IMD Plots
-    file_dir= base / "raw" / "IMD"
+    file_dir = base / "raw" / "IMD"
     file_pattern = os.path.join(file_dir, 'regrid_2026*.nc4')
-    nc_files = sorted(glob.glob(file_pattern))
-    
-    filtered_files = []
-    for file in nc_files:
-        basename = os.path.basename(file)
-        try:
-            date_str = basename.split('_')[1].split('.')[0]  # '2026-04-01'
-            date_int = int(date_str)        # '20260401'
-            # if date_int >= 20260401:
-            if date_int >= 20260301:
-                filtered_files.append(file)
-        except Exception as e:
-            logging.error(f"Error processing file {file}: {e}")
-            continue
+    filtered_files = get_files_for_date(file_pattern, date_f)
+
     dat = xr.open_mfdataset(filtered_files, combine='by_coords')
     dat_ap = dat
     dat_5 = dat_ap.isel(time=slice(-5, None))
@@ -388,7 +329,7 @@ def process_IMD_IMERG(date_f):
     
     # Step (4) Timeseries Plots
     
-    dat_ap['time'] = dat_ap['time'] - pd.Timedelta(days=1) # This is needed because the IMD date predicts the previous 24 hours UTC but IMERG produces the 24 hours of that date (ie. IMD of 6/3 counts for 6/2)
+    # dat_ap['time'] = dat_ap['time'] - pd.Timedelta(days=1) # This is needed because the IMD date predicts the previous 24 hours UTC but IMERG produces the 24 hours of that date (ie. IMD of 6/3 counts for 6/2)
     
     df_path = base / "data" / "grid_2x2_dissem.csv"
     df = pd.read_csv(df_path)
@@ -429,11 +370,6 @@ def main():
     )
     args = parser.parse_args()
     date_f = args.date
-    cluster = get_cluster()
-    # if cluster == "derecho":
-    #     process_IMD_IMERG(date_f)
-    # else:
-    #     process(date_f)
 
     process_IMD_IMERG(date_f)
 

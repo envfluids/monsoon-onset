@@ -13,7 +13,8 @@ if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
 fi
 
+conda activate /net/scratch2/marchakitus/conda-envs/operational
  
 python ./plot.py --date $DATE_F
 
-# python ./plot_bias.py
+python ./plot_bias.py --date $DATE_F

@@ -10,26 +10,37 @@ from shapely.geometry import box
 from matplotlib.cm import ScalarMappable
 from pathlib import Path
 import logging
+import argparse
+import re
+from datetime import datetime
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
 )
 
+DATE_PATTERN = re.compile(r'(\d{8})(?=[.-])')
 
-def get_IMERG(IMERG_data_dir):
-    file_pattern = os.path.join(IMERG_data_dir, "*2026*.nc4")
-    nc_files = sorted(glob.glob(str(file_pattern)))
+def get_files_for_date(file_pattern, date_f):
+
+    nc_files = sorted(glob.glob(file_pattern))
+    min_date_filter = datetime.strptime(date_f, '%Y%m%d') - pd.Timedelta(days=5)
 
     filtered_files = []
     for file in nc_files:
         basename = os.path.basename(file)
-        try:
-            date_str = basename.split(".")[4][:8]
-            if int(date_str) >= 20260301:
+        date_str = DATE_PATTERN.search(basename)
+        if date_str:
+            file_date = datetime.strptime(date_str.group(), '%Y%m%d')
+            if file_date > min_date_filter and file_date <= datetime.strptime(date_f, '%Y%m%d'):
                 filtered_files.append(file)
-        except ValueError as e:
-            logging.error(f"Error parsing date from filename {basename}: {e}")
-            continue
+
+    assert len(filtered_files) == 5, f"Expected 5 files for the date range, but found {len(filtered_files)}"
+
+    return filtered_files
+
+def get_IMERG(IMERG_data_dir, date_f):
+    file_pattern = os.path.join(IMERG_data_dir, "*2026*.nc4")
+    filtered_files = get_files_for_date(file_pattern, date_f)
 
     dat = xr.open_mfdataset(filtered_files, combine="by_coords")
     dat = dat.sel(time=dat["time"][-5:].values)["precipitation"]
@@ -42,9 +53,9 @@ def get_IMERG(IMERG_data_dir):
     return dat_ap
 
 
-def get_model_data(base):
+def get_model_data(base, date_f):
     IMERG_data_dir = base / "IMERG" / "raw" / "IMERG_daily"
-    dat_ap = get_IMERG(IMERG_data_dir)
+    dat_ap = get_IMERG(IMERG_data_dir, date_f)
 
     date_times = dat_ap.time.values
     last_dt = pd.to_datetime(date_times[-1])
@@ -262,7 +273,17 @@ def plot_IMERG_model_bias(PATHS, ds_D, For_date_times):
 def main():
     base = Path(__file__).resolve().parent.parent.parent
     logging.info("Getting model data")
-    ds_D, date_times, dateF = get_model_data(base)
+    parser = argparse.ArgumentParser(
+        description="Process weather data for a given year"
+    )
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Date for the inference in YYYYMMDD format",
+    )
+    args = parser.parse_args()
+    date_f = args.date
+    ds_D, date_times, dateF = get_model_data(base, date_f)
     logging.info(f"Got model data for final date {dateF}")
     SHAPEFILE = (
         base / "blend" / "data" / "india_shapefile" / "India_Country_Boundary.shp"

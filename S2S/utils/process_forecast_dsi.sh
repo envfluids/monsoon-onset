@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -l
 #SBATCH -p general
 #SBATCH -N 1
 #SBATCH -n 2
