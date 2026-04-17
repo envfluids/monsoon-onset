@@ -12,7 +12,7 @@ logging.basicConfig(
 
 SCRIPT_BASE = "run_model"
 
-ALLOWED_HOURS = ["00", "12"]
+ALLOWED_HOURS = ["00"]
 MAX_RETRIES = 5  # Max number of submission attempts
 RETRY_DELAY_SECONDS = 5  # Initial wait time in seconds between retries
 BACKOFF_FACTOR = 2 # Factor by which the delay increases
