@@ -8,7 +8,7 @@
 */logs/*
 */raw/*
 */latest/*
-*/.auth/*
+**/.auth/*
 **/Thumbs.db
 .config/
 __pycache__/
