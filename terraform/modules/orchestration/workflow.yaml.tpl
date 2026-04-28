@@ -9,8 +9,8 @@ main:
     - init:
         assign:
           - region: $${args.region}
-          - date: $${default(args.date, "")}
-          - action: $${default(args.action, "run")}
+          - date: $${default(map.get(args, "date"), "")}
+          - action: $${default(map.get(args, "action"), "run")}
           - project_id: "${project_id}"
           - gcs_bucket: "monsoon-${environment}-data-${project_id}"
 
@@ -37,6 +37,8 @@ main:
                 - env:
                     - name: ACTION
                       value: get_latest_date
+                    - name: SOURCE
+                      value: ecmwf
                     - name: FORECAST_REGION
                       value: $${region}
         result: date_check_execution
@@ -66,6 +68,25 @@ main:
     - check_empty_date:
         switch:
           - condition: $${date == ""}
+            next: return_no_data
+
+    - read_last_processed:
+        try:
+          call: http.get
+          args:
+            url: $${"https://storage.googleapis.com/download/storage/v1/b/" + gcs_bucket + "/o/" + region + "%2Flatest.txt?alt=media"}
+            auth:
+              type: OAuth2
+          result: last_processed_file
+        except:
+          as: e
+          steps:
+            - no_prior_run:
+                next: check_action
+
+    - check_already_processed:
+        switch:
+          - condition: $${last_processed_file.body == date}
             next: return_no_data
 
     # For "check"-only action, stop after confirming data is available
@@ -149,12 +170,12 @@ main:
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.image}"
-                                      environment:
-                                        variables:
-                                          DATE: $${date}
-                                          FORECAST_REGION: $${region}
-                                          GCS_BUCKET: $${gcs_bucket}
-                                          GCS_WEIGHTS_BUCKET: "${weights_bucket}"
+                                    environment:
+                                      variables:
+                                        DATE: $${date}
+                                        FORECAST_REGION: $${region}
+                                        GCS_BUCKET: $${gcs_bucket}
+                                        GCS_WEIGHTS_BUCKET: "${weights_bucket}"
                           allocationPolicy:
                             instances:
                               - policy:
@@ -216,12 +237,12 @@ main:
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.neuralgcm_image}"
-                                      environment:
-                                        variables:
-                                          DATE: $${date}
-                                          FORECAST_REGION: $${region}
-                                          GCS_BUCKET: $${gcs_bucket}
-                                          GCS_WEIGHTS_BUCKET: "${weights_bucket}"
+                                    environment:
+                                      variables:
+                                        DATE: $${date}
+                                        FORECAST_REGION: $${region}
+                                        GCS_BUCKET: $${gcs_bucket}
+                                        GCS_WEIGHTS_BUCKET: "${weights_bucket}"
                           allocationPolicy:
                             instances:
                               - policy:

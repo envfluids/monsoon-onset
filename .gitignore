@@ -16,6 +16,7 @@ __pycache__/
 
 .terraform
 .terraform.lock.hcl
+*.tfvars
 
 # Allow placeholder files to keep directory structure
 !weights/.gitkeep

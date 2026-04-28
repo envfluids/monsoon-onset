@@ -66,9 +66,10 @@ def save_data(DATE, OUTPUT_FILE):
     def get_open_data(param, levelist=[]):
         fields = defaultdict(list)
         # Get the data for the current date and the previous date
+        logging.info("Using Azure source for ECMWF Open Data")
         for date in [DATE - datetime.timedelta(hours=6), DATE]:
             data = ekd.from_source(
-                "ecmwf-open-data", date=date, param=param, levelist=levelist
+                "ecmwf-open-data", source="azure", date=date, param=param, levelist=levelist
             )
             for f in data:
                 # Open data is between -180 and 180, we need to shift it to 0-360

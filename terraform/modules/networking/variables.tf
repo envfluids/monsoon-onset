@@ -29,8 +29,3 @@ variable "subnet_cidr" {
   default     = "10.0.0.0/20"
 }
 
-variable "connector_cidr" {
-  description = "CIDR range for VPC connector (must not overlap with subnet)"
-  type        = string
-  default     = "10.8.0.0/28"
-}

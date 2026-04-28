@@ -320,9 +320,6 @@ Cloud Workflows (main pipeline)
 - **Cloud NAT** for outbound internet access (downloading external forecast data) without public IPs
 - **Firewall rules**: internal VPC traffic, IAP SSH (port 22 from `35.235.240.0/20`), and Google
   health check ranges
-- **VPC Connector** (`google_vpc_access_connector`) — allows Cloud Run Jobs to reach VPC resources;
-  `e2-micro` in dev, `e2-standard-4` in prod
-
 ### Storage (`modules/storage`)
 
 - **Main data bucket** (`monsoon-{env}-data-{project_id}`): stores raw downloads, intermediate
@@ -351,7 +348,6 @@ Creates Cloud Run v2 Jobs (not Services — these are batch workloads, not HTTP 
 
 All Cloud Run Jobs:
 - Run under the pipeline service account
-- Route traffic through the VPC connector
 - Receive `ENVIRONMENT`, `GCS_BUCKET`, `GCS_WEIGHTS_BUCKET`, `PROJECT_ID`, and `FORECAST_REGION`
   as environment variables (region is overridden at execution time by the workflow)
 

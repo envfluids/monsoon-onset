@@ -80,9 +80,8 @@ module "compute" {
   region      = var.region
   environment = local.environment
 
-  vpc_id           = module.networking.vpc_id
-  vpc_subnetwork   = module.networking.subnetwork_id
-  vpc_connector_id = module.networking.vpc_connector_id
+  vpc_id         = module.networking.vpc_id
+  vpc_subnetwork = module.networking.subnetwork_id
 
   gcs_bucket            = module.storage.bucket_name
   weights_bucket        = module.storage.weights_bucket_name
@@ -118,6 +117,7 @@ module "orchestration" {
 
   # Dev: less frequent runs
   pipeline_schedule = "0 */6 * * *"  # Every 6 hours
+  call_log_level    = "LOG_ALL_CALLS"
 
   cloud_run_services = module.compute.cloud_run_services
   batch_job_template = module.compute.batch_job_template

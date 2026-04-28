@@ -34,6 +34,13 @@ resource "google_project_iam_member" "workflow_invoker" {
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
+# Workflow SA can read GCS intermediate files (latest_date.txt, latest.txt)
+resource "google_storage_bucket_iam_member" "workflow_gcs_reader" {
+  bucket = "monsoon-${var.environment}-data-${var.project_id}"
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workflow.email}"
+}
+
 # Workflow SA can write logs
 resource "google_project_iam_member" "workflow_logging" {
   project = var.project_id
@@ -99,6 +106,7 @@ resource "google_workflows_workflow" "main_pipeline" {
   project             = var.project_id
   region              = var.region
   service_account     = google_service_account.workflow.email
+  call_log_level      = var.call_log_level
   deletion_protection = false
 
   source_contents = templatefile("${path.module}/workflow.yaml.tpl", {

@@ -37,12 +37,6 @@ variable "vpc_subnetwork" {
   type        = string
 }
 
-variable "vpc_connector_id" {
-  description = "VPC connector ID for Cloud Run"
-  type        = string
-  default     = null
-}
-
 # -----------------------------------------------------------------------------
 # Storage Configuration
 # -----------------------------------------------------------------------------

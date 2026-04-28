@@ -8,7 +8,7 @@ locals {
     downloader = {
       name   = "${var.name_prefix}-${var.environment}-downloader"
       image  = var.downloader_image
-      memory = "2Gi"
+      memory = "4Gi"
       cpu    = "2"
       timeout = "900s"  # 15 min for downloads
     }
@@ -90,12 +90,6 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       max_retries = 2
 
       service_account = var.service_account_email
-
-      # VPC access for internal resources
-      vpc_access {
-        connector = var.vpc_connector_id
-        egress    = "ALL_TRAFFIC"
-      }
     }
 
     task_count = 1

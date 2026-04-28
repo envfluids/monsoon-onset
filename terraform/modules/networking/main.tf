@@ -131,19 +131,3 @@ resource "google_compute_firewall" "allow_health_checks" {
   target_tags = ["allow-health-check"]
 }
 
-# -----------------------------------------------------------------------------
-# VPC Connector for Cloud Run (Serverless VPC Access)
-# Allows Cloud Run to access resources in the VPC
-# -----------------------------------------------------------------------------
-
-resource "google_vpc_access_connector" "main" {
-  name          = "${var.name_prefix}-${var.environment}-connector"
-  project       = var.project_id
-  region        = var.region
-  network       = google_compute_network.main.name
-  ip_cidr_range = var.connector_cidr
-  machine_type  = var.environment == "prod" ? "e2-standard-4" : "e2-micro"
-
-  min_instances = var.environment == "prod" ? 2 : 2
-  max_instances = var.environment == "prod" ? 10 : 3
-}

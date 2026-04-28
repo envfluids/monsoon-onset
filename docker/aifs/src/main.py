@@ -20,7 +20,6 @@ import os
 import sys
 import logging
 import subprocess
-from datetime import datetime, timedelta
 from pathlib import Path
 
 import click
@@ -72,10 +71,10 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
 @click.option("--region",         envvar="FORECAST_REGION",   default="india")
 @click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
 @click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
-def main(date, region, bucket, weights_bucket):
+def main(aifs_date, region, bucket, weights_bucket):
     # date is the NeuralGCM date; AIFS IC is 12 hours earlier
-    aifs_date = (datetime.strptime(date, "%Y%m%dT%H") - timedelta(hours=12)).strftime("%Y%m%dT%H")
-    logger.info(f"NeuralGCM date: {date}, AIFS IC date: {aifs_date}")
+
+    logger.info(f"IC date: {aifs_date}")
 
     _setup_directories()
     _download_inputs(aifs_date, region, bucket, weights_bucket)
@@ -85,7 +84,7 @@ def main(date, region, bucket, weights_bucket):
 
 def _setup_directories() -> None:
     for subdir in ["raw/ifs_ic", "raw/output", "output/sji", "output/tcw", "output/tp",
-                   "weights", "EKR/mir_16_linear"]:
+                   "output/tp_0p25", "weights", "EKR/mir_16_linear", "data", "grids"]:
         (AIFS_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
 
 
@@ -127,6 +126,20 @@ def _download_inputs(aifs_date: str, region: str, bucket: str, weights_bucket: s
         AIFS_UTILS.parent / "EKR" / "mir_16_linear" / sparse,
     )
 
+    # 4. Post processing data files (e.g. lat/lon grids, masks)
+    grid_2p0 = "grid_2p0.txt"
+    download_gcs_file(
+        weights_bucket,
+        f"aifs/grids/{grid_2p0}",
+        AIFS_UTILS.parent / "grids" / grid_2p0,
+    )
+
+    india_mask = "india_mask_2p0.nc"
+    download_gcs_file(
+        weights_bucket,
+        f"aifs/data/{india_mask}",
+        AIFS_UTILS.parent / "data" / india_mask,
+    )
 
 def _run_science_scripts(aifs_date: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(AIFS_UTILS)}

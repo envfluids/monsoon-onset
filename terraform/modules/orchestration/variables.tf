@@ -35,6 +35,12 @@ variable "pipeline_schedule" {
   default     = "*/15 * * * *"  # Every 15 minutes
 }
 
+variable "call_log_level" {
+  description = "Workflow call log level for execution history (LOG_ALL_CALLS, LOG_ERRORS_ONLY, LOG_NONE)"
+  type        = string
+  default     = "LOG_NONE"
+}
+
 variable "weights_bucket" {
   description = "GCS bucket name for model weights and large static files"
   type        = string
