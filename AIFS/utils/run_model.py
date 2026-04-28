@@ -15,7 +15,11 @@ import argparse
 import logging
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 TFM_N320_LATLON = load_npz(

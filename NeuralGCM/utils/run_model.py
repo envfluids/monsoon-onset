@@ -21,7 +21,11 @@ output_path = "../raw/output"
 N_MEMBERS = 30
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 # output_path = '/glade/derecho/scratch/mgupta/NCGM_Tutorial_Hamid/ncgm_monsoon_2.8_precip_S2S_clm'
 

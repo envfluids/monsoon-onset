@@ -16,7 +16,10 @@ os.system("ml conda")
 # --- Basic Configuration ---
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
     handlers=[logging.StreamHandler(), logging.FileHandler("pipeline_recovery_derecho.log")],
 )
 

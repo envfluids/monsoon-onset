@@ -9,13 +9,17 @@ SAVE_DIR = "../raw/ncep_ic/download"  # Directory for downloaded files
 # BASE_URL_PATTERN = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.{date}/{cycle}/atmos/gdas.t{cycle}z.atmf000.nc"
 BASE_URL_PATTERN = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.{date}/{cycle}/atmos/gdas.t{cycle}z.pgrb2.0p25.f000"
 CYCLES_TO_CHECK = 6  # How many past 6-hour cycles to check
-CYCLE_HOURS = [18, 12, 6, 0]  # Standard UTC cycle hours
+CYCLE_HOURS = [0]  # Only use 00z initial conditions operationally
 REQUEST_TIMEOUT = 15  # Timeout in seconds for HEAD and GET requests
 DOWNLOAD_CHUNK_SIZE = 8192  # Chunk size for downloading
 
 # --- Logging Setup ---
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 # --- Functions ---
@@ -92,6 +96,17 @@ def get_latest_available_cycle(pattern, num_cycles_to_check, cycles, timeout):
 
     logging.warning("Could not find any recent available cycle after checking.")
     return None, None, None
+
+
+def get_cycle_for_date(pattern, date_str):
+    """Build the NOMADS URL and local path for an explicit YYYYMMDDTHH cycle."""
+    check_dt = datetime.datetime.strptime(date_str, "%Y%m%dT%H")
+    date_part = check_dt.strftime("%Y%m%d")
+    cycle_part = check_dt.strftime("%H")
+    url = pattern.format(date=date_part, cycle=cycle_part)
+    filename = f"gdas_{date_part}T{cycle_part}.pgrb2"
+    save_path = os.path.join(SAVE_DIR, filename)
+    return url, filename, save_path
 
 
 def check_local_file_exists(filepath):
@@ -173,14 +188,19 @@ def ensure_directory_exists(dir_path):
 # --- Main Orchestration ---
 
 
-def get_data():
+def get_data(date_str=None):
     """Main function to find, check, and download the latest IC file."""
     logging.info("--- Starting Initial Conditions Check ---")
 
     # 1. Find the latest available cycle URL and target paths
-    latest_url, latest_filename, latest_save_path = get_latest_available_cycle(
-        BASE_URL_PATTERN, CYCLES_TO_CHECK, CYCLE_HOURS, REQUEST_TIMEOUT
-    )
+    if date_str:
+        latest_url, latest_filename, latest_save_path = get_cycle_for_date(
+            BASE_URL_PATTERN, date_str
+        )
+    else:
+        latest_url, latest_filename, latest_save_path = get_latest_available_cycle(
+            BASE_URL_PATTERN, CYCLES_TO_CHECK, CYCLE_HOURS, REQUEST_TIMEOUT
+        )
 
     if not latest_url:
         logging.warning("No suitable initial conditions file found on the server.")

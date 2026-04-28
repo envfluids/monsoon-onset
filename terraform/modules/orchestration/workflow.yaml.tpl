@@ -25,7 +25,7 @@ main:
           - condition: $${date == ""}
             next: run_date_check
           - condition: true
-            next: log_start
+            next: check_empty_date
 
     - run_date_check:
         call: googleapis.run.v2.projects.locations.jobs.run
@@ -38,7 +38,7 @@ main:
                     - name: ACTION
                       value: get_latest_date
                     - name: SOURCE
-                      value: ecmwf
+                      value: both
                     - name: FORECAST_REGION
                       value: $${region}
         result: date_check_execution
@@ -95,6 +95,67 @@ main:
           - condition: $${action == "check"}
             next: return_no_data  # Date is logged above; exit without running full pipeline
 
+    - set_ic_paths:
+        assign:
+          - ecmwf_ic_path: $${region + "/raw/ecmwf/" + date + "/input_state_" + date + ".pkl"}
+          - ncep_ic_path: $${region + "/raw/ncep/" + date + "/gdas_" + date + ".pgrb2"}
+          - ecmwf_ic_exists: false
+          - ncep_ic_exists: false
+
+    - check_ecmwf_ic:
+        try:
+          call: http.get
+          args:
+            url: $${"https://storage.googleapis.com/storage/v1/b/" + gcs_bucket + "/o/" + text.replace_all(ecmwf_ic_path, "/", "%2F")}
+            auth:
+              type: OAuth2
+          result: ecmwf_ic_metadata
+        except:
+          as: e
+          steps:
+            - ecmwf_ic_missing:
+                next: check_ncep_ic
+
+    - mark_ecmwf_ic_exists:
+        assign:
+          - ecmwf_ic_exists: true
+
+    - check_ncep_ic:
+        try:
+          call: http.get
+          args:
+            url: $${"https://storage.googleapis.com/storage/v1/b/" + gcs_bucket + "/o/" + text.replace_all(ncep_ic_path, "/", "%2F")}
+            auth:
+              type: OAuth2
+          result: ncep_ic_metadata
+        except:
+          as: e
+          steps:
+            - ncep_ic_missing:
+                next: maybe_write_ecmwf_date_marker
+
+    - mark_ncep_ic_exists:
+        assign:
+          - ncep_ic_exists: true
+
+    - maybe_write_ecmwf_date_marker:
+        switch:
+          - condition: $${ecmwf_ic_exists}
+            next: write_ecmwf_date_marker
+          - condition: true
+            next: log_start
+
+    - write_ecmwf_date_marker:
+        call: http.post
+        args:
+          url: $${"https://storage.googleapis.com/upload/storage/v1/b/" + gcs_bucket + "/o?uploadType=media&name=" + text.replace_all(region + "/intermediate/latest_ecmwf_date.txt", "/", "%2F")}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: text/plain
+          body: $${date}
+        result: ecmwf_date_marker
+
     - log_start:
         call: sys.log
         args:
@@ -111,6 +172,18 @@ main:
           branches:
             - download_ecmwf:
                 steps:
+                  - maybe_download_ecmwf:
+                      switch:
+                        - condition: $${ecmwf_ic_exists}
+                          next: skip_ecmwf_download
+                        - condition: true
+                          next: run_ecmwf_download
+                  - skip_ecmwf_download:
+                      call: sys.log
+                      args:
+                        text: $${"Skipping ECMWF IC download; found gs://" + gcs_bucket + "/" + ecmwf_ic_path}
+                        severity: INFO
+                      next: ecmwf_download_done
                   - run_ecmwf_download:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
@@ -126,8 +199,24 @@ main:
                                   - name: FORECAST_REGION
                                     value: $${region}
                       result: ecmwf_result
+                      next: ecmwf_download_done
+                  - ecmwf_download_done:
+                      assign:
+                        - ecmwf_download_checked: true
             - download_ncep:
                 steps:
+                  - maybe_download_ncep:
+                      switch:
+                        - condition: $${ncep_ic_exists}
+                          next: skip_ncep_download
+                        - condition: true
+                          next: run_ncep_download
+                  - skip_ncep_download:
+                      call: sys.log
+                      args:
+                        text: $${"Skipping NCEP IC download; found gs://" + gcs_bucket + "/" + ncep_ic_path}
+                        severity: INFO
+                      next: ncep_download_done
                   - run_ncep_download:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
@@ -143,6 +232,10 @@ main:
                                   - name: FORECAST_REGION
                                     value: $${region}
                       result: ncep_result
+                      next: ncep_download_done
+                  - ncep_download_done:
+                      assign:
+                        - ncep_download_checked: true
 
     # -----------------------------------------------------------------------------
     # Run models in parallel

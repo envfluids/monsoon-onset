@@ -3,7 +3,11 @@ import logging
 import os
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 start_date = datetime.datetime(2025, 5, 15, 0)

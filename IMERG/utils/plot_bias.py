@@ -15,7 +15,11 @@ import re
 from datetime import datetime
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 DATE_PATTERN = re.compile(r'(\d{8})(?=[.-])')

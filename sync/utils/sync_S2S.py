@@ -8,7 +8,13 @@ import json
 from drive import drive_sync_S2S
 import argparse
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
+)
 
 
 

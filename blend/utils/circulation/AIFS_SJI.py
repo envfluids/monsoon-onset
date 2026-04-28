@@ -8,7 +8,11 @@ from matplotlib.colors import ListedColormap
 import matplotlib.dates as mdates
 import logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 def compute_somali_jet_index(u850_daily, v850_daily):

@@ -35,7 +35,11 @@ def parse_date(date_str):
 
 def get_data(date, base, mok=False, source=None):
     logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+        level=logging.INFO,
+        format=(
+            "%(asctime)s - %(levelname)s - %(name)s - "
+            "%(pathname)s:%(lineno)d - %(message)s"
+        ),
     )
     if source == "google":
         out_path = base / "blend" / "output_google" / date

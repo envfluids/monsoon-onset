@@ -9,7 +9,11 @@ else:
     from circulation.AIFS_SJI import plot_sji
 import logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 def plot_circulation(base, date):

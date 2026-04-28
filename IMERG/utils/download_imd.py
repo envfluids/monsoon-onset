@@ -7,7 +7,11 @@ from pathlib import Path
 import imdlib as imd
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 CDO_PATH = "/net/scratch2/marchakitus/conda-envs/operational/bin/cdo"

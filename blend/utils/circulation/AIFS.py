@@ -9,7 +9,11 @@ import matplotlib.dates as mdates
 import matplotlib.patches as patches
 import logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 
@@ -469,4 +473,3 @@ def plot_aifs(input_path, save_dir):
         windspd200_filename = save_dir / f'AIFS_windspd200_day_{day}.png' ### Path needs to be changed for automation
         plot_wndspd200_aifs(u200_daily, v200_daily, init_time_index=0,
                             forecast_day_index=day, save_path=windspd200_filename)
-

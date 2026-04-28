@@ -11,7 +11,13 @@ import logging
 import argparse
 import json
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
+)
 
 # --- Configuration Constants ---
 # If modifying these scopes, delete the file token.json.

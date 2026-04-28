@@ -6,7 +6,11 @@ import xarray as xr
 import logging
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 def get_latest_new_timestamp(bucket_path: str, token_path: str, local_download_dir: str):

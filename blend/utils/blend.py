@@ -3,7 +3,11 @@ import numpy as np
 from pathlib import Path
 import logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 def write_public(df, coef_orig):

@@ -17,7 +17,11 @@ from shapely.geometry import Polygon
 from pathlib import Path
 import logging
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s %(levelname)s:%(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 def make_maps(summary, output_path, mok=False):

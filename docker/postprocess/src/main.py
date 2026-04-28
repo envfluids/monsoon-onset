@@ -17,7 +17,12 @@ from datetime import datetime, timedelta
 import click
 from google.cloud import storage
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+LOG_FORMAT = (
+    "%(asctime)s - %(levelname)s - %(name)s - "
+    "%(pathname)s:%(lineno)d - %(message)s"
+)
+
+logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 REQUIRED_FILES = [

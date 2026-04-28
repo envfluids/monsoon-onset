@@ -9,15 +9,22 @@ import os
 import logging
 
 logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - "
+        "%(pathname)s:%(lineno)d - %(message)s"
+    ),
 )
 
 
-def check_new_data():
+def check_new_data(date_str=None):
     now_utc = datetime.datetime.utcnow()
     logging.info(f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    DATE = OpendataClient().latest()
+    if date_str:
+        DATE = datetime.datetime.strptime(date_str, "%Y%m%dT%H")
+    else:
+        DATE = OpendataClient().latest()
     # DATE = datetime.datetime(2026, 3, 21, 12)
     DATE_FORMATTED = DATE.strftime("%Y%m%dT%H")
 
@@ -117,8 +124,8 @@ def save_data(DATE, OUTPUT_FILE):
         pickle.dump(input_state, f)
 
 
-def get_data():
-    DATE, OUTPUT_FILE = check_new_data()
+def get_data(date_str=None):
+    DATE, OUTPUT_FILE = check_new_data(date_str)
     if DATE:
         save_data(DATE, OUTPUT_FILE)
         logging.info(f"Data saved to {OUTPUT_FILE}")
