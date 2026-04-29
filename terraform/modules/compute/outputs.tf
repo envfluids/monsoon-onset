@@ -12,34 +12,27 @@ output "cloud_run_services" {
   }
 }
 
-output "batch_job_template" {
-  description = "Cloud Batch job template configuration for AIFS and TPU"
+output "ic_checker_service" {
+  description = "Cloud Run service metadata for the IC checker"
   value = {
-    project       = var.project_id
-    region        = var.region
-    machine_type  = "n1-standard-8"
-    gpu_type      = var.gpu_type
-    gpu_count     = 1
-    preemptible   = var.use_preemptible_gpu
-    image         = var.aifs_image
-    vpc_network   = var.vpc_id
-    vpc_subnet    = var.vpc_subnetwork
-    tpu_type        = var.tpu_type
-    neuralgcm_image = var.neuralgcm_image
+    name = google_cloud_run_v2_service.ic_checker.name
+    uri  = google_cloud_run_v2_service.ic_checker.uri
   }
 }
 
-output "tpu_config" {
-  description = "TPU configuration for NeuralGCM"
-  value       = local.tpu_config
-}
-
-output "tpu_service_account_email" {
-  description = "TPU service account email"
-  value       = google_service_account.tpu.email
-}
-
-output "tpu_service_account_id" {
-  description = "TPU service account resource ID"
-  value       = google_service_account.tpu.name
+output "batch_job_template" {
+  description = "Cloud Batch job template configuration for model inference"
+  value = {
+    project         = var.project_id
+    region          = var.region
+    machine_type    = local.gpu_machine_type
+    gpu_type        = var.gpu_type
+    gpu_count       = 1
+    os_image        = var.batch_vm_os_image
+    preemptible     = var.use_preemptible_gpu
+    image           = var.aifs_image
+    vpc_network     = var.vpc_id
+    vpc_subnet      = var.vpc_subnetwork
+    neuralgcm_image = var.neuralgcm_image
+  }
 }

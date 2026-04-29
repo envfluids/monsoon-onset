@@ -1,37 +1,50 @@
 # -----------------------------------------------------------------------------
 # Compute Module
-# Cloud Run services, Cloud Batch templates, TPU configuration
+# Cloud Run services and Cloud Batch templates
 # -----------------------------------------------------------------------------
 
 locals {
+  gpu_machine_type_defaults = {
+    nvidia-tesla-a100 = "a2-highgpu-1g"
+    nvidia-l4         = "g2-standard-8"
+    nvidia-tesla-t4   = "n1-standard-8"
+    nvidia-tesla-v100 = "n1-standard-8"
+  }
+
+  gpu_machine_type = (
+    var.gpu_machine_type != ""
+    ? var.gpu_machine_type
+    : lookup(local.gpu_machine_type_defaults, var.gpu_type, "n1-standard-8")
+  )
+
   cloud_run_services = {
     downloader = {
-      name   = "${var.name_prefix}-${var.environment}-downloader"
-      image  = var.downloader_image
-      memory = "4Gi"
-      cpu    = "2"
-      timeout = "900s"  # 15 min for downloads
+      name    = "${var.name_prefix}-${var.environment}-downloader"
+      image   = var.downloader_image
+      memory  = "4Gi"
+      cpu     = "2"
+      timeout = "900s" # 15 min for downloads
     }
     postprocess = {
-      name   = "${var.name_prefix}-${var.environment}-postprocess"
-      image  = var.postprocess_image
-      memory = "16Gi"  # CDO/NCL can be memory intensive
-      cpu    = "4"
-      timeout = "1800s"  # 30 min
+      name    = "${var.name_prefix}-${var.environment}-postprocess"
+      image   = var.postprocess_image
+      memory  = "16Gi" # CDO/NCL can be memory intensive
+      cpu     = "4"
+      timeout = "1800s" # 30 min
     }
     blend = {
-      name   = "${var.name_prefix}-${var.environment}-blend"
-      image  = var.blend_image
-      memory = "8Gi"
-      cpu    = "4"
-      timeout = "1800s"  # 30 min
+      name    = "${var.name_prefix}-${var.environment}-blend"
+      image   = var.blend_image
+      memory  = "8Gi"
+      cpu     = "4"
+      timeout = "1800s" # 30 min
     }
     sync = {
-      name   = "${var.name_prefix}-${var.environment}-sync"
-      image  = var.sync_image
-      memory = "1Gi"
-      cpu    = "1"
-      timeout = "600s"  # 10 min
+      name    = "${var.name_prefix}-${var.environment}-sync"
+      image   = var.sync_image
+      memory  = "1Gi"
+      cpu     = "1"
+      timeout = "600s" # 10 min
     }
   }
 }
@@ -82,7 +95,7 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
         # Region will be passed at execution time
         env {
           name  = "FORECAST_REGION"
-          value = "india"  # Default, overridden at runtime
+          value = "india" # Default, overridden at runtime
         }
       }
 
@@ -103,65 +116,60 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
 
   lifecycle {
     ignore_changes = [
-      template[0].template[0].containers[0].image,  # Allow image updates outside TF
+      template[0].template[0].containers[0].image, # Allow image updates outside TF
     ]
   }
 }
 
 # -----------------------------------------------------------------------------
-# TPU Configuration (for NeuralGCM JAX inference)
-# TPU VMs are created on-demand by Cloud Workflows
-# This defines the configuration template
+# Cloud Run Service for lightweight source availability checks
 # -----------------------------------------------------------------------------
 
-# Service account for TPU workloads
-resource "google_service_account" "tpu" {
-  project      = var.project_id
-  account_id   = "${var.name_prefix}-${var.environment}-tpu"
-  display_name = "Monsoon TPU Service Account (${var.environment})"
-}
+resource "google_cloud_run_v2_service" "ic_checker" {
+  name                = "${var.name_prefix}-${var.environment}-ic-checker"
+  project             = var.project_id
+  location            = var.region
+  ingress             = "INGRESS_TRAFFIC_ALL"
+  deletion_protection = var.environment != "dev"
 
-# TPU SA needs storage access
-resource "google_project_iam_member" "tpu_storage" {
-  project = var.project_id
-  role    = "roles/storage.objectAdmin"
-  member  = "serviceAccount:${google_service_account.tpu.email}"
-}
+  template {
+    service_account = var.service_account_email
 
-# TPU SA needs logging
-resource "google_project_iam_member" "tpu_logging" {
-  project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.tpu.email}"
-}
+    containers {
+      image = var.ic_checker_image
 
-# Output TPU configuration for use by orchestration
-locals {
-  tpu_config = {
-    service_account = google_service_account.tpu.email
-    tpu_type        = var.tpu_type
-    zone            = "${var.region}-a"  # TPUs require zone specification
-    network         = var.vpc_id
-    subnetwork      = var.vpc_subnetwork
-    preemptible     = var.environment == "dev"
+      ports {
+        container_port = 8080
+      }
 
-    # Startup script template
-    startup_script = <<-EOF
-      #!/bin/bash
-      set -e
+      resources {
+        limits = {
+          memory = "512Mi"
+          cpu    = "1"
+        }
+      }
 
-      # Install dependencies
-      pip install gcsfs google-cloud-storage
+      env {
+        name  = "ENVIRONMENT"
+        value = var.environment
+      }
+    }
 
-      # Download and run the NeuralGCM inference
-      gsutil cp gs://${var.gcs_bucket}/scripts/run_neuralgcm.py /tmp/
-      python /tmp/run_neuralgcm.py \
-        --region $${FORECAST_REGION} \
-        --date $${FORECAST_DATE} \
-        --bucket ${var.gcs_bucket}
+    scaling {
+      min_instance_count = 0
+      max_instance_count = 2
+    }
+  }
 
-      # Signal completion
-      touch /tmp/done
-    EOF
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+    component   = "ic-checker"
+  }
+
+  lifecycle {
+    ignore_changes = [
+      template[0].containers[0].image, # Allow image updates outside TF
+    ]
   }
 }

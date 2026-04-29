@@ -1,6 +1,7 @@
 # -----------------------------------------------------------------------------
 # Monsoon Pipeline Workflow
-# Orchestrates the full forecast pipeline
+# Greedily starts model work as soon as each model's 00z IC is available.
+# Final products still require AIFS and NeuralGCM outputs for the same date.
 # -----------------------------------------------------------------------------
 
 main:
@@ -9,182 +10,223 @@ main:
     - init:
         assign:
           - region: $${args.region}
-          - date: $${default(map.get(args, "date"), "")}
+          - requested_date: $${default(map.get(args, "date"), "")}
           - action: $${default(map.get(args, "action"), "run")}
           - project_id: "${project_id}"
           - gcs_bucket: "monsoon-${environment}-data-${project_id}"
+          - ic_checker_url: "${ic_checker_url}"
+          - last_processed_date: ""
 
-    # -----------------------------------------------------------------------------
-    # For "check" action: run the downloader to detect latest available data date.
-    # The downloader writes the date to GCS and exits 0 if new data is available,
-    # or exits 0 with an empty file if no new data (workflow exits early).
-    # For "run" action with no date: same flow, but we proceed regardless.
-    # -----------------------------------------------------------------------------
-    - get_date:
+    - get_source_dates:
         switch:
-          - condition: $${date == ""}
-            next: run_date_check
+          - condition: $${requested_date == ""}
+            next: call_ic_checker
           - condition: true
-            next: check_empty_date
+            next: set_manual_source_dates
 
-    - run_date_check:
-        call: googleapis.run.v2.projects.locations.jobs.run
+    - call_ic_checker:
+        call: http.get
         args:
-          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
-          body:
-            overrides:
-              containerOverrides:
-                - env:
-                    - name: ACTION
-                      value: get_latest_date
-                    - name: SOURCE
-                      value: both
-                    - name: FORECAST_REGION
-                      value: $${region}
-        result: date_check_execution
+          url: $${ic_checker_url + "/check?lookback_days=7"}
+          auth:
+            type: OIDC
+            audience: $${ic_checker_url}
+        result: ic_check
 
-    - read_date_from_gcs:
-        try:
-          call: http.get
-          args:
-            url: $${"https://storage.googleapis.com/download/storage/v1/b/" + gcs_bucket + "/o/" + region + "%2Fintermediate%2Flatest_date.txt?alt=media"}
-            auth:
-              type: OAuth2
-          result: date_file
-        except:
-          as: e
-          steps:
-            - no_date_available:
-                call: sys.log
-                args:
-                  text: $${"No new data available for region=" + region + ", exiting."}
-                  severity: INFO
-                next: return_no_data
-
-    - set_date_from_gcs:
+    - set_checked_source_dates:
         assign:
-          - date: $${date_file.body}
+          - ecmwf_date: $${default(map.get(ic_check.body, "ecmwf_date"), "")}
+          - ncep_date: $${default(map.get(ic_check.body, "ncep_date"), "")}
+        next: set_final_candidate_empty
 
-    - check_empty_date:
+    - set_manual_source_dates:
+        assign:
+          - ecmwf_date: $${requested_date}
+          - ncep_date: $${requested_date}
+
+    - set_final_candidate_empty:
+        assign:
+          - final_candidate_date: ""
+
+    - choose_final_candidate:
         switch:
-          - condition: $${date == ""}
-            next: return_no_data
+          - condition: $${ecmwf_date == "" or ncep_date == ""}
+            next: maybe_return_checked
+          - condition: $${int(text.replace_all(ecmwf_date, "T", "")) <= int(text.replace_all(ncep_date, "T", ""))}
+            next: set_final_candidate_ecmwf
+          - condition: true
+            next: set_final_candidate_ncep
 
-    - read_last_processed:
-        try:
-          call: http.get
-          args:
-            url: $${"https://storage.googleapis.com/download/storage/v1/b/" + gcs_bucket + "/o/" + region + "%2Flatest.txt?alt=media"}
-            auth:
-              type: OAuth2
-          result: last_processed_file
-        except:
-          as: e
-          steps:
-            - no_prior_run:
-                next: check_action
+    - set_final_candidate_ecmwf:
+        assign:
+          - final_candidate_date: $${ecmwf_date}
+        next: maybe_return_checked
 
-    - check_already_processed:
-        switch:
-          - condition: $${last_processed_file.body == date}
-            next: return_no_data
+    - set_final_candidate_ncep:
+        assign:
+          - final_candidate_date: $${ncep_date}
 
-    # For "check"-only action, stop after confirming data is available
-    - check_action:
+    - maybe_return_checked:
         switch:
           - condition: $${action == "check"}
-            next: return_no_data  # Date is logged above; exit without running full pipeline
-
-    - set_ic_paths:
-        assign:
-          - ecmwf_ic_path: $${region + "/raw/ecmwf/" + date + "/input_state_" + date + ".pkl"}
-          - ncep_ic_path: $${region + "/raw/ncep/" + date + "/gdas_" + date + ".pgrb2"}
-          - ecmwf_ic_exists: false
-          - ncep_ic_exists: false
-
-    - check_ecmwf_ic:
-        try:
-          call: http.get
-          args:
-            url: $${"https://storage.googleapis.com/storage/v1/b/" + gcs_bucket + "/o/" + text.replace_all(ecmwf_ic_path, "/", "%2F")}
-            auth:
-              type: OAuth2
-          result: ecmwf_ic_metadata
-        except:
-          as: e
-          steps:
-            - ecmwf_ic_missing:
-                next: check_ncep_ic
-
-    - mark_ecmwf_ic_exists:
-        assign:
-          - ecmwf_ic_exists: true
-
-    - check_ncep_ic:
-        try:
-          call: http.get
-          args:
-            url: $${"https://storage.googleapis.com/storage/v1/b/" + gcs_bucket + "/o/" + text.replace_all(ncep_ic_path, "/", "%2F")}
-            auth:
-              type: OAuth2
-          result: ncep_ic_metadata
-        except:
-          as: e
-          steps:
-            - ncep_ic_missing:
-                next: maybe_write_ecmwf_date_marker
-
-    - mark_ncep_ic_exists:
-        assign:
-          - ncep_ic_exists: true
-
-    - maybe_write_ecmwf_date_marker:
-        switch:
-          - condition: $${ecmwf_ic_exists}
-            next: write_ecmwf_date_marker
+            next: return_checked
           - condition: true
-            next: log_start
+            next: maybe_read_last_processed
 
-    - write_ecmwf_date_marker:
-        call: http.post
+    - maybe_read_last_processed:
+        switch:
+          - condition: $${final_candidate_date == ""}
+            next: check_aifs_final_output
+          - condition: true
+            next: check_latest_marker
+
+    - check_latest_marker:
+        call: object_exists
         args:
-          url: $${"https://storage.googleapis.com/upload/storage/v1/b/" + gcs_bucket + "/o?uploadType=media&name=" + text.replace_all(region + "/intermediate/latest_ecmwf_date.txt", "/", "%2F")}
+          bucket: $${gcs_bucket}
+          path: $${region + "/latest.txt"}
+        result: latest_marker_exists
+
+    - maybe_download_latest_marker:
+        switch:
+          - condition: $${latest_marker_exists}
+            next: read_last_processed
+          - condition: true
+            next: check_aifs_final_output
+
+    - read_last_processed:
+        call: http.get
+        args:
+          url: $${"https://storage.googleapis.com/download/storage/v1/b/" + gcs_bucket + "/o/" + region + "%2Flatest.txt?alt=media"}
           auth:
             type: OAuth2
-          headers:
-            Content-Type: text/plain
-          body: $${date}
-        result: ecmwf_date_marker
+        result: last_processed_file
 
-    - log_start:
+    - set_last_processed:
+        assign:
+          - last_processed_date: $${last_processed_file.body}
+
+    - check_aifs_final_output:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "aifs"
+          date: $${final_candidate_date}
+        result: aifs_final_output_exists
+
+    - check_neuralgcm_final_output:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "neuralgcm"
+          date: $${final_candidate_date}
+        result: neuralgcm_final_output_exists
+
+    - check_aifs_latest_output:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "aifs"
+          date: $${ecmwf_date}
+        result: aifs_latest_output_exists
+
+    - check_neuralgcm_latest_output:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "neuralgcm"
+          date: $${ncep_date}
+        result: neuralgcm_latest_output_exists
+
+    - select_aifs_target:
+        switch:
+          - condition: $${final_candidate_date != "" and not aifs_final_output_exists}
+            next: set_aifs_target_final
+          - condition: $${ecmwf_date != "" and not aifs_latest_output_exists}
+            next: set_aifs_target_latest
+          - condition: true
+            next: set_aifs_target_empty
+
+    - set_aifs_target_final:
+        assign:
+          - aifs_target_date: $${final_candidate_date}
+        next: select_neuralgcm_target
+
+    - set_aifs_target_latest:
+        assign:
+          - aifs_target_date: $${ecmwf_date}
+        next: select_neuralgcm_target
+
+    - set_aifs_target_empty:
+        assign:
+          - aifs_target_date: ""
+
+    - select_neuralgcm_target:
+        switch:
+          - condition: $${final_candidate_date != "" and not neuralgcm_final_output_exists}
+            next: set_neuralgcm_target_final
+          - condition: $${ncep_date != "" and not neuralgcm_latest_output_exists}
+            next: set_neuralgcm_target_latest
+          - condition: true
+            next: set_neuralgcm_target_empty
+
+    - set_neuralgcm_target_final:
+        assign:
+          - neuralgcm_target_date: $${final_candidate_date}
+        next: log_greedy_plan
+
+    - set_neuralgcm_target_latest:
+        assign:
+          - neuralgcm_target_date: $${ncep_date}
+        next: log_greedy_plan
+
+    - set_neuralgcm_target_empty:
+        assign:
+          - neuralgcm_target_date: ""
+
+    - log_greedy_plan:
         call: sys.log
         args:
-          text: $${"Starting pipeline for region=" + region + " date=" + date}
+          text: $${"Greedy plan region=" + region + " ecmwf_date=" + ecmwf_date + " ncep_date=" + ncep_date + " final_candidate=" + final_candidate_date + " aifs_target=" + aifs_target_date + " neuralgcm_target=" + neuralgcm_target_date}
           severity: INFO
 
-    # -----------------------------------------------------------------------------
-    # Download data in parallel
-    # Cloud Run Jobs are invoked via the Run v2 API; googleapis.run.v2.projects.locations.jobs.run
-    # blocks until the execution completes.
-    # -----------------------------------------------------------------------------
-    - download_data:
+    - maybe_return_no_work:
+        switch:
+          - condition: $${aifs_target_date == "" and neuralgcm_target_date == "" and (final_candidate_date == "" or last_processed_date == final_candidate_date)}
+            next: return_no_data
+          - condition: true
+            next: run_models
+
+    - run_models:
         parallel:
           branches:
-            - download_ecmwf:
+            - run_aifs:
                 steps:
-                  - maybe_download_ecmwf:
+                  - maybe_skip_aifs:
                       switch:
-                        - condition: $${ecmwf_ic_exists}
-                          next: skip_ecmwf_download
+                        - condition: $${aifs_target_date == ""}
+                          next: aifs_done
                         - condition: true
-                          next: run_ecmwf_download
-                  - skip_ecmwf_download:
-                      call: sys.log
+                          next: check_aifs_ic
+                  - check_aifs_ic:
+                      call: raw_ic_exists
                       args:
-                        text: $${"Skipping ECMWF IC download; found gs://" + gcs_bucket + "/" + ecmwf_ic_path}
-                        severity: INFO
-                      next: ecmwf_download_done
-                  - run_ecmwf_download:
+                        bucket: $${gcs_bucket}
+                        region: $${region}
+                        source: "ecmwf"
+                        date: $${aifs_target_date}
+                      result: aifs_ic_exists
+                  - maybe_download_aifs_ic:
+                      switch:
+                        - condition: $${aifs_ic_exists}
+                          next: write_aifs_date_marker
+                        - condition: true
+                          next: download_aifs_ic
+                  - download_aifs_ic:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
                         name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
@@ -195,62 +237,21 @@ main:
                                   - name: SOURCE
                                     value: ecmwf
                                   - name: DATE
-                                    value: $${date}
+                                    value: $${aifs_target_date}
                                   - name: FORECAST_REGION
                                     value: $${region}
-                      result: ecmwf_result
-                      next: ecmwf_download_done
-                  - ecmwf_download_done:
-                      assign:
-                        - ecmwf_download_checked: true
-            - download_ncep:
-                steps:
-                  - maybe_download_ncep:
-                      switch:
-                        - condition: $${ncep_ic_exists}
-                          next: skip_ncep_download
-                        - condition: true
-                          next: run_ncep_download
-                  - skip_ncep_download:
-                      call: sys.log
+                      result: aifs_download_result
+                  - write_aifs_date_marker:
+                      call: write_text_object
                       args:
-                        text: $${"Skipping NCEP IC download; found gs://" + gcs_bucket + "/" + ncep_ic_path}
-                        severity: INFO
-                      next: ncep_download_done
-                  - run_ncep_download:
-                      call: googleapis.run.v2.projects.locations.jobs.run
-                      args:
-                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
-                        body:
-                          overrides:
-                            containerOverrides:
-                              - env:
-                                  - name: SOURCE
-                                    value: ncep
-                                  - name: DATE
-                                    value: $${date}
-                                  - name: FORECAST_REGION
-                                    value: $${region}
-                      result: ncep_result
-                      next: ncep_download_done
-                  - ncep_download_done:
-                      assign:
-                        - ncep_download_checked: true
-
-    # -----------------------------------------------------------------------------
-    # Run models in parallel
-    # Both AIFS (GPU) and NeuralGCM (GPU) run on Cloud Batch with Docker containers.
-    # -----------------------------------------------------------------------------
-    - run_models:
-        parallel:
-          branches:
-            - run_aifs:
-                steps:
+                        bucket: $${gcs_bucket}
+                        path: $${region + "/intermediate/latest_ecmwf_date.txt"}
+                        content: $${aifs_target_date}
                   - create_aifs_job:
                       call: googleapis.batch.v1.projects.locations.jobs.create
                       args:
                         parent: $${"projects/" + project_id + "/locations/${region}"}
-                        jobId: $${"aifs-" + region + "-" + text.replace_all(date, "T", "-")}
+                        jobId: $${"aifs-" + region + "-" + text.replace_all(aifs_target_date, "T", "-")}
                         body:
                           taskGroups:
                             - taskCount: 1
@@ -259,21 +260,26 @@ main:
                                   cpuMilli: 8000
                                   memoryMib: 32768
                                 maxRetryCount: 1
-                                maxRunDuration: "3600s"
+                                maxRunDuration: "1800s"
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.image}"
                                     environment:
                                       variables:
-                                        DATE: $${date}
+                                        DATE: $${aifs_target_date}
                                         FORECAST_REGION: $${region}
                                         GCS_BUCKET: $${gcs_bucket}
                                         GCS_WEIGHTS_BUCKET: "${weights_bucket}"
                           allocationPolicy:
+                            serviceAccount:
+                              email: "${pipeline_sa}"
                             instances:
-                              - policy:
+                              - installGpuDrivers: true
+                                policy:
                                   machineType: "${batch_config.machine_type}"
-                                  provisioningModel: "${batch_config.preemptible ? "SPOT" : "STANDARD"}"
+                                  bootDisk:
+                                    image: "${batch_config.os_image}"
+                                  provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
                                   accelerators:
                                     - type: "${batch_config.gpu_type}"
                                       count: 1
@@ -287,8 +293,6 @@ main:
                           logsPolicy:
                             destination: CLOUD_LOGGING
                       result: aifs_job
-
-                  # Poll until the Batch job reaches a terminal state
                   - poll_aifs:
                       steps:
                         - get_aifs_status:
@@ -309,15 +313,50 @@ main:
                             next: get_aifs_status
                   - aifs_done:
                       assign:
-                        - aifs_complete: true
+                        - aifs_branch_done: true
 
             - run_neuralgcm:
                 steps:
+                  - maybe_skip_neuralgcm:
+                      switch:
+                        - condition: $${neuralgcm_target_date == ""}
+                          next: neuralgcm_done
+                        - condition: true
+                          next: check_neuralgcm_ic
+                  - check_neuralgcm_ic:
+                      call: raw_ic_exists
+                      args:
+                        bucket: $${gcs_bucket}
+                        region: $${region}
+                        source: "ncep"
+                        date: $${neuralgcm_target_date}
+                      result: neuralgcm_ic_exists
+                  - maybe_download_neuralgcm_ic:
+                      switch:
+                        - condition: $${neuralgcm_ic_exists}
+                          next: create_neuralgcm_job
+                        - condition: true
+                          next: download_neuralgcm_ic
+                  - download_neuralgcm_ic:
+                      call: googleapis.run.v2.projects.locations.jobs.run
+                      args:
+                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
+                        body:
+                          overrides:
+                            containerOverrides:
+                              - env:
+                                  - name: SOURCE
+                                    value: ncep
+                                  - name: DATE
+                                    value: $${neuralgcm_target_date}
+                                  - name: FORECAST_REGION
+                                    value: $${region}
+                      result: neuralgcm_download_result
                   - create_neuralgcm_job:
                       call: googleapis.batch.v1.projects.locations.jobs.create
                       args:
                         parent: $${"projects/" + project_id + "/locations/${region}"}
-                        jobId: $${"neuralgcm-" + region + "-" + text.replace_all(date, "T", "-")}
+                        jobId: $${"neuralgcm-" + region + "-" + text.replace_all(neuralgcm_target_date, "T", "-")}
                         body:
                           taskGroups:
                             - taskCount: 1
@@ -326,21 +365,26 @@ main:
                                   cpuMilli: 8000
                                   memoryMib: 65536
                                 maxRetryCount: 1
-                                maxRunDuration: "7200s"
+                                maxRunDuration: "3600s"
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.neuralgcm_image}"
                                     environment:
                                       variables:
-                                        DATE: $${date}
+                                        DATE: $${neuralgcm_target_date}
                                         FORECAST_REGION: $${region}
                                         GCS_BUCKET: $${gcs_bucket}
                                         GCS_WEIGHTS_BUCKET: "${weights_bucket}"
                           allocationPolicy:
+                            serviceAccount:
+                              email: "${pipeline_sa}"
                             instances:
-                              - policy:
+                              - installGpuDrivers: true
+                                policy:
                                   machineType: "${batch_config.machine_type}"
-                                  provisioningModel: "${batch_config.preemptible ? "SPOT" : "STANDARD"}"
+                                  bootDisk:
+                                    image: "${batch_config.os_image}"
+                                  provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
                                   accelerators:
                                     - type: "${batch_config.gpu_type}"
                                       count: 1
@@ -354,8 +398,6 @@ main:
                           logsPolicy:
                             destination: CLOUD_LOGGING
                       result: neuralgcm_job
-
-                  # Poll until the Batch job reaches a terminal state
                   - poll_neuralgcm:
                       steps:
                         - get_neuralgcm_status:
@@ -376,11 +418,40 @@ main:
                             next: get_neuralgcm_status
                   - neuralgcm_done:
                       assign:
-                        - neuralgcm_complete: true
+                        - neuralgcm_branch_done: true
 
-    # -----------------------------------------------------------------------------
-    # Post-process, blend, and sync — sequential
-    # -----------------------------------------------------------------------------
+    - check_final_aifs_outputs:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "aifs"
+          date: $${final_candidate_date}
+        result: final_aifs_outputs_exist
+
+    - check_final_neuralgcm_outputs:
+        call: model_outputs_exist
+        args:
+          bucket: $${gcs_bucket}
+          region: $${region}
+          model: "neuralgcm"
+          date: $${final_candidate_date}
+        result: final_neuralgcm_outputs_exist
+
+    - maybe_run_final_stages:
+        switch:
+          - condition: $${final_candidate_date == "" or last_processed_date == final_candidate_date or not final_aifs_outputs_exist or not final_neuralgcm_outputs_exist}
+            next: return_partial
+          - condition: true
+            next: write_final_aifs_marker
+
+    - write_final_aifs_marker:
+        call: write_text_object
+        args:
+          bucket: $${gcs_bucket}
+          path: $${region + "/intermediate/latest_ecmwf_date.txt"}
+          content: $${final_candidate_date}
+
     - postprocess:
         call: googleapis.run.v2.projects.locations.jobs.run
         args:
@@ -390,7 +461,7 @@ main:
               containerOverrides:
                 - env:
                     - name: DATE
-                      value: $${date}
+                      value: $${final_candidate_date}
                     - name: FORECAST_REGION
                       value: $${region}
         result: postprocess_result
@@ -404,7 +475,7 @@ main:
               containerOverrides:
                 - env:
                     - name: DATE
-                      value: $${date}
+                      value: $${final_candidate_date}
                     - name: FORECAST_REGION
                       value: $${region}
         result: blend_result
@@ -418,24 +489,136 @@ main:
               containerOverrides:
                 - env:
                     - name: DATE
-                      value: $${date}
+                      value: $${final_candidate_date}
                     - name: FORECAST_REGION
                       value: $${region}
         result: sync_result
-
-    - log_complete:
-        call: sys.log
-        args:
-          text: $${"Pipeline completed for region=" + region + " date=" + date}
-          severity: INFO
 
     - return_result:
         return:
           status: "completed"
           region: $${region}
-          date: $${date}
+          date: $${final_candidate_date}
+          ecmwf_date: $${ecmwf_date}
+          ncep_date: $${ncep_date}
+
+    - return_partial:
+        return:
+          status: "partial"
+          region: $${region}
+          final_candidate_date: $${final_candidate_date}
+          ecmwf_date: $${ecmwf_date}
+          ncep_date: $${ncep_date}
+          aifs_target_date: $${aifs_target_date}
+          neuralgcm_target_date: $${neuralgcm_target_date}
+          final_aifs_outputs_exist: $${final_aifs_outputs_exist}
+          final_neuralgcm_outputs_exist: $${final_neuralgcm_outputs_exist}
+
+    - return_checked:
+        return:
+          status: "checked"
+          region: $${region}
+          final_candidate_date: $${final_candidate_date}
+          ecmwf_date: $${ecmwf_date}
+          ncep_date: $${ncep_date}
 
     - return_no_data:
         return:
           status: "no_data"
           region: $${region}
+          final_candidate_date: $${final_candidate_date}
+          ecmwf_date: $${ecmwf_date}
+          ncep_date: $${ncep_date}
+
+object_exists:
+  params: [bucket, path]
+  steps:
+    - list_object:
+        call: http.get
+        args:
+          url: $${"https://storage.googleapis.com/storage/v1/b/" + bucket + "/o?prefix=" + text.replace_all(path, "/", "%2F") + "&maxResults=1"}
+          auth:
+            type: OAuth2
+        result: object_list
+    - set_items:
+        assign:
+          - object_items: $${default(map.get(object_list.body, "items"), [])}
+    - check_item_count:
+        switch:
+          - condition: $${len(object_items) == 0}
+            next: return_false
+    - return_result:
+        return: $${object_items[0].name == path}
+    - return_false:
+        return: false
+
+raw_ic_exists:
+  params: [bucket, region, source, date]
+  steps:
+    - empty_date:
+        switch:
+          - condition: $${date == ""}
+            next: return_false
+    - choose_path:
+        switch:
+          - condition: $${source == "ecmwf"}
+            next: set_ecmwf_path
+          - condition: true
+            next: set_ncep_path
+    - set_ecmwf_path:
+        assign:
+          - path: $${region + "/raw/ecmwf/" + date + "/input_state_" + date + ".pkl"}
+        next: check_path
+    - set_ncep_path:
+        assign:
+          - path: $${region + "/raw/ncep/" + date + "/gdas_" + date + ".pgrb2"}
+    - check_path:
+        call: object_exists
+        args:
+          bucket: $${bucket}
+          path: $${path}
+        result: exists
+    - return_exists:
+        return: $${exists}
+    - return_false:
+        return: false
+
+model_outputs_exist:
+  params: [bucket, region, model, date]
+  steps:
+    - empty_date:
+        switch:
+          - condition: $${date == ""}
+            next: return_false
+    - check_tp:
+        call: object_exists
+        args:
+          bucket: $${bucket}
+          path: $${region + "/output/" + model + "/" + date + "/tp_" + date + ".nc"}
+        result: tp_exists
+    - check_sji:
+        call: object_exists
+        args:
+          bucket: $${bucket}
+          path: $${region + "/output/" + model + "/" + date + "/sji_" + date + ".nc"}
+        result: sji_exists
+    - return_result:
+        return: $${tp_exists and sji_exists}
+    - return_false:
+        return: false
+
+write_text_object:
+  params: [bucket, path, content]
+  steps:
+    - write_object:
+        call: http.post
+        args:
+          url: $${"https://storage.googleapis.com/upload/storage/v1/b/" + bucket + "/o?uploadType=media&name=" + text.replace_all(path, "/", "%2F")}
+          auth:
+            type: OAuth2
+          headers:
+            Content-Type: text/plain
+          body: $${content}
+        result: write_result
+    - return_result:
+        return: $${write_result}

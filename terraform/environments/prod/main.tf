@@ -42,7 +42,7 @@ variable "notification_emails" {
 
 locals {
   environment      = "prod"
-  forecast_regions = ["india"]  # Add more regions as needed
+  forecast_regions = ["india"] # Add more regions as needed
 }
 
 # -----------------------------------------------------------------------------
@@ -89,17 +89,21 @@ module "compute" {
   vpc_id         = module.networking.vpc_id
   vpc_subnetwork = module.networking.subnetwork_id
 
-  # Prod: on-demand instances for reliability
+  gcs_bucket            = module.storage.bucket_name
+  weights_bucket        = module.storage.weights_bucket_name
+  service_account_email = module.storage.pipeline_service_account_email
+
+  # Prod: on-demand GPUs for reliability
   use_preemptible_gpu = false
-  tpu_type            = "v4-8"  # Production TPU
 
   # Container images (pinned versions in prod)
-  downloader_image   = "gcr.io/${var.project_id}/monsoon-downloader:v1.0.0"
-  postprocess_image  = "gcr.io/${var.project_id}/monsoon-postprocess:v1.0.0"
-  blend_image        = "gcr.io/${var.project_id}/monsoon-blend:v1.0.0"
-  sync_image         = "gcr.io/${var.project_id}/monsoon-sync:v1.0.0"
-  aifs_image         = "gcr.io/${var.project_id}/monsoon-aifs:v1.0.0"
-  neuralgcm_image    = "gcr.io/${var.project_id}/monsoon-neuralgcm:v1.0.0"
+  downloader_image  = "gcr.io/${var.project_id}/monsoon-downloader:v1.0.0"
+  ic_checker_image  = "gcr.io/${var.project_id}/monsoon-ic-checker:v1.0.0"
+  postprocess_image = "gcr.io/${var.project_id}/monsoon-postprocess:v1.0.0"
+  blend_image       = "gcr.io/${var.project_id}/monsoon-blend:v1.0.0"
+  sync_image        = "gcr.io/${var.project_id}/monsoon-sync:v1.0.0"
+  aifs_image        = "gcr.io/${var.project_id}/monsoon-aifs:v1.0.0"
+  neuralgcm_image   = "gcr.io/${var.project_id}/monsoon-neuralgcm:v1.0.0"
 
   depends_on = [module.networking, module.storage]
 }
@@ -118,10 +122,15 @@ module "orchestration" {
   forecast_regions = local.forecast_regions
 
   # Prod: frequent runs matching current HPC schedule
-  pipeline_schedule = "*/15 * * * *"  # Every 15 minutes (checks for new data)
+  pipeline_schedule = "*/15 * * * *" # Every 15 minutes (checks for new data)
 
   cloud_run_services = module.compute.cloud_run_services
+  ic_checker_service = module.compute.ic_checker_service
   batch_job_template = module.compute.batch_job_template
+  weights_bucket     = module.storage.weights_bucket_name
+
+  pipeline_service_account_id    = module.storage.pipeline_service_account_name
+  pipeline_service_account_email = module.storage.pipeline_service_account_email
 
   depends_on = [module.compute]
 }

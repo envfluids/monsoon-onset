@@ -14,7 +14,7 @@ graph TD
 
     subgraph "NeuralGCM Branch"
         NGCMDownload["downloader\nCloud Run Job"]
-        TPU["TPU VM\nNeuralGCM JAX Inference"]
+        NGCMBatch["Cloud Batch GPU Job\nNeuralGCM Inference"]
         NGCMPostprocess["postprocess\nCloud Run Job"]
     end
 
@@ -35,8 +35,8 @@ graph TD
     AIFSDownload --> AIFSPostprocess
 
     %% NeuralGCM branch
-    NGCMDownload --> TPU
-    TPU --> NGCMPostprocess
+    NGCMDownload --> NGCMBatch
+    NGCMBatch --> NGCMPostprocess
 
     %% Converge
     AIFSPostprocess --> Blend
@@ -45,8 +45,8 @@ graph TD
 
     %% Data flow
     AIFSDownload & NGCMDownload -- "write raw" --> MainBucket
-    TPU -- "read weights" --> WeightsBucket
-    TPU -- "write" --> MainBucket
+    NGCMBatch -- "read weights" --> WeightsBucket
+    NGCMBatch -- "write" --> MainBucket
     AIFSPostprocess & NGCMPostprocess -- "read / write" --> MainBucket
     Blend -- "read / write" --> MainBucket
     Sync -- "read" --> MainBucket
@@ -56,6 +56,6 @@ classDef compute fill:#fbbc04,color:#000,stroke:#f9ab00
 classDef orchestration fill:#ea4335,color:#fff,stroke:#c5221f
 
 class Sched,Workflow orchestration
-class AIFSDownload,AIFSPostprocess,NGCMDownload,TPU,NGCMPostprocess,Blend,Sync compute
+class AIFSDownload,AIFSPostprocess,NGCMDownload,NGCMBatch,NGCMPostprocess,Blend,Sync compute
 class MainBucket,WeightsBucket storage
 ```

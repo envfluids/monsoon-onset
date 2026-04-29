@@ -27,10 +27,71 @@ steps:
   # All builds use the repo root as context so Dockerfiles can COPY from
   # sibling directories (AIFS/, NeuralGCM/, blend/, sync/ etc.)
 
+  - id: pull-cache-downloader
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-ic-checker
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-sync
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-blend
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-postprocess
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-aifs
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest || true
+    waitFor: ["-"]
+
+  - id: pull-cache-neuralgcm
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest || true
+    waitFor: ["-"]
+
   - id: build-downloader
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
       - -t
@@ -38,12 +99,35 @@ steps:
       - -f
       - docker/downloader/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-downloader]
+
+  - id: build-ic-checker
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
+      - -f
+      - docker/ic-checker/Dockerfile
+      - .
+    waitFor: [pull-cache-ic-checker]
 
   - id: build-sync
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
       - -t
@@ -51,12 +135,17 @@ steps:
       - -f
       - docker/sync/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-sync]
 
   - id: build-blend
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}
       - -t
@@ -64,12 +153,17 @@ steps:
       - -f
       - docker/blend/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-blend]
 
   - id: build-postprocess
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:${_SHORT_SHA}
       - -t
@@ -77,7 +171,7 @@ steps:
       - -f
       - docker/postprocess/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-postprocess]
 
   # -----------------------------------------------------------------------------
   # Build GPU images (heavier, but can run in parallel)
@@ -85,8 +179,13 @@ steps:
 
   - id: build-aifs
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:${_SHORT_SHA}
       - -t
@@ -94,12 +193,17 @@ steps:
       - -f
       - docker/aifs/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-aifs]
 
   - id: build-neuralgcm
     name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
       - -t
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:${_SHORT_SHA}
       - -t
@@ -107,7 +211,7 @@ steps:
       - -f
       - docker/neuralgcm/Dockerfile
       - .
-    waitFor: ["-"]  # Start immediately
+    waitFor: [pull-cache-neuralgcm]
 
   # -----------------------------------------------------------------------------
   # Push all images
@@ -120,6 +224,14 @@ steps:
       - --all-tags
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader
     waitFor: [build-downloader]
+
+  - id: push-ic-checker
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker
+    waitFor: [build-ic-checker]
 
   - id: push-sync
     name: gcr.io/cloud-builders/docker
@@ -164,6 +276,8 @@ steps:
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}

@@ -17,8 +17,7 @@ resource "google_logging_project_sink" "pipeline_logs" {
   filter = <<-EOT
     resource.type="cloud_run_job" OR
     resource.type="cloud_batch_job" OR
-    resource.type="workflows.googleapis.com/Workflow" OR
-    resource.type="tpu.googleapis.com/Node"
+    resource.type="workflows.googleapis.com/Workflow"
     labels.environment="${var.environment}"
   EOT
 
@@ -32,7 +31,7 @@ resource "google_bigquery_dataset" "logs" {
   project    = var.project_id
   location   = var.region
 
-  default_table_expiration_ms = 7776000000  # 90 days
+  default_table_expiration_ms = 7776000000 # 90 days
 
   labels = {
     environment = var.environment
@@ -94,7 +93,7 @@ resource "google_monitoring_alert_policy" "pipeline_failure" {
 
   alert_strategy {
     notification_rate_limit {
-      period = "300s"  # Max 1 notification per 5 minutes
+      period = "300s" # Max 1 notification per 5 minutes
     }
   }
 
@@ -159,7 +158,7 @@ resource "google_monitoring_alert_policy" "pipeline_stale" {
 
     condition_absent {
       filter   = "resource.type=\"workflows.googleapis.com/Workflow\" AND metric.type=\"logging.googleapis.com/log_entry_count\" AND labels.severity=\"INFO\""
-      duration = "21600s"  # 6 hours
+      duration = "21600s" # 6 hours
 
       aggregations {
         alignment_period   = "3600s"
@@ -186,7 +185,7 @@ resource "google_monitoring_alert_policy" "pipeline_stale" {
 # -----------------------------------------------------------------------------
 
 resource "google_monitoring_dashboard" "pipeline" {
-  project        = var.project_id
+  project = var.project_id
   dashboard_json = jsonencode({
     displayName = "Monsoon Pipeline (${var.environment})"
     gridLayout = {

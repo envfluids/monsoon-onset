@@ -68,6 +68,11 @@ variable "downloader_image" {
   type        = string
 }
 
+variable "ic_checker_image" {
+  description = "Container image for the initial-condition checker service"
+  type        = string
+}
+
 variable "postprocess_image" {
   description = "Container image for post-processing service"
   type        = string
@@ -94,7 +99,7 @@ variable "neuralgcm_image" {
 }
 
 # -----------------------------------------------------------------------------
-# GPU/TPU Configuration
+# GPU Configuration
 # -----------------------------------------------------------------------------
 
 variable "use_preemptible_gpu" {
@@ -103,14 +108,20 @@ variable "use_preemptible_gpu" {
   default     = true
 }
 
-variable "tpu_type" {
-  description = "TPU type for NeuralGCM (e.g., v3-8, v4-8)"
-  type        = string
-  default     = "v3-8"
-}
-
 variable "gpu_type" {
   description = "GPU type for AIFS (e.g., nvidia-tesla-a100, nvidia-l4)"
   type        = string
   default     = "nvidia-tesla-a100"
+}
+
+variable "gpu_machine_type" {
+  description = "Machine type for GPU Batch jobs. Leave empty to derive a compatible default from gpu_type."
+  type        = string
+  default     = ""
+}
+
+variable "batch_vm_os_image" {
+  description = "Batch VM OS image for model jobs. batch-cos uses Batch Container-Optimized OS for container workloads."
+  type        = string
+  default     = "batch-cos"
 }

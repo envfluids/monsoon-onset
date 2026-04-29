@@ -1,21 +1,13 @@
-# JAX (TPU version installed on VM, CPU version here for testing)
-jax>=0.4.20
-jaxlib>=0.4.20
-
-# NeuralGCM and dependencies
-neuralgcm>=0.1.0
-dinosaur>=0.1.0
+# ngcm inference
+neuralgcm
 
 # Data processing
-xarray>=2023.6.0
-pandas>=2.0.0
-numpy>=1.24.0
-netcdf4>=1.6.0
-zarr>=2.16.0
-
-# GCS integration
-google-cloud-storage>=2.10.0
-gcsfs>=2023.6.0
+xarray
+scipy
+netcdf4
+h5netcdf
+gcsfs
+zarr
 
 # Utilities
 python-dateutil>=2.8.0

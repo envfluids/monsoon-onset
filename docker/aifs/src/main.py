@@ -124,26 +124,11 @@ def _download_inputs(aifs_date: str, region: str, bucket: str, weights_bucket: s
     )
 
     # 3. Sparse transform matrix (filename hardcoded in download_ic.py / run_model.py)
-    sparse = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
+    sparse = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
     download_gcs_file(
         weights_bucket,
         f"aifs/EKR/mir_16_linear/{sparse}",
         AIFS_UTILS.parent / "EKR" / "mir_16_linear" / sparse,
-    )
-
-    # 4. Post processing data files (e.g. lat/lon grids, masks)
-    grid_2p0 = "grid_2p0.txt"
-    download_gcs_file(
-        weights_bucket,
-        f"aifs/grids/{grid_2p0}",
-        AIFS_UTILS.parent / "grids" / grid_2p0,
-    )
-
-    india_mask = "india_mask_2p0.nc"
-    download_gcs_file(
-        weights_bucket,
-        f"aifs/data/{india_mask}",
-        AIFS_UTILS.parent / "data" / india_mask,
     )
 
 def _run_science_scripts(aifs_date: str) -> None:

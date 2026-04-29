@@ -1,0 +1,29 @@
+.git
+.github
+.claude
+.DS_Store
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local environments and notebooks are not needed in image build context.
+.venv/
+venv/
+env/
+*.ipynb
+
+# Runtime/generated data should not be uploaded as Docker build context.
+**/raw/
+**/output/
+**/logs/
+**/.auth/
+**/token.json
+
+# Terraform state and local metadata are unrelated to container images.
+terraform/**/.terraform/
+terraform/**/*.tfstate
+terraform/**/*.tfstate.*

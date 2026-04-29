@@ -64,9 +64,9 @@ module "storage" {
   forecast_regions = local.forecast_regions
 
   # Dev: shorter retention, no archival
-  retention_days         = 30
-  enable_versioning      = false
-  archive_after_days     = null
+  retention_days     = 30
+  enable_versioning  = false
+  archive_after_days = null
 }
 
 # -----------------------------------------------------------------------------
@@ -87,17 +87,17 @@ module "compute" {
   weights_bucket        = module.storage.weights_bucket_name
   service_account_email = module.storage.pipeline_service_account_email
 
-  # Dev: smaller instances, preemptible
+  # Dev: use spot GPUs for model Batch jobs
   use_preemptible_gpu = true
-  tpu_type            = "v3-8"  # Smaller TPU for dev
 
   # Container images — pulled from Artifact Registry created by storage module
-  downloader_image   = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
-  postprocess_image  = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
-  blend_image        = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
-  sync_image         = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
-  aifs_image         = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
-  neuralgcm_image    = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
+  downloader_image  = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
+  ic_checker_image  = "${module.storage.artifact_registry_url}/monsoon-ic-checker:latest"
+  postprocess_image = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
+  blend_image       = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
+  sync_image        = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
+  aifs_image        = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
+  neuralgcm_image   = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
 
   depends_on = [module.networking, module.storage]
 }
@@ -116,15 +116,16 @@ module "orchestration" {
   forecast_regions = local.forecast_regions
 
   # Dev: less frequent runs
-  pipeline_schedule = "0 */6 * * *"  # Every 6 hours
+  pipeline_schedule = "0 */6 * * *" # Every 6 hours
   call_log_level    = "LOG_ALL_CALLS"
 
   cloud_run_services = module.compute.cloud_run_services
+  ic_checker_service = module.compute.ic_checker_service
   batch_job_template = module.compute.batch_job_template
   weights_bucket     = module.storage.weights_bucket_name
 
-  pipeline_service_account_id = module.storage.pipeline_service_account_name
-  tpu_service_account_id      = module.compute.tpu_service_account_id
+  pipeline_service_account_id    = module.storage.pipeline_service_account_name
+  pipeline_service_account_email = module.storage.pipeline_service_account_email
 
   depends_on = [module.compute]
 }

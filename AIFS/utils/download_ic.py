@@ -24,7 +24,7 @@ def check_new_data(date_str=None):
     if date_str:
         DATE = datetime.datetime.strptime(date_str, "%Y%m%dT%H")
     else:
-        DATE = OpendataClient().latest()
+        DATE = OpendataClient(source="google").latest()
     # DATE = datetime.datetime(2026, 3, 21, 12)
     DATE_FORMATTED = DATE.strftime("%Y%m%dT%H")
 

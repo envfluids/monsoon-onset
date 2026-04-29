@@ -32,7 +32,7 @@ variable "forecast_regions" {
 variable "pipeline_schedule" {
   description = "Cron schedule for pipeline trigger"
   type        = string
-  default     = "*/15 * * * *"  # Every 15 minutes
+  default     = "*/15 * * * *" # Every 15 minutes
 }
 
 variable "call_log_level" {
@@ -52,8 +52,8 @@ variable "pipeline_service_account_id" {
   type        = string
 }
 
-variable "tpu_service_account_id" {
-  description = "Full resource ID of the TPU service account for impersonation binding"
+variable "pipeline_service_account_email" {
+  description = "Email address of the pipeline service account used by Batch jobs"
   type        = string
 }
 
@@ -65,19 +65,27 @@ variable "cloud_run_services" {
   }))
 }
 
+variable "ic_checker_service" {
+  description = "Cloud Run service metadata for the initial-condition checker"
+  type = object({
+    name = string
+    uri  = string
+  })
+}
+
 variable "batch_job_template" {
   description = "Cloud Batch job template configuration"
   type = object({
-    project      = string
-    region       = string
-    machine_type = string
-    gpu_type     = string
-    gpu_count    = number
-    preemptible  = bool
-    image        = string
+    project         = string
+    region          = string
+    machine_type    = string
+    gpu_type        = string
+    gpu_count       = number
+    os_image        = string
+    preemptible     = bool
+    image           = string
     vpc_network     = string
     vpc_subnet      = string
-    tpu_type        = string
     neuralgcm_image = string
   })
 }

@@ -20,10 +20,19 @@ resource "google_project_iam_member" "workflow_run_invoker" {
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can use TPU
-resource "google_project_iam_member" "workflow_tpu_admin" {
+# Workflow SA can invoke the private IC checker service
+resource "google_cloud_run_v2_service_iam_member" "workflow_ic_checker_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = var.ic_checker_service.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.workflow.email}"
+}
+
+# Workflow SA can submit and poll Cloud Batch jobs
+resource "google_project_iam_member" "workflow_batch_jobs_editor" {
   project = var.project_id
-  role    = "roles/tpu.admin"
+  role    = "roles/batch.jobsEditor"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
@@ -34,10 +43,10 @@ resource "google_project_iam_member" "workflow_invoker" {
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can read GCS intermediate files (latest_date.txt, latest.txt)
-resource "google_storage_bucket_iam_member" "workflow_gcs_reader" {
+# Workflow SA reads markers and writes lightweight intermediate state files.
+resource "google_storage_bucket_iam_member" "workflow_gcs_object_admin" {
   bucket = "monsoon-${var.environment}-data-${var.project_id}"
-  role   = "roles/storage.objectViewer"
+  role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.workflow.email}"
 }
 
@@ -51,13 +60,6 @@ resource "google_project_iam_member" "workflow_logging" {
 # Workflow SA can impersonate the pipeline SA (to submit Cloud Run jobs)
 resource "google_service_account_iam_member" "workflow_impersonate_pipeline" {
   service_account_id = var.pipeline_service_account_id
-  role               = "roles/iam.serviceAccountUser"
-  member             = "serviceAccount:${google_service_account.workflow.email}"
-}
-
-# Workflow SA can impersonate the TPU SA
-resource "google_service_account_iam_member" "workflow_impersonate_tpu" {
-  service_account_id = var.tpu_service_account_id
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.workflow.email}"
 }
@@ -110,12 +112,14 @@ resource "google_workflows_workflow" "main_pipeline" {
   deletion_protection = false
 
   source_contents = templatefile("${path.module}/workflow.yaml.tpl", {
-    project_id      = var.project_id
-    region          = var.region
-    environment     = var.environment
-    cloud_run_jobs  = var.cloud_run_services
-    batch_config    = var.batch_job_template
-    weights_bucket  = var.weights_bucket
+    project_id     = var.project_id
+    region         = var.region
+    environment    = var.environment
+    cloud_run_jobs = var.cloud_run_services
+    ic_checker_url = var.ic_checker_service.uri
+    batch_config   = var.batch_job_template
+    weights_bucket = var.weights_bucket
+    pipeline_sa    = var.pipeline_service_account_email
   })
 
   labels = {
@@ -161,4 +165,3 @@ resource "google_cloud_scheduler_job" "pipeline_trigger" {
     max_backoff_duration = "300s"
   }
 }
-

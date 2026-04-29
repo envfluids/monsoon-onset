@@ -26,6 +26,7 @@ COPY docker/aifs/src/ ./src/
 # Copy science scripts (unmodified) into the expected utils/ directory structure
 COPY AIFS/utils/ ./AIFS/utils/
 COPY AIFS/grids/ ./AIFS/grids/
+COPY AIFS/data/ ./AIFS/data/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

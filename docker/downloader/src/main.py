@@ -129,7 +129,7 @@ def _latest_ecmwf_00z() -> str:
     """Return the latest ECMWF 00z cycle at or before ECMWF open-data latest."""
     from ecmwf.opendata import Client as OpendataClient
 
-    latest = OpendataClient().latest()
+    latest = OpendataClient(source="google").latest()
     latest_00z = latest.replace(hour=0, minute=0, second=0, microsecond=0)
     return latest_00z.strftime("%Y%m%dT%H")
 

@@ -351,9 +351,8 @@ All Cloud Run Jobs:
 - Receive `ENVIRONMENT`, `GCS_BUCKET`, `GCS_WEIGHTS_BUCKET`, `PROJECT_ID`, and `FORECAST_REGION`
   as environment variables (region is overridden at execution time by the workflow)
 
-GPU inference (AIFS and NeuralGCM) runs on **Cloud Batch**, not Cloud Run, because they require
-GPU accelerators. The compute module also creates a **TPU service account** for NeuralGCM JAX
-workloads.
+GPU inference (AIFS and NeuralGCM) runs on **Cloud Batch**, not Cloud Run, because model
+execution requires accelerators.
 
 ### Orchestration (`modules/orchestration`)
 
@@ -369,8 +368,8 @@ workloads.
   `pipeline_schedule` (default every 6 hours in dev, configurable in prod)
 - **Pub/Sub topics**: `pipeline-triggers`, `pipeline-completions`, and `dead-letter` for event
   routing (not yet wired into the workflow; reserved for future integrations)
-- **Workflow service account** with `run.developer`, `tpu.admin`, and `logging.logWriter`, plus
-  `iam.serviceAccountUser` to impersonate the pipeline and TPU service accounts
+- **Workflow service account** with `run.developer`, `batch.jobsEditor`, and `logging.logWriter`,
+  plus `iam.serviceAccountUser` to attach the pipeline service account to jobs
 
 ### Monitoring (`modules/monitoring`)
 
@@ -418,8 +417,8 @@ No other changes are needed — the workflow is parameterized by region.
 
 Cloud Run Job memory/CPU and Cloud Batch machine types are set in `modules/compute/main.tf` and
 `modules/compute/variables.tf`. To change them per environment, add override variables to the
-environment's `main.tf` and pass them into the module. For GPU type and TPU size, use the
-`gpu_type` and `tpu_type` variables already defined in the compute module.
+environment's `main.tf` and pass them into the module. For model Batch jobs, use `gpu_type` and
+`gpu_machine_type`.
 
 ### Updating Container Images Without Terraform
 
