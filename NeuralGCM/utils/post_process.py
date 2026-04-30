@@ -21,21 +21,6 @@ logging.basicConfig(
 
 grid_file = "../grids/grid_2p0.txt"
 
-# def calculate_sji(ds):
-#     wind_850 = ds.sel(lat=slice(-5., 21.),lon=slice(50.,71.)) # select the SJI region
-#     wind_speed = (wind_850.v_component_of_wind**2 + wind_850.u_component_of_wind **2) * 0.5 # calculate the wind speed
-#     mean_wind_speed = wind_speed.mean(dim=['lat', 'lon']) # calculate the mean wind speed over the region
-#     mean_wind_speed = np.sqrt(mean_wind_speed * 2) # convert the wind speed to m/s, the SJI
-#     mean_wind_speed.name = "sji"
-#     mean_wind_speed = mean_wind_speed.to_dataset()
-#     mean_wind_speed['step'] = mean_wind_speed['step'].astype(int)
-#     mean_wind_speed['step'] = mean_wind_speed['step'] - 12
-#     mean_wind_speed['day'] = mean_wind_speed['step'] // 24
-#     mean_wind_speed = mean_wind_speed.set_coords('day')
-#     mean_wind_speed = mean_wind_speed.groupby('day').mean(dim='step')
-#     return mean_wind_speed
-
-
 def set_atts_tcw(ds):
     ds["lat"].attrs["standard_name"] = "latitude"
     ds["lat"].attrs["units"] = "degrees_north"

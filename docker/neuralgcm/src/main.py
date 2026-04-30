@@ -136,6 +136,7 @@ def _run_science_scripts(date: str) -> None:
     # Step 2: Ensemble inference (all 30 members; --mpi omitted → runs all on available devices)
     # Note: run_model.py loads weights and ERA5 at module level, so all files must be present.
     logger.info(f"Running run_model.py for {date}")
+    _log_gpu_runtime(env)
     subprocess.run(
         [sys.executable, "run_model.py", "--date", date],
         cwd=NGCM_UTILS, check=True, env=env,
@@ -154,6 +155,36 @@ def _run_science_scripts(date: str) -> None:
         [sys.executable, "post_process_merge.py", "--date", date],
         cwd=NGCM_UTILS, check=True, env=env,
     )
+
+
+def _log_gpu_runtime(env: dict[str, str]) -> None:
+    checks = [
+        ["nvidia-smi"],
+        [
+            sys.executable,
+            "-c",
+            (
+                "import jax; "
+                "print('jax', jax.__version__); "
+                "print('backend', jax.default_backend()); "
+                "print('devices', jax.devices())"
+            ),
+        ],
+    ]
+    for command in checks:
+        result = subprocess.run(
+            command,
+            cwd=NGCM_UTILS,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        logger.info("%s exited %s", " ".join(command), result.returncode)
+        if result.stdout:
+            logger.info("%s stdout:\n%s", command[0], result.stdout)
+        if result.stderr:
+            logger.warning("%s stderr:\n%s", command[0], result.stderr)
 
 
 def _upload_outputs(date: str, region: str, bucket: str) -> None:

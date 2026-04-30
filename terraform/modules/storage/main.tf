@@ -105,7 +105,7 @@ resource "google_artifact_registry_repository" "containers" {
       id     = "delete-old-images"
       action = "DELETE"
       condition {
-        older_than = "2592000s"  # 30 days
+        older_than = "2592000s" # 30 days
       }
     }
   }
@@ -120,12 +120,12 @@ resource "google_storage_bucket" "weights" {
   project  = var.project_id
   location = var.region
 
-  force_destroy = false  # Never auto-delete model weights
+  force_destroy = false # Never auto-delete model weights
 
   uniform_bucket_level_access = true
 
   versioning {
-    enabled = true  # Always version model weights
+    enabled = true # Always version model weights
   }
 
   labels = {
@@ -167,4 +167,18 @@ resource "google_artifact_registry_repository_iam_member" "pipeline_ar" {
   repository = google_artifact_registry_repository.containers.name
   role       = "roles/artifactregistry.reader"
   member     = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+# Batch VMs run as the pipeline SA and must report task state back to Batch.
+resource "google_project_iam_member" "pipeline_batch_agent_reporter" {
+  project = var.project_id
+  role    = "roles/batch.agentReporter"
+  member  = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+# Batch task stdout/stderr is written to Cloud Logging by the job service account.
+resource "google_project_iam_member" "pipeline_logging" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.pipeline.email}"
 }

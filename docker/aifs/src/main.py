@@ -76,15 +76,15 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
 @click.option("--region",         envvar="FORECAST_REGION",   default="india")
 @click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
 @click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
-def main(aifs_date, region, bucket, weights_bucket):
+def main(date, region, bucket, weights_bucket):
     # date is the NeuralGCM date; AIFS IC is 12 hours earlier
 
-    logger.info(f"IC date: {aifs_date}")
+    logger.info(f"IC date: {date}")
 
     _setup_directories()
-    _download_inputs(aifs_date, region, bucket, weights_bucket)
-    _run_science_scripts(aifs_date)
-    _upload_outputs(aifs_date, region, bucket)
+    _download_inputs(date, region, bucket, weights_bucket)
+    _run_science_scripts(date)
+    _upload_outputs(date, region, bucket)
 
 
 def _setup_directories() -> None:

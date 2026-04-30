@@ -6,7 +6,7 @@
 locals {
   gpu_machine_type_defaults = {
     nvidia-tesla-a100 = "a2-highgpu-1g"
-    nvidia-l4         = "g2-standard-8"
+    nvidia-l4         = "g2-standard-16"
     nvidia-tesla-t4   = "n1-standard-8"
     nvidia-tesla-v100 = "n1-standard-8"
   }

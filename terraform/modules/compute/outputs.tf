@@ -29,6 +29,8 @@ output "batch_job_template" {
     gpu_type        = var.gpu_type
     gpu_count       = 1
     os_image        = var.batch_vm_os_image
+    boot_disk_gb    = var.batch_boot_disk_size_gb
+    image_streaming = var.batch_enable_image_streaming
     preemptible     = var.use_preemptible_gpu
     image           = var.aifs_image
     vpc_network     = var.vpc_id

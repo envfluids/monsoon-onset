@@ -82,6 +82,8 @@ variable "batch_job_template" {
     gpu_type        = string
     gpu_count       = number
     os_image        = string
+    boot_disk_gb    = number
+    image_streaming = bool
     preemptible     = bool
     image           = string
     vpc_network     = string

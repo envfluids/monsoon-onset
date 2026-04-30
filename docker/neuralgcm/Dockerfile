@@ -13,7 +13,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libeccodes-tools \
     cdo \
     nco \
+    curl \
+    bzip2 \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+
+ENV MAMBA_ROOT_PREFIX=/opt/micromamba
+
+RUN curl -Ls https://micro.mamba.pm/api/micromamba/linux-64/latest \
+    | tar -xvj -C /usr/local/bin --strip-components=1 bin/micromamba \
+    && micromamba create -y -n ncl -c conda-forge ncl \
+    && micromamba clean -a -y \
+    && printf '%s\n' \
+        '#!/usr/bin/env bash' \
+        'export NCARG_ROOT=/opt/micromamba/envs/ncl' \
+        'exec /opt/micromamba/envs/ncl/bin/ncl "$@"' \
+        > /usr/local/bin/ncl \
+    && chmod +x /usr/local/bin/ncl \
+    && ncl -V
 
 # Install Python dependencies
 COPY docker/neuralgcm/requirements.txt .

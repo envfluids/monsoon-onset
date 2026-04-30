@@ -264,6 +264,7 @@ main:
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.image}"
+                                      enableImageStreaming: ${batch_config.image_streaming}
                                     environment:
                                       variables:
                                         DATE: $${aifs_target_date}
@@ -279,10 +280,11 @@ main:
                                   machineType: "${batch_config.machine_type}"
                                   bootDisk:
                                     image: "${batch_config.os_image}"
+                                    sizeGb: ${batch_config.boot_disk_gb}
                                   provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
                                   accelerators:
                                     - type: "${batch_config.gpu_type}"
-                                      count: 1
+                                      count: ${batch_config.gpu_count}
                             location:
                               allowedLocations: ["regions/${region}"]
                             network:
@@ -292,6 +294,8 @@ main:
                                   noExternalIpAddress: true
                           logsPolicy:
                             destination: CLOUD_LOGGING
+                      connector_params:
+                        skip_polling: true
                       result: aifs_job
                   - poll_aifs:
                       steps:
@@ -369,6 +373,7 @@ main:
                                 runnables:
                                   - container:
                                       imageUri: "${batch_config.neuralgcm_image}"
+                                      enableImageStreaming: ${batch_config.image_streaming}
                                     environment:
                                       variables:
                                         DATE: $${neuralgcm_target_date}
@@ -384,10 +389,11 @@ main:
                                   machineType: "${batch_config.machine_type}"
                                   bootDisk:
                                     image: "${batch_config.os_image}"
+                                    sizeGb: ${batch_config.boot_disk_gb}
                                   provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
                                   accelerators:
                                     - type: "${batch_config.gpu_type}"
-                                      count: 1
+                                      count: ${batch_config.gpu_count}
                             location:
                               allowedLocations: ["regions/${region}"]
                             network:
@@ -397,6 +403,8 @@ main:
                                   noExternalIpAddress: true
                           logsPolicy:
                             destination: CLOUD_LOGGING
+                      connector_params:
+                        skip_polling: true
                       result: neuralgcm_job
                   - poll_neuralgcm:
                       steps:

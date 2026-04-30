@@ -54,6 +54,7 @@ gcloud services enable \
   batch.googleapis.com \
   workflows.googleapis.com \
   cloudscheduler.googleapis.com \
+  containerfilesystem.googleapis.com \
   artifactregistry.googleapis.com \
   compute.googleapis.com \
   vpcaccess.googleapis.com \

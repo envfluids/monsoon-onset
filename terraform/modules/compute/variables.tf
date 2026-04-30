@@ -112,6 +112,11 @@ variable "gpu_type" {
   description = "GPU type for AIFS (e.g., nvidia-tesla-a100, nvidia-l4)"
   type        = string
   default     = "nvidia-tesla-a100"
+
+  validation {
+    condition     = var.gpu_type != "nvidia-a100-40gb"
+    error_message = "Use the Compute Engine accelerator type name nvidia-tesla-a100 for A100 40GB GPUs, not nvidia-a100-40gb."
+  }
 }
 
 variable "gpu_machine_type" {
@@ -124,4 +129,16 @@ variable "batch_vm_os_image" {
   description = "Batch VM OS image for model jobs. batch-cos uses Batch Container-Optimized OS for container workloads."
   type        = string
   default     = "batch-cos"
+}
+
+variable "batch_boot_disk_size_gb" {
+  description = "Boot disk size in GB for Cloud Batch GPU VMs. Must be large enough to unpack NVIDIA container image layers."
+  type        = number
+  default     = 100
+}
+
+variable "batch_enable_image_streaming" {
+  description = "Enable Cloud Batch image streaming for model container runnables stored in Artifact Registry."
+  type        = bool
+  default     = false
 }
