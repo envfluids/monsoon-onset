@@ -1,14 +1,12 @@
-#!/bin/bash
+#!/bin/bash -l
 
 cd /net/monsoon/operational/monsoon-onset/sync/utils
 
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
-else
-    echo "conda not found in PATH"
-    echo "PATH=$PATH"
-    exit 1
 fi
+
+source /home/marchakitus/.bashrc
 
 conda activate/net/scratch2/marchakitus/conda-envs/operational_pip
 timeout 590s python ./main.py
