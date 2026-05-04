@@ -41,6 +41,12 @@ variable "call_log_level" {
   default     = "LOG_NONE"
 }
 
+variable "execution_history_level" {
+  description = "Workflow execution history level (EXECUTION_HISTORY_LEVEL_UNSPECIFIED, EXECUTION_HISTORY_BASIC, EXECUTION_HISTORY_DETAILED)"
+  type        = string
+  default     = "EXECUTION_HISTORY_LEVEL_UNSPECIFIED"
+}
+
 variable "weights_bucket" {
   description = "GCS bucket name for model weights and large static files"
   type        = string
@@ -65,8 +71,8 @@ variable "cloud_run_services" {
   }))
 }
 
-variable "ic_checker_service" {
-  description = "Cloud Run service metadata for the initial-condition checker"
+variable "pipeline_state_service" {
+  description = "Cloud Run service metadata for the pipeline-state service"
   type = object({
     name = string
     uri  = string

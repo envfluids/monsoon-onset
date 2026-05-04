@@ -25,14 +25,16 @@ LOG_FORMAT = (
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-REQUIRED_FILES = [
-    # AIFS outputs (keyed by aifs_date)
-    "{region}/output/aifs/{aifs_date}/tp_{aifs_date}.nc",
-    "{region}/output/aifs/{aifs_date}/sji_{aifs_date}.nc",
-    # NeuralGCM outputs (keyed by date)
-    "{region}/output/neuralgcm/{date}/tp_{date}.nc",
-    "{region}/output/neuralgcm/{date}/sji_{date}.nc",
-]
+REQUIRED_OUTPUT_KINDS = ("sji", "tcw", "tp")
+
+
+def required_output_paths(region: str, date: str, aifs_date: str) -> list[str]:
+    paths = []
+    for kind in REQUIRED_OUTPUT_KINDS:
+        paths.append(f"{region}/output/aifs/{aifs_date}/{kind}/{kind}_{aifs_date}.nc")
+    for kind in REQUIRED_OUTPUT_KINDS:
+        paths.append(f"{region}/output/neuralgcm/{date}/{kind}/{kind}_{date}.nc")
+    return paths
 
 
 def _read_gcs_text(bucket_name: str, gcs_path: str) -> str:
@@ -57,8 +59,7 @@ def main(date, region, bucket):
         logger.warning(f"Could not read latest_ecmwf_date.txt; using computed aifs_date={ecmwf_date}")
 
     missing = []
-    for template in REQUIRED_FILES:
-        gcs_path = template.format(region=region, date=date, aifs_date=ecmwf_date)
+    for gcs_path in required_output_paths(region, date, ecmwf_date):
         if _blob_exists(bucket, gcs_path):
             logger.info(f"  ✓ gs://{bucket}/{gcs_path}")
         else:

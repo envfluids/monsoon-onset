@@ -97,13 +97,13 @@ module "compute" {
   use_preemptible_gpu = false
 
   # Container images (pinned versions in prod)
-  downloader_image  = "gcr.io/${var.project_id}/monsoon-downloader:v1.0.0"
-  ic_checker_image  = "gcr.io/${var.project_id}/monsoon-ic-checker:v1.0.0"
-  postprocess_image = "gcr.io/${var.project_id}/monsoon-postprocess:v1.0.0"
-  blend_image       = "gcr.io/${var.project_id}/monsoon-blend:v1.0.0"
-  sync_image        = "gcr.io/${var.project_id}/monsoon-sync:v1.0.0"
-  aifs_image        = "gcr.io/${var.project_id}/monsoon-aifs:v1.0.0"
-  neuralgcm_image   = "gcr.io/${var.project_id}/monsoon-neuralgcm:v1.0.0"
+  downloader_image     = "gcr.io/${var.project_id}/monsoon-downloader:v1.0.0"
+  pipeline_state_image = "gcr.io/${var.project_id}/monsoon-pipeline-state:v1.0.0"
+  postprocess_image    = "gcr.io/${var.project_id}/monsoon-postprocess:v1.0.0"
+  blend_image          = "gcr.io/${var.project_id}/monsoon-blend:v1.0.0"
+  sync_image           = "gcr.io/${var.project_id}/monsoon-sync:v1.0.0"
+  aifs_image           = "gcr.io/${var.project_id}/monsoon-aifs:v1.0.0"
+  neuralgcm_image      = "gcr.io/${var.project_id}/monsoon-neuralgcm:v1.0.0"
 
   depends_on = [module.networking, module.storage]
 }
@@ -124,10 +124,10 @@ module "orchestration" {
   # Prod: frequent runs matching current HPC schedule
   pipeline_schedule = "*/15 * * * *" # Every 15 minutes (checks for new data)
 
-  cloud_run_services = module.compute.cloud_run_services
-  ic_checker_service = module.compute.ic_checker_service
-  batch_job_template = module.compute.batch_job_template
-  weights_bucket     = module.storage.weights_bucket_name
+  cloud_run_services     = module.compute.cloud_run_services
+  pipeline_state_service = module.compute.pipeline_state_service
+  batch_job_template     = module.compute.batch_job_template
+  weights_bucket         = module.storage.weights_bucket_name
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email

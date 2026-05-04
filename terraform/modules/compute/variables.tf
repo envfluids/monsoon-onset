@@ -68,8 +68,8 @@ variable "downloader_image" {
   type        = string
 }
 
-variable "ic_checker_image" {
-  description = "Container image for the initial-condition checker service"
+variable "pipeline_state_image" {
+  description = "Container image for the pipeline-state service (IC discovery + GCS state probes)"
   type        = string
 }
 

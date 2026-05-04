@@ -22,6 +22,7 @@ COPY docker/sync/src/ ./src/
 
 # Copy science scripts (unmodified) into expected directory structure
 COPY sync/utils/ ./sync/utils/
+COPY sync_IITM/utils/ ./sync_IITM/utils/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

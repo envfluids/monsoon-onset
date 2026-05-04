@@ -12,11 +12,11 @@ output "cloud_run_services" {
   }
 }
 
-output "ic_checker_service" {
-  description = "Cloud Run service metadata for the IC checker"
+output "pipeline_state_service" {
+  description = "Cloud Run service metadata for the pipeline-state service"
   value = {
-    name = google_cloud_run_v2_service.ic_checker.name
-    uri  = google_cloud_run_v2_service.ic_checker.uri
+    name = google_cloud_run_v2_service.pipeline_state.name
+    uri  = google_cloud_run_v2_service.pipeline_state.uri
   }
 }
 

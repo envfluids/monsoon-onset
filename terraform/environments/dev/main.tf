@@ -91,13 +91,13 @@ module "compute" {
   use_preemptible_gpu = true
 
   # Container images — pulled from Artifact Registry created by storage module
-  downloader_image  = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
-  ic_checker_image  = "${module.storage.artifact_registry_url}/monsoon-ic-checker:latest"
-  postprocess_image = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
-  blend_image       = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
-  sync_image        = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
-  aifs_image        = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
-  neuralgcm_image   = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
+  downloader_image     = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
+  pipeline_state_image = "${module.storage.artifact_registry_url}/monsoon-pipeline-state:latest"
+  postprocess_image    = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
+  blend_image          = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
+  sync_image           = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
+  aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
+  neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
 
   depends_on = [module.networking, module.storage]
 }
@@ -116,13 +116,14 @@ module "orchestration" {
   forecast_regions = local.forecast_regions
 
   # Dev: less frequent runs
-  pipeline_schedule = "0 */6 * * *" # Every 6 hours
-  call_log_level    = "LOG_ALL_CALLS"
+  pipeline_schedule       = "0 */6 * * *" # Every 6 hours
+  call_log_level          = "LOG_ALL_CALLS"
+  execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
-  cloud_run_services = module.compute.cloud_run_services
-  ic_checker_service = module.compute.ic_checker_service
-  batch_job_template = module.compute.batch_job_template
-  weights_bucket     = module.storage.weights_bucket_name
+  cloud_run_services     = module.compute.cloud_run_services
+  pipeline_state_service = module.compute.pipeline_state_service
+  batch_job_template     = module.compute.batch_job_template
+  weights_bucket         = module.storage.weights_bucket_name
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email

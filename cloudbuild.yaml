@@ -35,12 +35,12 @@ steps:
       - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest || true
     waitFor: ["-"]
 
-  - id: pull-cache-ic-checker
+  - id: pull-cache-pipeline-state
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     args:
       - -c
-      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest || true
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest || true
     waitFor: ["-"]
 
   - id: pull-cache-sync
@@ -101,23 +101,23 @@ steps:
       - .
     waitFor: [pull-cache-downloader]
 
-  - id: build-ic-checker
+  - id: build-pipeline-state
     name: gcr.io/cloud-builders/docker
     env: ["DOCKER_BUILDKIT=1"]
     args:
       - build
       - --cache-from
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest
       - --build-arg
       - BUILDKIT_INLINE_CACHE=1
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:${_SHORT_SHA}
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:${_SHORT_SHA}
       - -t
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest
       - -f
-      - docker/ic-checker/Dockerfile
+      - docker/pipeline-state/Dockerfile
       - .
-    waitFor: [pull-cache-ic-checker]
+    waitFor: [pull-cache-pipeline-state]
 
   - id: build-sync
     name: gcr.io/cloud-builders/docker
@@ -225,13 +225,13 @@ steps:
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader
     waitFor: [build-downloader]
 
-  - id: push-ic-checker
+  - id: push-pipeline-state
     name: gcr.io/cloud-builders/docker
     args:
       - push
       - --all-tags
-      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker
-    waitFor: [build-ic-checker]
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state
+    waitFor: [build-pipeline-state]
 
   - id: push-sync
     name: gcr.io/cloud-builders/docker
@@ -276,8 +276,8 @@ steps:
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:${_SHORT_SHA}
-  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-ic-checker:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}

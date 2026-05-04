@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from glob import glob
-import socket
 from datetime import datetime
 import logging
 import json
@@ -95,10 +94,6 @@ def find_most_recent_date(date_list):
 
 def main():
     base = Path(__file__).resolve().parent.parent.parent
-    operational_dir = base.parent / "monsoon-operational"
-    live_dir = operational_dir / "docs" / "assets"
-    maps_dir = live_dir / "images"
-    data_dir = live_dir / "data"
 
     config_file = base / ".config" / "config.json"
     with open(config_file, "r") as f:

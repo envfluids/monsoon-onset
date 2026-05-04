@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from utils import compute_roll_sum
 from ngcm import process_ngcm
-from aifs import process_aifs_offset
+from aifs import process_aifs
 # from aifs import process_aifs
 import numpy as np
 import argparse
@@ -52,17 +52,15 @@ def get_data(date, base, mok=False, source=None):
     mat_file = support_dir / "onset_five_day_thres_2deg.mat"
     if mok:
         logging.info("Using MOK configuration")
-        out_file = out_path / f"all_data_mok.csv"
+        out_file = out_path / "all_data_mok.csv"
         # For MOK, use the large ensemble outputs
         clim_file = support_dir / "large" / "ensemble_outputs_clim_2025_mok.csv"
     else:
-        out_file = out_path / f"all_data.csv"
+        out_file = out_path / "all_data.csv"
         clim_file = support_dir / "large" / "ensemble_outputs_clim_2025.csv"
     allowed_cells_file = support_dir / "allowed_cells.csv"
 
-    AIFS_date = parse_date(date) - timedelta(hours=12)
-    AIFS_date = AIFS_date.strftime("%Y%m%dT%H")
-    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{AIFS_date}.nc"
+    aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
     logging.info(f"Using AIFS file: {aifs_tp_file} for base date: {date}")
 
     # aifs_tp_file = base / "AIFS" / "output" / "tp" / f"tp_{date}.nc"
@@ -87,8 +85,7 @@ def get_data(date, base, mok=False, source=None):
 
     ngcm_df = process_ngcm(ngcm_precip_file, mat_file, allowed_cells)
 
-    # aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
-    aifs_df = process_aifs_offset(aifs_tp_file, mat_file, allowed_cells)
+    aifs_df = process_aifs(aifs_tp_file, mat_file, allowed_cells)
     ngcm_df["time"] = pd.to_datetime(ngcm_df["time"]).dt.normalize()
     aifs_df["time"] = pd.to_datetime(aifs_df["time"]).dt.normalize()
 

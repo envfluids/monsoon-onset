@@ -126,7 +126,7 @@ def _download_inputs(date: str, aifs_date: str, region: str,
     #    blend/utils/main.py computes AIFS_date = parse_date(date) - 12h and reads tp_{AIFS_date}.nc
     download_gcs_file(
         bucket,
-        f"{region}/output/aifs/{aifs_date}/tp_{aifs_date}.nc",
+        f"{region}/output/aifs/{aifs_date}/tp/tp_{aifs_date}.nc",
         Path(f"/app/AIFS/output/tp/tp_{aifs_date}.nc"),
     )
 
@@ -134,7 +134,7 @@ def _download_inputs(date: str, aifs_date: str, region: str,
     #    With --source google, blend reads from NeuralGCM_google/output/tp/tp_{date}.nc
     download_gcs_file(
         bucket,
-        f"{region}/output/neuralgcm/{date}/tp_{date}.nc",
+        f"{region}/output/neuralgcm/{date}/tp/tp_{date}.nc",
         Path(f"/app/NeuralGCM_google/output/tp/tp_{date}.nc"),
     )
 

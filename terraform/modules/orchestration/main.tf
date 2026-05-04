@@ -20,11 +20,11 @@ resource "google_project_iam_member" "workflow_run_invoker" {
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can invoke the private IC checker service
-resource "google_cloud_run_v2_service_iam_member" "workflow_ic_checker_invoker" {
+# Workflow SA can invoke the private pipeline-state service
+resource "google_cloud_run_v2_service_iam_member" "workflow_pipeline_state_invoker" {
   project  = var.project_id
   location = var.region
-  name     = var.ic_checker_service.name
+  name     = var.pipeline_state_service.name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.workflow.email}"
 }
@@ -104,22 +104,23 @@ resource "google_pubsub_topic" "dead_letter" {
 # -----------------------------------------------------------------------------
 
 resource "google_workflows_workflow" "main_pipeline" {
-  name                = "${var.name_prefix}-${var.environment}-pipeline"
-  project             = var.project_id
-  region              = var.region
-  service_account     = google_service_account.workflow.email
-  call_log_level      = var.call_log_level
-  deletion_protection = false
+  name                    = "${var.name_prefix}-${var.environment}-pipeline"
+  project                 = var.project_id
+  region                  = var.region
+  service_account         = google_service_account.workflow.email
+  call_log_level          = var.call_log_level
+  execution_history_level = var.execution_history_level
+  deletion_protection     = false
 
   source_contents = templatefile("${path.module}/workflow.yaml.tpl", {
-    project_id     = var.project_id
-    region         = var.region
-    environment    = var.environment
-    cloud_run_jobs = var.cloud_run_services
-    ic_checker_url = var.ic_checker_service.uri
-    batch_config   = var.batch_job_template
-    weights_bucket = var.weights_bucket
-    pipeline_sa    = var.pipeline_service_account_email
+    project_id         = var.project_id
+    region             = var.region
+    environment        = var.environment
+    cloud_run_jobs     = var.cloud_run_services
+    pipeline_state_url = var.pipeline_state_service.uri
+    batch_config       = var.batch_job_template
+    weights_bucket     = var.weights_bucket
+    pipeline_sa        = var.pipeline_service_account_email
   })
 
   labels = {

@@ -124,8 +124,8 @@ resource "google_compute_firewall" "allow_health_checks" {
   }
 
   source_ranges = [
-    "130.211.0.0/22",   # Google health check
-    "35.191.0.0/16",    # Google health check
+    "130.211.0.0/22", # Google health check
+    "35.191.0.0/16",  # Google health check
   ]
 
   target_tags = ["allow-health-check"]

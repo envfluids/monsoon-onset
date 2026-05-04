@@ -122,11 +122,13 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
 }
 
 # -----------------------------------------------------------------------------
-# Cloud Run Service for lightweight source availability checks
+# Cloud Run Service for full-pipeline state inspection
+# Probes external IC sources (when no date is supplied) and inspects GCS for
+# per-stage completion to drive workflow branching from a single response.
 # -----------------------------------------------------------------------------
 
-resource "google_cloud_run_v2_service" "ic_checker" {
-  name                = "${var.name_prefix}-${var.environment}-ic-checker"
+resource "google_cloud_run_v2_service" "pipeline_state" {
+  name                = "${var.name_prefix}-${var.environment}-pipeline-state"
   project             = var.project_id
   location            = var.region
   ingress             = "INGRESS_TRAFFIC_ALL"
@@ -136,7 +138,7 @@ resource "google_cloud_run_v2_service" "ic_checker" {
     service_account = var.service_account_email
 
     containers {
-      image = var.ic_checker_image
+      image = var.pipeline_state_image
 
       ports {
         container_port = 8080
@@ -153,6 +155,10 @@ resource "google_cloud_run_v2_service" "ic_checker" {
         name  = "ENVIRONMENT"
         value = var.environment
       }
+      env {
+        name  = "GCS_BUCKET"
+        value = var.gcs_bucket
+      }
     }
 
     scaling {
@@ -164,7 +170,7 @@ resource "google_cloud_run_v2_service" "ic_checker" {
   labels = {
     environment = var.environment
     managed_by  = "terraform"
-    component   = "ic-checker"
+    component   = "pipeline-state"
   }
 
   lifecycle {
