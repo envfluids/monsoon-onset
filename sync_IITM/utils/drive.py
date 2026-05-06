@@ -255,11 +255,11 @@ def check_file_exists(service, file_name, drive_folder_id):
 
 
 def upload_file(service, local_file_path, drive_folder_id):
-    """Uploads a single file *only if* it doesn't already exist in the target Google Drive folder."""
+    """Uploads a single file if needed and returns whether Drive has the file."""
     file_path = Path(local_file_path)
     if not file_path.is_file():
         logging.error(f"Skipping: Local file not found: {file_path}")
-        return None
+        return False
 
     file_name = file_path.name
 
@@ -271,7 +271,7 @@ def upload_file(service, local_file_path, drive_folder_id):
         logging.info(
             f"File '{file_name}' already exists in Drive folder '{drive_folder_id}'. Skipping upload."
         )
-        return None  # Indicate skipped
+        return True
     # --- End check ---
 
     logging.info(f"Uploading '{file_name}' to folder ID '{drive_folder_id}'...")
@@ -305,16 +305,16 @@ def upload_file(service, local_file_path, drive_folder_id):
             supportsAllDrives=True
         ).execute()
         logging.info(f"Set public read permission on file ID: {file_id}")
-        return file_id
+        return True
     except HttpError as error:
         logging.error(
             f"Error uploading file '{file_name}' to Drive folder '{drive_folder_id}': {error}"
         )
         # Consider retries for transient errors (e.g., 5xx)
-        return None
+        return False
     except Exception as e:
         logging.error(f"Unexpected error uploading file '{file_name}': {e}")
-        return None
+        return False
 
 
 def upload_directory_recursive(service, local_dir_path, drive_parent_folder_id):
@@ -400,14 +400,19 @@ def drive_sync(date, cluster):
         tp_folder_id = get_folder_id_by_path(drive_service, DRIVE_BASE_PATH)
 
         if tp_folder_id:
-            upload_file(drive_service, AIFS_file, tp_folder_id)
-            logging.info("Sync process finished.")
+            sync_success = upload_file(drive_service, AIFS_file, tp_folder_id)
+            if sync_success:
+                logging.info("Sync process finished.")
+                return True
+            logging.error(f"Failed to sync local file: {AIFS_file}")
         else:
             logging.error(
                 f"CRITICAL: Could not create or find the folder '{DRIVE_BASE_PATH}'. Aborting."
             )
     else:
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
+
+    return False
 
 
 def drive_sync_IMERG(date, cluster):  # Added cluster parameter with default

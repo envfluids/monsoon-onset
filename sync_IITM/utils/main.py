@@ -1,6 +1,4 @@
-import os
 from pathlib import Path
-from glob import glob
 from datetime import datetime
 import logging
 import json
@@ -90,6 +88,65 @@ def find_most_recent_date(date_list):
     return most_recent
 
 
+def valid_date_or_none(date_str):
+    try:
+        parse_date(date_str)
+    except ValueError:
+        return None
+    return date_str
+
+
+def get_local_tp_dates(tp_dir):
+    dates = []
+
+    for nc_file in sorted(tp_dir.glob("tp_*.nc")):
+        date = nc_file.stem.replace("tp_", "", 1)
+        if valid_date_or_none(date):
+            dates.append(date)
+        else:
+            logging.warning(
+                f"Skipping file with invalid date in name: {nc_file.name}"
+            )
+
+    return sorted(set(dates), key=parse_date)
+
+
+def read_drive_dates(drive_log):
+    if not drive_log.exists():
+        logging.info(f"Creating drive sync reference file at {drive_log}")
+        drive_log.parent.mkdir(parents=True, exist_ok=True)
+        drive_log.write_text("")
+        return []
+
+    valid_dates = []
+    with open(drive_log, "r") as f:
+        for line in f:
+            date = line.strip()
+            if not date:
+                continue
+            if valid_date_or_none(date):
+                valid_dates.append(date)
+            else:
+                logging.warning(
+                    f"Skipping invalid date in drive sync reference file: {date}"
+                )
+
+    return valid_dates
+
+
+def dates_to_sync(local_dates, drive_dates):
+    drive_date_set = set(drive_dates)
+    latest_drive_date = max(drive_dates, key=parse_date) if drive_dates else None
+
+    sync_dates = []
+    for date in local_dates:
+        if date in drive_date_set:
+            continue
+        if latest_drive_date and parse_date(date) <= parse_date(latest_drive_date):
+            continue
+        sync_dates.append(date)
+
+    return sync_dates
 
 
 def main():
@@ -104,47 +161,42 @@ def main():
     logging.info(f"Cluster ID: {cluster_id}")
 
     tp_dir = base / "AIFS" / "output" / "tp_0p25"
-    try:
-        nc_files = sorted(glob(str(tp_dir / "tp_*.nc")))
-        if not nc_files:
-            logging.error("No .nc files found in tp_0p25 directory.")
-            logging.info("Exiting sync process.")
-            return
-        latest_file = nc_files[-1]
-        date = Path(latest_file).stem.replace("tp_", "")
-        logging.info(f"Found latest file: {latest_file}, date: {date}")
-    except Exception as e:
-        logging.error(f"Failed to find latest nc file: {e}")
+    local_dates = get_local_tp_dates(tp_dir)
+    if not local_dates:
+        logging.error("No valid tp_*.nc files found in tp_0p25 directory.")
         logging.info("Exiting sync process.")
         return
 
     drive_log = base / "sync_IITM" / "logs" / "drive.txt"
-    if not os.path.exists(drive_log):
-        logging.info(f"Creating drive sync reference file at {drive_log}")
-        with open(drive_log, "w") as f:
-            f.write("")  # Placeholder for the first run
-    else:
-        with open(drive_log, "r") as f:
-            drive_dates = f.read()
-            dates_list = drive_dates.split("\n")
-            if date in dates_list:
-                logging.info(
-                    f"Date {date} already exists in drive sync reference file."
-                )
-            else:
-                logging.info(
-                    f"Date {date} does not exist in drive sync reference file."
-                )
-                try:
-                    from drive import drive_sync
+    drive_dates = read_drive_dates(drive_log)
+    sync_dates = dates_to_sync(local_dates, drive_dates)
 
-                    drive_sync(date, cluster)
-                    logging.info(f"Adding date {date} to drive sync reference file.")
-                    with open(drive_log, "a") as f:
-                        f.write(date + "\n")
-                except Exception as e:
-                    logging.error(f"Failed to sync with Google Drive: {e}")
+    if not sync_dates:
+        logging.info("No new dates to sync.")
+        logging.info("Sync process completed successfully.")
+        return
 
+    logging.info(f"Found {len(sync_dates)} date(s) to sync: {sync_dates}")
+
+    from drive import drive_sync
+
+    for date in sync_dates:
+        logging.info(f"Syncing missing date {date}.")
+        try:
+            sync_success = drive_sync(date, cluster)
+        except Exception as e:
+            logging.error(f"Failed to sync date {date} with Google Drive: {e}")
+            logging.info("Stopping sync process to preserve chronological order.")
+            return
+
+        if not sync_success:
+            logging.error(f"Drive sync did not complete successfully for date {date}.")
+            logging.info("Stopping sync process to preserve chronological order.")
+            return
+
+        logging.info(f"Adding date {date} to drive sync reference file.")
+        with open(drive_log, "a") as f:
+            f.write(date + "\n")
 
     logging.info("Sync process completed successfully.")
 
