@@ -14,6 +14,7 @@ sync/state/
 .config/
 __pycache__/
 .DS_Store
+.vscode/*
 
 .terraform
 .terraform.lock.hcl
