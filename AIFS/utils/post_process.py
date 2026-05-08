@@ -139,8 +139,8 @@ def post_process_india(AIFS, date):
         AIFS = AIFS.isel(step=slice(0, 164))
 
     output_base_path = "../output/india"
-    if not os.path.exists(output_base_path):
-        os.makedirs(output_base_path)
+    for subdir in ("sji", "tcw", "tp"):
+        os.makedirs(os.path.join(output_base_path, subdir), exist_ok=True)
 
     grid_file = "../grids/grid_2p0.txt"
 

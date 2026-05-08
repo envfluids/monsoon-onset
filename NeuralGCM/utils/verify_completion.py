@@ -25,7 +25,7 @@ def main():
     date = args.date
     base = Path(__file__).resolve().parent.parent.parent
 
-    AIFS_output_path = base / "AIFS" / "output"
+    AIFS_output_path = base / "AIFS" / "output" / "india"
     AIFS_tp_path = AIFS_output_path / "tp" / f"tp_2p0_{date}.nc"
     AIFS_sji_path = AIFS_output_path / "sji" / f"sji_{date}.nc"
     AIFS_tcw_path = AIFS_output_path / "tcw" / f"tcw_{date}.nc"
