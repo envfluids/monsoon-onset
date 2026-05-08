@@ -8,7 +8,7 @@ if ! flock -n 9; then
     exit 0
 fi
 
-cd /net/monsoon/operational/monsoon-onset/AIFS/utils
+cd /net/monsoon/operational/monsoon-onset
 
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
@@ -19,7 +19,7 @@ else
 fi
 
 conda activate /net/scratch2/marchakitus/conda-envs/AIFS_ENS
-timeout 1200s python ./pipeline.py
+timeout 1200s python ./HPC/utils/main.py --pipelines ecmwf
 
 if [ $? -eq 124 ]; then
   echo "ERROR Job timed out after 20 minutes."

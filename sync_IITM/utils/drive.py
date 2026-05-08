@@ -20,6 +20,7 @@ logging.basicConfig(
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 AUTH_DIR = Path(__file__).resolve().parent.parent / ".auth"
+logging.info(f"Using authentication directory: {AUTH_DIR}")
 CREDENTIALS_FILE = AUTH_DIR / "credentials.json"
 TOKEN_FILE = AUTH_DIR / "token.json"
 NUM_API_RETRIES = 3

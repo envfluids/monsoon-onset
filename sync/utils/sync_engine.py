@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
+import fnmatch
 import logging
 import re
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class LocalSyncItem:
+    region: str
     rule: str
     date: str
     local_path: Path
@@ -77,7 +79,12 @@ class SyncEngine:
         folder_cache: dict[str, dict[str, dict]] = {}
 
         for item in items:
-            record = self.inventory.get(item.rule, item.date, item.relative_path)
+            record = self.inventory.get(
+                item.region,
+                item.rule,
+                item.date,
+                item.relative_path,
+            )
             if record and record.status == "uploaded" and _same_signature(record, item):
                 counters["skipped_inventory"] += 1
                 continue
@@ -122,7 +129,12 @@ class SyncEngine:
 
         for item in items:
             expected_remote_keys.add((item.drive_path, item.file_name))
-            record = self.inventory.get(item.rule, item.date, item.relative_path)
+            record = self.inventory.get(
+                item.region,
+                item.rule,
+                item.date,
+                item.relative_path,
+            )
             if record and record.status == "uploaded" and not _same_signature(record, item):
                 counters["changed_local"] += 1
                 logger.warning("Local file changed since inventory: %s", item.local_path)
@@ -146,6 +158,7 @@ class SyncEngine:
                 date = _extract_date_from_path(drive_path) or "unknown"
                 relative_path = f"{drive_path.rstrip('/')}/{file_name}"
                 self.inventory.mark_remote_only(
+                    region=self.config.region,
                     rule="unknown",
                     date=date,
                     relative_path=relative_path,
@@ -178,6 +191,7 @@ class SyncEngine:
     def _record_uploaded(self, item: LocalSyncItem, remote: dict | None) -> None:
         self.inventory.upsert(
             InventoryRecord(
+                region=item.region,
                 rule=item.rule,
                 date=item.date,
                 relative_path=item.relative_path,
@@ -202,7 +216,7 @@ def _discover_rule(config: SyncConfig, rule: SyncRule) -> list[LocalSyncItem]:
 
 
 def _discover_files_rule(config: SyncConfig, rule: SyncRule) -> list[LocalSyncItem]:
-    local_root = config.sync_root / rule.local_root
+    local_root = config.sync_root / _render(rule.local_root, config, date="")
     if not local_root.exists():
         logger.debug("Skipping missing sync root for rule %s: %s", rule.name, local_root)
         return []
@@ -213,6 +227,7 @@ def _discover_files_rule(config: SyncConfig, rule: SyncRule) -> list[LocalSyncIt
             match.group(0)
             for file_path in local_root.rglob("*")
             if file_path.is_file()
+            if not _ignored(file_path, local_root, rule)
             for match in [date_pattern.search(file_path.as_posix())]
             if match
         }
@@ -221,13 +236,13 @@ def _discover_files_rule(config: SyncConfig, rule: SyncRule) -> list[LocalSyncIt
     for date in dates:
         for pattern in rule.patterns:
             local_path = local_root / pattern.format(date=date)
-            if local_path.is_file():
+            if local_path.is_file() and not _ignored(local_path, local_root, rule):
                 items.append(_make_item(config, rule, date, local_path, local_path.relative_to(local_root)))
     return items
 
 
 def _discover_dated_directory_rule(config: SyncConfig, rule: SyncRule) -> list[LocalSyncItem]:
-    local_root = config.sync_root / rule.local_root
+    local_root = config.sync_root / _render(rule.local_root, config, date="")
     if not local_root.exists():
         logger.debug("Skipping missing sync root for rule %s: %s", rule.name, local_root)
         return []
@@ -238,7 +253,11 @@ def _discover_dated_directory_rule(config: SyncConfig, rule: SyncRule) -> list[L
         date = date_dir.name
         if not date_pattern.match(date):
             continue
-        for local_path in sorted(path for path in date_dir.rglob("*") if path.is_file()):
+        for local_path in sorted(
+            path
+            for path in date_dir.rglob("*")
+            if path.is_file() and not _ignored(path, local_root, rule)
+        ):
             relative = local_path.relative_to(date_dir)
             items.append(_make_item(config, rule, date, local_path, relative))
     return items
@@ -253,14 +272,11 @@ def _make_item(
 ) -> LocalSyncItem:
     stat = local_path.stat()
     relative_posix = relative_path.as_posix()
-    drive_path = rule.drive_path.format(
-        drive_root=config.drive_root,
-        cluster=config.cluster,
-        date=date,
-    )
+    drive_path = _render(rule.drive_path, config, date=date)
     if rule.kind == "dated_directory" and relative_path.parent != Path("."):
         drive_path = f"{drive_path.rstrip('/')}/{relative_path.parent.as_posix()}"
     return LocalSyncItem(
+        region=config.region,
         rule=rule.name,
         date=date,
         local_path=local_path,
@@ -279,3 +295,20 @@ def _same_signature(record: InventoryRecord, item: LocalSyncItem) -> bool:
 def _extract_date_from_path(path: str) -> str | None:
     match = re.search(r"\d{8}T\d{2}|\d{8}", path)
     return match.group(0) if match else None
+
+
+def _render(value: str, config: SyncConfig, *, date: str) -> str:
+    return value.format(
+        drive_root=config.drive_root,
+        cluster=config.cluster,
+        region=config.region,
+        date=date,
+    )
+
+
+def _ignored(path: Path, local_root: Path, rule: SyncRule) -> bool:
+    relative = path.relative_to(local_root).as_posix()
+    return any(
+        fnmatch.fnmatch(path.name, pattern) or fnmatch.fnmatch(relative, pattern)
+        for pattern in rule.ignore_patterns
+    )

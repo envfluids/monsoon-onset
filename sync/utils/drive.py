@@ -952,25 +952,30 @@ def drive_sync_IMD(date):  # Added cluster parameter with default
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
 
 
-def _build_engine(args):
+def _build_engines(args):
     try:
-        from .sync_config import load_sync_config
+        from .sync_config import load_sync_configs
         from .sync_engine import SyncEngine
         from .sync_inventory import SyncInventory
     except ImportError:  # pragma: no cover - supports python drive.py
-        from sync_config import load_sync_config
+        from sync_config import load_sync_configs
         from sync_engine import SyncEngine
         from sync_inventory import SyncInventory
 
-    config = load_sync_config(
+    configs = load_sync_configs(
         args.config,
         sync_root=args.sync_root,
         cluster=args.cluster,
         drive_root=args.drive_root,
         inventory_path=args.inventory,
+        regions=args.region,
     )
-    inventory = SyncInventory(config.inventory_path)
-    return SyncEngine(config, GoogleDriveClient.authenticated(), inventory), inventory
+    drive_client = GoogleDriveClient.authenticated()
+    engines = []
+    for config in configs:
+        inventory = SyncInventory(config.inventory_path)
+        engines.append((config, SyncEngine(config, drive_client, inventory), inventory))
+    return engines
 
 
 def main():
@@ -984,6 +989,7 @@ def main():
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--sync-root", type=Path, default=None)
     parser.add_argument("--cluster", type=str, default=None)
+    parser.add_argument("--region", type=str, nargs="+", default=None)
     parser.add_argument("--drive-root", type=str, default=None)
     parser.add_argument("--inventory", type=Path, default=None)
     parser.add_argument("--date", type=str, nargs="+", default=None)
@@ -999,23 +1005,30 @@ def main():
     dates = set(args.date) if args.date else None
     rules = set(args.rule) if args.rule else None
 
-    engine, inventory = _build_engine(args)
-    try:
-        if args.action == "sync":
-            summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
-            logging.info("Sync summary: %s", summary)
-        elif args.action == "reconcile":
-            summary = engine.reconcile(
-                dates=dates,
-                rule_names=rules,
-                repair_mode=args.repair_mode,
+    engines = _build_engines(args)
+    for config, engine, inventory in engines:
+        try:
+            logging.info(
+                "Running %s for region=%s drive_root=%s",
+                args.action,
+                config.region,
+                config.drive_root,
             )
-            logging.info("Reconcile summary: %s", summary)
-        else:
-            for item in engine.list_drive(date=args.date[0] if args.date else None):
-                logging.info("%s", item.get("path"))
-    finally:
-        inventory.close()
+            if args.action == "sync":
+                summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
+                logging.info("Sync summary for region=%s: %s", config.region, summary)
+            elif args.action == "reconcile":
+                summary = engine.reconcile(
+                    dates=dates,
+                    rule_names=rules,
+                    repair_mode=args.repair_mode,
+                )
+                logging.info("Reconcile summary for region=%s: %s", config.region, summary)
+            else:
+                for item in engine.list_drive(date=args.date[0] if args.date else None):
+                    logging.info("%s", item.get("path"))
+        finally:
+            inventory.close()
 
 
 if __name__ == "__main__":

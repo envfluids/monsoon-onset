@@ -1,168 +1,174 @@
-import logging
 import json
-from pathlib import Path
+import logging
+import re
 import subprocess
 import time
-import re
-import argparse
+from dataclasses import dataclass
+from pathlib import Path
 
-logging.basicConfig(
-    level=logging.INFO,
-    format=(
-        "%(asctime)s - %(levelname)s - %(name)s - "
-        "%(pathname)s:%(lineno)d - %(message)s"
-    ),
-)
 
-SCRIPT_BASE = "run_"
-ALLOWED_HOURS = ["00"]
-MAX_RETRIES = 5  # Max number of submission attempts
-RETRY_DELAY_SECONDS = 5  # Initial wait time in seconds between retries
-BACKOFF_FACTOR = 2 # Factor by which the delay increases
+MAX_RETRIES = 5
+RETRY_DELAY_SECONDS = 5
+BACKOFF_FACTOR = 2
+SLURM_CLUSTERS = {"dsi", "midway"}
+PBS_CLUSTERS = {"derecho"}
+
+
+@dataclass(frozen=True)
+class ClusterConfig:
+    name: str
+    script_dir: Path
+    project_root: Path
+
+
+def project_root():
+    return Path(__file__).resolve().parents[2]
+
 
 def get_cluster():
-    base = Path(__file__).resolve().parent.parent.parent
-    config_file = base / ".config" / "config.json"
-    with open(config_file, "r") as f:
+    root = project_root()
+    config_file = root / ".config" / "config.json"
+    with open(config_file, "r", encoding="utf-8") as f:
         config = json.load(f)
+
     cluster = config["cluster"]
-    logging.info(f"Cluster: {cluster}")
+    logging.info("Cluster: %s", cluster)
+    return ClusterConfig(
+        name=cluster,
+        script_dir=root / "HPC" / cluster,
+        project_root=root,
+    )
 
-    script_dir = base / "HPC" / cluster
 
-    return cluster, script_dir
+def build_command(cluster, label, script_path, log_dir, date_f):
+    script_path = Path(script_path).resolve()
+    log_dir = Path(log_dir).resolve()
 
-def submit_job(command, cluster, job_name):
+    job_name = f"{label}_{date_f}"
+
+    if cluster in SLURM_CLUSTERS:
+        return [
+            "sbatch",
+            f"--job-name={job_name}",
+            f"--output={log_dir / (job_name + '.o%j')}",
+            f"--error={log_dir / (job_name + '.e%j')}",
+            f"--export=DATE_F={date_f}",
+            str(script_path),
+        ]
+
+    if cluster in PBS_CLUSTERS:
+        return [
+            "qsub",
+            "-N",
+            job_name,
+            "-o",
+            str(log_dir / f"{job_name}.out"),
+            "-e",
+            str(log_dir / f"{job_name}.err"),
+            "-v",
+            f"DATE_F={date_f}",
+            str(script_path),
+        ]
+
+    raise ValueError(f"Unknown cluster: {cluster}. Exiting.")
+
+
+def command_to_string(command):
+    return " ".join(str(part) for part in command)
+
+
+def parse_job_id(cluster, returncode, stdout):
+    stdout = stdout.strip()
+    if cluster in SLURM_CLUSTERS and returncode == 0:
+        match = re.search(r"Submitted batch job (\d+)", stdout)
+        if match:
+            return match.group(1)
+
+    if cluster in PBS_CLUSTERS and returncode == 0:
+        if re.match(r"^\d+\.[a-zA-Z0-9._-]+$", stdout):
+            return stdout
+
+    return None
+
+
+def submit_job(command, cluster, label, cwd=None, dry_run=False):
+    command_str = command_to_string(command)
+    if dry_run:
+        logging.info("Dry run: would submit %s from %s", command_str, cwd or Path.cwd())
+        return None
+
     job_id_str = None
     submission_successful = False
 
     for attempt in range(MAX_RETRIES):
-        logging.info(f"Attempt {attempt + 1} of {MAX_RETRIES} to submit job: {job_name}")
-        logging.debug(f"Executing command: {command}")
+        logging.info("Attempt %s of %s to submit job: %s", attempt + 1, MAX_RETRIES, label)
+        logging.debug("Executing command: %s", command_str)
         try:
             process = subprocess.run(
                 command,
-                shell=True,
+                cwd=cwd,
                 capture_output=True,
                 text=True,
-                check=False
+                check=False,
             )
             stdout_str = process.stdout.strip()
             stderr_str = process.stderr.strip()
 
-            logging.debug(f"Attempt {attempt + 1} - Return code: {process.returncode}")
-            logging.debug(f"Attempt {attempt + 1} - Stdout: {stdout_str}")
-            logging.debug(f"Attempt {attempt + 1} - Stderr: {stderr_str}")
+            logging.debug("Attempt %s - Return code: %s", attempt + 1, process.returncode)
+            logging.debug("Attempt %s - Stdout: %s", attempt + 1, stdout_str)
+            logging.debug("Attempt %s - Stderr: %s", attempt + 1, stderr_str)
 
-            current_attempt_job_id = None
-
-            if cluster == "dsi":
-                if process.returncode == 0 and "Submitted batch job" in stdout_str:
-                    match = re.search(r"Submitted batch job (\d+)", stdout_str)
-                    if match:
-                        current_attempt_job_id = match.group(1)
-            elif cluster == "derecho":
-                if process.returncode == 0 and re.match(r"^\d+\.[a-zA-Z0-9._-]+$", stdout_str):
-                    current_attempt_job_id = stdout_str
-
+            current_attempt_job_id = parse_job_id(cluster, process.returncode, stdout_str)
             if current_attempt_job_id:
                 job_id_str = current_attempt_job_id
                 submission_successful = True
-                logging.info(f"Successfully submitted job {job_id_str} for {job_name} on attempt {attempt + 1} on {cluster}.")
-                if cluster == "dsi" and stderr_str:
-                        logging.info(f"Slurm stderr (may contain verification info): {stderr_str}")
-                elif cluster == "derecho" and stderr_str:
-                        logging.warning(f"PBS job {job_id_str} submitted, but stderr was not empty: '{stderr_str}'. Proceeding as job ID was obtained.")
+                logging.info(
+                    "Successfully submitted job %s for %s on attempt %s on %s.",
+                    job_id_str,
+                    label,
+                    attempt + 1,
+                    cluster,
+                )
+                if cluster in SLURM_CLUSTERS and stderr_str:
+                    logging.info("Slurm stderr (may contain verification info): %s", stderr_str)
+                elif cluster in PBS_CLUSTERS and stderr_str:
+                    logging.warning(
+                        "PBS job %s submitted, but stderr was not empty: '%s'.",
+                        job_id_str,
+                        stderr_str,
+                    )
                 break
-            else:
-                logging.warning(f"Job submission failed on attempt {attempt + 1} for {job_name}.")
-                logging.warning(f"RC: {process.returncode}, Stdout: '{stdout_str}', Stderr: '{stderr_str}'")
-                
-                if attempt < MAX_RETRIES - 1:
-                    current_delay = RETRY_DELAY_SECONDS * (BACKOFF_FACTOR ** attempt)
-                    logging.info(f"Waiting {current_delay} seconds before next attempt (attempt {attempt + 1} failed, next is {attempt + 2})...")
-                    time.sleep(current_delay)
-                else:
-                    logging.error(f"Job {job_name} submission failed after {MAX_RETRIES} attempts.")
-                    logging.error(f"Last command executed: {command}")
-                    logging.error(f"Last stdout: {stdout_str}")
-                    logging.error(f"Last stderr: {stderr_str}")
-        
-        except Exception as e:
-            logging.error(f"A Python exception occurred during submission attempt {attempt + 1} for {job_name}: {e}")
+
+            logging.warning("Job submission failed on attempt %s for %s.", attempt + 1, label)
+            logging.warning("RC: %s, Stdout: '%s', Stderr: '%s'", process.returncode, stdout_str, stderr_str)
             if attempt < MAX_RETRIES - 1:
                 current_delay = RETRY_DELAY_SECONDS * (BACKOFF_FACTOR ** attempt)
-                logging.info(f"Waiting {current_delay} seconds before next attempt due to script error (attempt {attempt + 1} failed, next is {attempt + 2})...")
+                logging.info("Waiting %s seconds before next attempt...", current_delay)
                 time.sleep(current_delay)
             else:
-                logging.error(f"Job {job_name} submission failed after {MAX_RETRIES} attempts, with the last attempt failing due to a script error.")
+                logging.error("Job %s submission failed after %s attempts.", label, MAX_RETRIES)
+                logging.error("Last command executed: %s", command_str)
+                logging.error("Last stdout: %s", stdout_str)
+                logging.error("Last stderr: %s", stderr_str)
+
+        except Exception as exc:
+            logging.error(
+                "A Python exception occurred during submission attempt %s for %s: %s",
+                attempt + 1,
+                label,
+                exc,
+            )
+            if attempt < MAX_RETRIES - 1:
+                current_delay = RETRY_DELAY_SECONDS * (BACKOFF_FACTOR ** attempt)
+                logging.info("Waiting %s seconds before next attempt due to script error...", current_delay)
+                time.sleep(current_delay)
+            else:
+                logging.error("Job %s submission failed after %s attempts.", label, MAX_RETRIES)
                 break
+
     if submission_successful and job_id_str:
-        logging.info(f"The job {job_id_str} to run the model has been queued on {cluster}.")
+        logging.info("The job %s has been queued on %s.", job_id_str, cluster)
     else:
-        logging.error(f"Ultimately failed to submit job {job_name} to {cluster} after {MAX_RETRIES} attempts.")
+        logging.error("Ultimately failed to submit job %s to %s after %s attempts.", label, cluster, MAX_RETRIES)
 
-def run_pipeline(models, DATE_F=None):
-    if DATE_F:
-        logging.info(f"Date string provided: {DATE_F}")
-    else:
-        logging.info("No date string provided, attempting to get data and determine date.")
-        DATE_F = get_data()
-
-    if DATE_F:
-        hour = DATE_F.split("T")[-1]
-        if hour in ALLOWED_HOURS:
-            for model in models:
-                logging.info("IC download script was successful, new data available")
-                logging.info(f"Initializing compute job for date: {DATE_F}")
-                cluster, script_dir = get_cluster()
-                JOB_NAME = f"{model}_{DATE_F}"
-                script_base = f"{SCRIPT_BASE}_{model}_"
-                script_path = script_dir / f"{script_base}{cluster}.sh"
-                log_dir = script_dir / "logs" / model
-                log_dir.mkdir(parents=True, exist_ok=True)
-                if cluster == "dsi":
-                    command = (
-                        f"sbatch "
-                        f"--job-name={JOB_NAME} "
-                        f"--output={log_dir}/{JOB_NAME}.o%j "
-                        f"--error={log_dir}/{JOB_NAME}.e%j "
-                        f"--export=DATE_F={DATE_F} "
-                        f"{script_path}"
-                    )
-                elif cluster == "derecho":
-                    command = (
-                        f"qsub "
-                        f"-N {JOB_NAME} "
-                        f"-o {log_dir}/{JOB_NAME}.out "
-                        f"-e {log_dir}/{JOB_NAME}.err "
-                        f"-v DATE_F={DATE_F} "
-                        f"{script_path}"
-                    )
-                else:
-                    raise ValueError(f"Unknown cluster: {cluster}. Exiting.")
-
-                submit_job(command, cluster, JOB_NAME)
-
-        else:
-            logging.info(f"New data available for {DATE_F}, but hour {hour} is not in allowed hours: {ALLOWED_HOURS}")
-            logging.info("Exiting model run pipeline for this cycle.")
-
-    else:
-        logging.info(
-            "Will not attempt to run model, as no new data was downloaded."
-        )
-
-def main():
-    parser = argparse.ArgumentParser(description="Run the full AIFS pipeline for a given date")
-    parser.add_argument("--models", nargs="+", required=True, help="List of models to run in the pipeline")
-    parser.add_argument("--date", type=str, default=None, help="Date for the pipeline in YYYYMMDDHH format")
-
-    args = parser.parse_args()
-    DATE_F = args.date
-    models = args.models
-
-    run_pipeline(models=models, DATE_F=DATE_F)
-
-if __name__ == "__main__":
-    main()
+    return job_id_str

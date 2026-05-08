@@ -10,12 +10,12 @@ import subprocess
 
 try:
     from .drive import GoogleDriveClient
-    from .sync_config import default_project_root, load_sync_config
+    from .sync_config import default_project_root, load_sync_configs
     from .sync_engine import SyncEngine
     from .sync_inventory import SyncInventory
 except ImportError:  # pragma: no cover - supports python sync/utils/main.py
     from drive import GoogleDriveClient
-    from sync_config import default_project_root, load_sync_config
+    from sync_config import default_project_root, load_sync_configs
     from sync_engine import SyncEngine
     from sync_inventory import SyncInventory
 
@@ -54,6 +54,13 @@ def load_runtime_config(project_root: Path) -> dict:
 
 
 def update_live_assets(project_root: Path) -> None:
+    logger.info(
+        "Live asset update is disabled; skipping monsoon-operational update."
+    )
+    return
+
+    # Disabled for now: this block updates and pushes the sibling
+    # monsoon-operational repository from sync/latest outputs.
     operational_dir = project_root.parent / "monsoon-operational"
     live_dir = operational_dir / "docs" / "assets"
     maps_dir = live_dir / "images"
@@ -144,30 +151,34 @@ def _run_git(repo: Path, *args: str, allow_failure: bool = False) -> None:
 
 
 def run_drive_action(args) -> None:
-    config = load_sync_config(
+    configs = load_sync_configs(
         args.config,
         sync_root=args.sync_root,
         cluster=args.cluster,
         drive_root=args.drive_root,
         inventory_path=args.inventory,
+        regions=args.region,
     )
     dates = set(args.date) if args.date else None
     rules = set(args.rule) if args.rule else None
-    with SyncInventory(config.inventory_path) as inventory:
-        engine = SyncEngine(config, GoogleDriveClient.authenticated(), inventory)
-        if args.action == "sync":
-            summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
-        elif args.action == "reconcile":
-            summary = engine.reconcile(
-                dates=dates,
-                rule_names=rules,
-                repair_mode=args.repair_mode,
-            )
-        else:
-            for item in engine.list_drive(date=args.date[0] if args.date else None):
-                logger.info("%s", item.get("path"))
-            return
-    logger.info("%s summary: %s", args.action, summary)
+    drive_client = GoogleDriveClient.authenticated()
+    for config in configs:
+        with SyncInventory(config.inventory_path) as inventory:
+            engine = SyncEngine(config, drive_client, inventory)
+            logger.info("Running %s for region=%s drive_root=%s", args.action, config.region, config.drive_root)
+            if args.action == "sync":
+                summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
+            elif args.action == "reconcile":
+                summary = engine.reconcile(
+                    dates=dates,
+                    rule_names=rules,
+                    repair_mode=args.repair_mode,
+                )
+            else:
+                for item in engine.list_drive(date=args.date[0] if args.date else None):
+                    logger.info("%s", item.get("path"))
+                continue
+        logger.info("%s summary for region=%s: %s", args.action, config.region, summary)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -181,6 +192,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=None)
     parser.add_argument("--sync-root", type=Path, default=None)
     parser.add_argument("--cluster", type=str, default=None)
+    parser.add_argument("--region", type=str, nargs="+", default=None)
     parser.add_argument("--drive-root", type=str, default=None)
     parser.add_argument("--inventory", type=Path, default=None)
     parser.add_argument("--date", type=str, nargs="+", default=None)

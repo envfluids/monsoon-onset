@@ -1,11 +1,11 @@
 #!/bin/bash
 
-cd /project/pedramh/monsoon/monsoon-onset/NeuralGCM/utils
+cd /project/pedramh/monsoon/monsoon-onset
 
 source /home/marchakitus/.bashrc
 
 conda activate /home/marchakitus/.conda/envs/neuralgcm
-timeout 15m python ./pipeline.py
+timeout 15m python ./HPC/utils/main.py --pipelines ngcm
 
 if [ $? -eq 124 ]; then
   echo "ERROR NeuralGCM Job timed out after 15 minutes."

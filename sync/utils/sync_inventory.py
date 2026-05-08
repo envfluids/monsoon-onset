@@ -8,6 +8,7 @@ import time
 
 @dataclass(frozen=True)
 class InventoryRecord:
+    region: str
     rule: str
     date: str
     relative_path: str
@@ -39,13 +40,19 @@ class SyncInventory:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
-    def get(self, rule: str, date: str, relative_path: str) -> InventoryRecord | None:
+    def get(
+        self,
+        region: str,
+        rule: str,
+        date: str,
+        relative_path: str,
+    ) -> InventoryRecord | None:
         row = self._conn.execute(
             """
             select * from files
-            where rule = ? and date = ? and relative_path = ?
+            where region = ? and rule = ? and date = ? and relative_path = ?
             """,
-            (rule, date, relative_path),
+            (region, rule, date, relative_path),
         ).fetchone()
         return _row_to_record(row) if row else None
 
@@ -54,10 +61,10 @@ class SyncInventory:
         self._conn.execute(
             """
             insert into files (
-                rule, date, relative_path, local_path, drive_path, file_name, status,
+                region, rule, date, relative_path, local_path, drive_path, file_name, status,
                 size, mtime_ns, drive_file_id, drive_modified_time, first_seen, last_seen
-            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            on conflict(rule, date, relative_path) do update set
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            on conflict(region, rule, date, relative_path) do update set
                 local_path = excluded.local_path,
                 drive_path = excluded.drive_path,
                 file_name = excluded.file_name,
@@ -69,6 +76,7 @@ class SyncInventory:
                 last_seen = excluded.last_seen
             """,
             (
+                record.region,
                 record.rule,
                 record.date,
                 record.relative_path,
@@ -89,6 +97,7 @@ class SyncInventory:
     def mark_remote_only(
         self,
         *,
+        region: str,
         rule: str,
         date: str,
         relative_path: str,
@@ -99,6 +108,7 @@ class SyncInventory:
     ) -> None:
         self.upsert(
             InventoryRecord(
+                region=region,
                 rule=rule,
                 date=date,
                 relative_path=relative_path,
@@ -113,7 +123,7 @@ class SyncInventory:
 
     def records(self) -> list[InventoryRecord]:
         rows = self._conn.execute(
-            "select * from files order by date, rule, relative_path"
+            "select * from files order by region, date, rule, relative_path"
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
@@ -143,9 +153,30 @@ class SyncInventory:
             ) from exc
 
     def _init_schema(self) -> None:
+        columns = self._table_columns("files")
+        primary_key = self._primary_key_columns("files")
+        expected_key = ["region", "rule", "date", "relative_path"]
+        if columns and primary_key != expected_key:
+            self._migrate_files_table(columns)
+        elif not columns:
+            self._create_files_table()
+
+        self._conn.execute(
+            """
+            create unique index if not exists idx_files_region_key
+            on files(region, rule, date, relative_path)
+            """
+        )
+        self._conn.execute(
+            "create index if not exists idx_files_status on files(status)"
+        )
+        self._conn.commit()
+
+    def _create_files_table(self) -> None:
         self._conn.execute(
             """
             create table if not exists files (
+                region text not null default 'default',
                 rule text not null,
                 date text not null,
                 relative_path text not null,
@@ -159,18 +190,45 @@ class SyncInventory:
                 drive_modified_time text,
                 first_seen integer not null,
                 last_seen integer not null,
-                primary key (rule, date, relative_path)
+                primary key (region, rule, date, relative_path)
             )
             """
         )
+
+    def _migrate_files_table(self, columns: set[str]) -> None:
+        self._conn.execute("alter table files rename to files_legacy")
+        self._create_files_table()
+        region_value = "region" if "region" in columns else "'default'"
         self._conn.execute(
-            "create index if not exists idx_files_status on files(status)"
+            f"""
+            insert or replace into files (
+                region, rule, date, relative_path, local_path, drive_path, file_name,
+                status, size, mtime_ns, drive_file_id, drive_modified_time,
+                first_seen, last_seen
+            )
+            select
+                {region_value}, rule, date, relative_path, local_path, drive_path,
+                file_name, status, size, mtime_ns, drive_file_id,
+                drive_modified_time, first_seen, last_seen
+            from files_legacy
+            """
         )
-        self._conn.commit()
+        self._conn.execute("drop table files_legacy")
+
+    def _table_columns(self, table_name: str) -> set[str]:
+        return {
+            row["name"]
+            for row in self._conn.execute(f"pragma table_info({table_name})").fetchall()
+        }
+
+    def _primary_key_columns(self, table_name: str) -> list[str]:
+        rows = self._conn.execute(f"pragma table_info({table_name})").fetchall()
+        return [row["name"] for row in sorted(rows, key=lambda row: row["pk"]) if row["pk"]]
 
 
 def _row_to_record(row: sqlite3.Row) -> InventoryRecord:
     return InventoryRecord(
+        region=row["region"],
         rule=row["rule"],
         date=row["date"],
         relative_path=row["relative_path"],

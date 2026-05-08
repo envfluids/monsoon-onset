@@ -1,5 +1,5 @@
-*/10 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/sync/utils/cron_job_sync.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/cron_sync.log 2>&1
-*/15 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/AIFS/utils/cron_job_AIFS.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/cron_AIFS.log 2>&1
-*/30 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/NeuralGCM/utils/cron_job_NGCM.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/cron_NGCM.log 2>&1
-0 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/IMERG/utils/cron_job_IMERG.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/cron_IMERG.log 2>&1
+*/10 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/HPC/dsi/cron/sync.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/sync.log 2>&1
+*/15 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/HPC/dsi/cron/AIFS.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/AIFS.log 2>&1
+*/30 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/HPC/dsi/cron/NGCM.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/NGCM.log 2>&1
+0 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/HPC/dsi/cron/IMERG.sh' >> /net/monsoon/operational/monsoon-onset/HPC/dsi/cron/logs/IMERG.log 2>&1
 */10 * * * * /bin/bash -l -c '/net/monsoon/operational/monsoon-onset/sync_IITM/utils/cron_job_dsi.sh' >> /net/monsoon/operational/monsoon-onset/sync_IITM/logs/cron.log 2>&1

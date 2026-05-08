@@ -3,14 +3,8 @@ import pandas as pd
 import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-from matplotlib.cm import get_cmap
-from matplotlib.colors import Normalize
-from datetime import timedelta
-import numpy as np
-import xarray as xr
 import warnings
 import os
-from matplotlib.lines import Line2D
 import geopandas as gpd
 from shapely.geometry import box
 from pathlib import Path
@@ -372,7 +366,7 @@ def plot_IFSS2S_Probabilities(df_IFS, df_meta, folder_out):
 
 def plot_all(date_f):
     base = Path(__file__).resolve().parent.parent
-    out_folder = base / "output" / date_f
+    out_folder = base / "output" / "india" / date_f
     if not out_folder.exists():
         out_folder.mkdir(parents=True, exist_ok=True)
 
@@ -386,7 +380,7 @@ def plot_all(date_f):
     df_IFS = xr.open_dataset(IFS_DATA_PATH)
 
 
-    AIFS_DATA_PATH = base.parent / "AIFS" / "output" / "tp" / f"tp_{date_f}.nc"
+    AIFS_DATA_PATH = base.parent / "AIFS" / "output" / "tp" / "india" / f"tp_2p0_{date_f}.nc"
     df_AIFS = xr.open_dataset(AIFS_DATA_PATH)
 
     plot_IFSS2S_Ensembles_and_Probabilities(df_IFS, df_AIFS, df_meta, out_folder)

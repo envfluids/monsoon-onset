@@ -12,7 +12,7 @@ logging.basicConfig(
 )
 
 
-def get_data(max_days_to_check=7):
+def get_data(date_str=None, max_days_to_check=7):
     """
     Checks for the latest available IMERG daily data from NASA GPM, downloads it
     if not already present, and saves it to the specified raw data directory.
@@ -22,6 +22,9 @@ def get_data(max_days_to_check=7):
     and data/auth paths are relative to the parent of 'utils'.
 
     Args:
+        date_str (str | None): Optional explicit date to check/download in YYYYMMDD,
+                               YYYYMMDDHH, or YYYYMMDDTHH format. If omitted, the
+                               latest available data is checked.
         max_days_to_check (int): Maximum number of past days to check for data.
                                  IMERG data usually has a delay, so checking a few
                                  past days is necessary.
@@ -62,13 +65,20 @@ def get_data(max_days_to_check=7):
         logging.error(f"Ensure the .urs_cookies file is present at {cookies_file}")
         return None
 
-    # IMERG data is often referenced in UTC. Start checking from 1 day ago UTC.
-    # The original script used `date -d yesterday`. Depending on server update times,
-    # data for "yesterday" (UTC) might appear with a delay.
-    current_date_utc = datetime.now(timezone.utc)
+    if date_str:
+        compact_date = date_str.split("T", 1)[0][:8]
+        dates_to_check = [datetime.strptime(compact_date, "%Y%m%d")]
+    else:
+        # IMERG data is often referenced in UTC. Start checking from 1 day ago UTC.
+        # The original script used `date -d yesterday`. Depending on server update times,
+        # data for "yesterday" (UTC) might appear with a delay.
+        current_date_utc = datetime.now(timezone.utc)
+        dates_to_check = [
+            current_date_utc - timedelta(days=i)
+            for i in range(0, max_days_to_check + 1)
+        ]
 
-    for i in range(0, max_days_to_check + 1):
-        target_date = current_date_utc - timedelta(days=i)
+    for target_date in dates_to_check:
         year = target_date.strftime("%Y")
         month = target_date.strftime("%m")
         day = target_date.strftime("%d")

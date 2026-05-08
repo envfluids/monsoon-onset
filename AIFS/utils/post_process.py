@@ -3,6 +3,7 @@ import numpy as np
 import os
 import argparse
 import logging
+import pandas as pd
 
 logging.basicConfig(
     level=logging.INFO,
@@ -132,6 +133,10 @@ def process_tp_0p25(ds, mask_path):
 
 
 def post_process_india(AIFS, date):
+    if len(AIFS.step) > 164:
+        logging.info("DS has more than 164 steps "
+                     "reformatting to match previous forecast length")
+        AIFS = AIFS.isel(step=slice(0, 164))
 
     output_base_path = "../output/india"
     if not os.path.exists(output_base_path):
@@ -216,8 +221,51 @@ def post_process_india(AIFS, date):
     logging.info(f"Finished post-processing {date}")
     logging.info("Exiting post-processing script")
 
-def post_process_ethiopia(ds, date):
-    pass 
+
+def subset_ethiopia(ds):
+    logging.info("Subsetting to Ethiopia box")
+    ds = ds.sel(
+        lat=slice(15.0, 3.0),
+        lon=slice(33.0, 48.0)
+    )
+    return ds
+
+def post_process_tp_ethiopia(ds):
+    logging.info("Processing daily TP for Ethiopia")
+    if "prediction_timedelta" not in ds.coords:
+        ds = ds.rename({"step": "prediction_timedelta"})
+    ds['valid_time'] = pd.to_datetime(ds["time"].values)[0] + ds["prediction_timedelta"].astype("timedelta64[h]")
+    ds = ds.swap_dims({"prediction_timedelta": "valid_time"})
+    ds = ds.resample(valid_time="1D").sum()
+    ds["valid_time"] = np.arange(len(ds["valid_time"]))
+    ds = ds.rename({"valid_time": "day"})
+    ds['tp'] = ds['tp'] * 1000 # convert from m to mm
+    return ds
+
+def post_process_ethiopia(ds, date, model):
+    output_base_path = "../output/ethiopia"
+    if not os.path.exists(output_base_path):
+        os.makedirs(output_base_path)
+
+    if model == "AIFS":
+        output_base_path = f"{output_base_path}/AIFS"
+    if model == "AIFS_ENS":
+        output_base_path = f"{output_base_path}/AIFS_ENS"
+    if not os.path.exists(output_base_path):
+        os.makedirs(output_base_path)
+
+    tp_dir = f"{output_base_path}/tp"
+    if not os.path.exists(tp_dir):
+        os.makedirs(tp_dir)
+
+    ds = ds[["tp"]]
+    ds = subset_ethiopia(ds)
+    ds = post_process_tp_ethiopia(ds)
+    tp_out_path = f"{tp_dir}/tp_0p25_{date}.nc"
+    ds.to_netcdf(tp_out_path)
+    logging.info(f"Saved Ethiopia Daily TP to {tp_out_path}")
+
+    
 
 def main():
     parser = argparse.ArgumentParser(
@@ -243,11 +291,12 @@ def main():
         logging.info("Loading AIFS data")
         AIFS = xr.open_dataset(f"../raw/output/AIFS/init_{date}.nc")
         post_process_india(AIFS, date)
-        post_process_ethiopia(AIFS, date)
+        post_process_ethiopia(AIFS, date, model)
     elif model == "AIFS_ENS":
-        logging.info("Loading AIFS ENS data")
-        AIFS_ENS = xr.open_dataset(f"../raw/output/AIFS_ENS/init_{date}.zarr")
-        post_process_ethiopia(AIFS_ENS, date)
+        logging.info("Loading AIFS-ENS data")
+        in_path = f"../raw/output/AIFS_ENS/init_{date}.zarr"
+        AIFS_ENS = xr.open_dataset(in_path, chunks={})
+        post_process_ethiopia(AIFS_ENS, date, model)
 
 if __name__ == "__main__":
     main()

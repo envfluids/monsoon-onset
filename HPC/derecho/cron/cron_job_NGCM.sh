@@ -1,10 +1,10 @@
 #!/bin/bash
 ssh derecho <<'EOF'
-cd /glade/derecho/scratch/marchakitus/monsoon-onset/NeuralGCM/utils
+cd /glade/derecho/scratch/marchakitus/monsoon-onset
 # source /home/marchakitus/.bashrc
 ml conda
 conda activate npl-2025a
-timeout 15m python ./pipeline.py
+timeout 15m python ./HPC/utils/main.py --pipelines ngcm
 if [ $? -eq 124 ]; then
   echo "ERROR Job timed out after 15 minutes."
 fi

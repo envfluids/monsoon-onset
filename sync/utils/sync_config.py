@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 import json
 import os
 
@@ -15,6 +15,7 @@ class SyncRule:
     drive_path: str
     date_regex: str
     patterns: tuple[str, ...] = field(default_factory=tuple)
+    ignore_patterns: tuple[str, ...] = (".nfs*",)
 
 
 @dataclass(frozen=True)
@@ -24,6 +25,7 @@ class SyncConfig:
     inventory_path: Path
     rules: tuple[SyncRule, ...]
     cluster: str
+    region: str
 
 
 def default_project_root() -> Path:
@@ -45,14 +47,15 @@ def load_cluster(project_root: Path | None = None, fallback: str = "local") -> s
     return data.get("cluster") or fallback
 
 
-def load_sync_config(
+def load_sync_configs(
     config_path: Path | str | None = None,
     *,
     sync_root: Path | str | None = None,
     cluster: str | None = None,
     drive_root: str | None = None,
     inventory_path: Path | str | None = None,
-) -> SyncConfig:
+    regions: str | Iterable[str] | None = None,
+) -> tuple[SyncConfig, ...]:
     project_root = default_project_root()
     selected_config = Path(config_path) if config_path else default_config_path(project_root)
     data = _load_yaml(selected_config)
@@ -67,40 +70,116 @@ def load_sync_config(
         selected_root = (project_root / selected_root).resolve()
 
     selected_cluster = cluster or os.environ.get("MONSOON_CLUSTER") or load_cluster(project_root)
-    selected_drive_root = (
-        drive_root
-        or os.environ.get("MONSOON_DRIVE_ROOT")
-        or data.get("drive", {}).get("root")
-        or "/MO_operational_data_2026/{cluster}"
-    ).format(cluster=selected_cluster)
+    all_region_data = data.get("regions")
+    if not isinstance(all_region_data, dict) or not all_region_data:
+        raise ValueError(f"Sync config must define a non-empty regions mapping: {selected_config}")
 
-    inventory_value = (
+    selected_regions = _selected_regions(regions, all_region_data)
+    inventory_template = (
         inventory_path
         or os.environ.get("MONSOON_SYNC_DB")
         or data.get("inventory", {}).get("path")
-        or "sync/state/drive_inventory_{cluster}.sqlite3"
+        or "sync/state/drive_inventory_{region}_{cluster}.sqlite3"
     )
-    if isinstance(inventory_value, Path):
-        formatted_inventory = inventory_value
-    else:
-        formatted_inventory = inventory_value.format(
-            cluster=selected_cluster,
+
+    configs: list[SyncConfig] = []
+    for region in selected_regions:
+        region_data = all_region_data[region]
+        if not isinstance(region_data, dict):
+            raise ValueError(f"Region {region!r} must be a mapping")
+
+        selected_drive_root = (
+            drive_root
+            or os.environ.get("MONSOON_DRIVE_ROOT")
+            or region_data.get("drive", {}).get("root")
+            or data.get("drive", {}).get("root")
         )
-    selected_inventory = Path(formatted_inventory).expanduser()
-    if not selected_inventory.is_absolute():
-        selected_inventory = selected_root / selected_inventory
+        if not selected_drive_root:
+            raise ValueError(f"Region {region!r} does not define a Drive root")
+        selected_drive_root = _format_template(
+            selected_drive_root,
+            region=region,
+            cluster=selected_cluster,
+            drive_root="",
+        )
 
-    rules = tuple(_parse_rule(raw) for raw in data.get("rules", []))
-    if not rules:
-        raise ValueError(f"No sync rules configured in {selected_config}")
+        rules = tuple(_parse_rule(raw) for raw in region_data.get("rules", []))
+        if not rules:
+            raise ValueError(f"Region {region!r} has no sync rules configured")
 
-    return SyncConfig(
-        sync_root=selected_root,
-        drive_root=selected_drive_root,
-        inventory_path=selected_inventory,
-        rules=rules,
-        cluster=selected_cluster,
+        formatted_inventory = (
+            inventory_template
+            if isinstance(inventory_template, Path)
+            else _format_template(
+                str(inventory_template),
+                region=region,
+                cluster=selected_cluster,
+                drive_root=selected_drive_root,
+            )
+        )
+        selected_inventory = Path(formatted_inventory).expanduser()
+        if not selected_inventory.is_absolute():
+            selected_inventory = selected_root / selected_inventory
+
+        configs.append(
+            SyncConfig(
+                sync_root=selected_root,
+                drive_root=selected_drive_root,
+                inventory_path=selected_inventory,
+                rules=rules,
+                cluster=selected_cluster,
+                region=region,
+            )
+        )
+
+    return tuple(configs)
+
+
+def load_sync_config(
+    config_path: Path | str | None = None,
+    *,
+    sync_root: Path | str | None = None,
+    cluster: str | None = None,
+    drive_root: str | None = None,
+    inventory_path: Path | str | None = None,
+    region: str | None = None,
+) -> SyncConfig:
+    configs = load_sync_configs(
+        config_path,
+        sync_root=sync_root,
+        cluster=cluster,
+        drive_root=drive_root,
+        inventory_path=inventory_path,
+        regions=region,
     )
+    if len(configs) != 1:
+        raise ValueError("load_sync_config requires exactly one selected region")
+    return configs[0]
+
+
+def _selected_regions(
+    regions: str | Iterable[str] | None,
+    all_region_data: dict[str, Any],
+) -> tuple[str, ...]:
+    requested = regions or os.environ.get("MONSOON_REGION") or os.environ.get("FORECAST_REGION")
+    if requested is None:
+        return tuple(all_region_data.keys())
+
+    if isinstance(requested, str):
+        names = [name.strip() for name in requested.split(",") if name.strip()]
+    else:
+        names = [
+            region_name
+            for name in requested
+            for region_name in str(name).split(",")
+            if region_name.strip()
+        ]
+        names = [name.strip() for name in names]
+
+    missing = [name for name in names if name not in all_region_data]
+    if missing:
+        raise ValueError(f"Unknown sync region(s): {', '.join(missing)}")
+    return tuple(names)
 
 
 def _parse_rule(raw: dict[str, Any]) -> SyncRule:
@@ -118,7 +197,12 @@ def _parse_rule(raw: dict[str, Any]) -> SyncRule:
         drive_path=str(raw["drive_path"]),
         date_regex=str(raw["date_regex"]),
         patterns=patterns,
+        ignore_patterns=tuple(raw.get("ignore_patterns") or (".nfs*",)),
     )
+
+
+def _format_template(value: str, **kwargs: str) -> str:
+    return value.format(**kwargs)
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

@@ -5,6 +5,7 @@ import xarray as xr
 import os
 import pickle
 import torch
+import shutil
 
 from anemoi.inference.runners.simple import SimpleRunner
 from anemoi.inference.outputs.printer import print_state
@@ -59,13 +60,26 @@ def process_step(output_state):
     return step_ds
 
 
-def run_model_rng(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path):
+def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path):
     date = pd.to_datetime(date_f, format="%Y%m%dT%H")
-    filename = os.path.join(output_dir, f"init_{date_f}.zarr")
+    filename = os.path.join(output_dir, f"init_{date_f}_partial.zarr")
+    final_filename = filename.replace("_partial.zarr", ".zarr")
+    if os.path.exists(final_filename):
+        logging.warning(
+            f"Final output file {final_filename} already exists. Skipping model run."
+        )
+        return final_filename
+
 
     input_state = get_state(date_f)
 
     for ens_number in range(n_members):
+        if ens_number == 0:
+            if os.path.exists(filename):
+                logging.warning(
+                    f"Partial output file {filename} already exists."
+                )
+                shutil.rmtree(filename)
         torch.manual_seed(ens_number)
         runner = SimpleRunner(cpkt_path, device="cuda")
         datasets = []
@@ -111,10 +125,6 @@ def run_model_rng(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path
         )
 
         if ens_number == 0:
-            if os.path.exists(filename):
-                raise FileExistsError(
-                    f"File {filename} already exists. Please remove it before running."
-                )
             logging.info(
                 f"Saving forecast for ensemble {ens_number} and date {date} to {filename} (mode=w)"
             )
@@ -128,6 +138,10 @@ def run_model_rng(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path
         del runner
         del ds
         gc.collect()
+    
+    
+    os.rename(filename, final_filename)
+    return final_filename
 
 
 def main():
@@ -164,7 +178,8 @@ def main():
 
     logging.info("Exiting inference script")
 
-    run_model_rng(output_dir, n_members, date_f, lead_time, save_fields, cpkt_path)
+    final_filename = run_model(output_dir, n_members, date_f, lead_time, save_fields, cpkt_path)
+    logging.info(f"Model run complete. Final output saved to {final_filename}")
 
 
 if __name__ == "__main__":

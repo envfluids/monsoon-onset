@@ -1,60 +1,92 @@
 version: 1
 
-drive:
-  root: "/India_operational_data_2026/{cluster}"
-
 inventory:
-  path: "sync/state/drive_inventory_{cluster}.sqlite3"
+  path: "sync/state/drive_inventory_{region}_{cluster}.sqlite3"
 
-rules:
-  - name: AIFS
-    kind: files
-    local_root: "AIFS/output"
-    drive_path: "{drive_root}/{date}/AIFS"
-    date_regex: "\\d{8}T\\d{2}"
-    patterns:
-      - "tp/tp_{date}.nc"
-      - "sji/sji_{date}.nc"
-      - "tcw/tcw_{date}.nc"
+regions:
+  india:
+    drive:
+      root: "/MO_operational_data_2026/{cluster}"
+    rules:
+      - name: AIFS
+        kind: files
+        local_root: "AIFS/output/india"
+        drive_path: "{drive_root}/{date}/AIFS"
+        date_regex: "\\d{8}T\\d{2}"
+        patterns:
+          - "tp/tp_2p0_{date}.nc"
+          - "tp/tp_0p25_{date}.nc"
+          - "sji/sji_{date}.nc"
+          - "tcw/tcw_{date}.nc"
 
-  - name: NeuralGCM
-    kind: files
-    local_root: "NeuralGCM/output"
-    drive_path: "{drive_root}/{date}/NeuralGCM"
-    date_regex: "\\d{8}T\\d{2}"
-    patterns:
-      - "tp/tp_{date}.nc"
-      - "sji/sji_{date}.nc"
-      - "tcw/tcw_{date}.nc"
+      - name: NeuralGCM
+        kind: files
+        local_root: "NeuralGCM/output"
+        drive_path: "{drive_root}/{date}/NeuralGCM"
+        date_regex: "\\d{8}T\\d{2}"
+        patterns:
+          - "tp/tp_{date}.nc"
+          - "sji/sji_{date}.nc"
+          - "tcw/tcw_{date}.nc"
 
-  - name: blend
-    kind: dated_directory
-    local_root: "blend/output"
-    drive_path: "{drive_root}/{date}/blend"
-    date_regex: "\\d{8}T\\d{2}"
+      - name: blend
+        kind: dated_directory
+        local_root: "blend/output"
+        drive_path: "{drive_root}/{date}/blend"
+        date_regex: "\\d{8}T\\d{2}"
 
-  - name: blend_google
-    kind: dated_directory
-    local_root: "blend/output_google"
-    drive_path: "{drive_root}/{date}/blend_google"
-    date_regex: "\\d{8}T\\d{2}"
+      - name: blend_google
+        kind: dated_directory
+        local_root: "blend/output_google/{region}"
+        drive_path: "{drive_root}/{date}/blend_google"
+        date_regex: "\\d{8}T\\d{2}"
 
-  - name: IMERG
-    kind: dated_directory
-    local_root: "IMERG/output"
-    drive_path: "{drive_root}/{date}/IMERG"
-    date_regex: "\\d{8}"
+      - name: IMERG
+        kind: dated_directory
+        local_root: "IMERG/output"
+        drive_path: "{drive_root}/{date}/IMERG"
+        date_regex: "\\d{8}"
 
-  - name: S2S
-    kind: dated_directory
-    local_root: "S2S/output"
-    drive_path: "{drive_root}/S2S/{date}"
-    date_regex: "\\d{8}T\\d{2}"
+      - name: S2S
+        kind: dated_directory
+        local_root: "S2S/output"
+        drive_path: "{drive_root}/{date}/S2S"
+        date_regex: "\\d{8}T\\d{2}"
 
-  - name: IMD
-    kind: files
-    local_root: "IMD/output"
-    drive_path: "{drive_root}/imd-bulletins/IMD_AllIndiaWeatherBulletins"
-    date_regex: "\\d{8}"
-    patterns:
-      - "AIWFB_{date}.pdf"
+      - name: IMD
+        kind: files
+        local_root: "IMD/output"
+        drive_path: "{drive_root}/imd-bulletins"
+        date_regex: "\\d{8}"
+        patterns:
+          - "AIWFB_{date}.pdf"
+
+  ethiopia:
+    drive:
+      root: "/operational_data_ethiopia/{cluster}"
+    rules:
+      - name: AIFS
+        kind: files
+        local_root: "AIFS/output/ethiopia"
+        drive_path: "{drive_root}/{date}/AIFS"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "AIFS/tp/tp_0p25_{date}.nc"
+
+      - name: AIFS_ENS
+        kind: files
+        local_root: "AIFS/output/ethiopia"
+        drive_path: "{drive_root}/{date}/AIFS_ENS"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "AIFS_ENS/tp/tp_0p25_{date}.nc"
+
+      - name: blend_google
+        kind: dated_directory
+        local_root: "blend/output_google/{region}"
+        drive_path: "{drive_root}/{date}/blend_google"
+        date_regex: "\\d{8}T\\d{2}"

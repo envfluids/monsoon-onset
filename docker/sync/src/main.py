@@ -49,7 +49,7 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 
 @click.command()
 @click.option("--date",         envvar="DATE",           required=True)
-@click.option("--region",       envvar="FORECAST_REGION", default="india")
+@click.option("--region",       envvar="FORECAST_REGION", required=True)
 @click.option("--bucket",       envvar="GCS_BUCKET",      required=True)
 @click.option("--enable-drive/--no-drive", envvar="ENABLE_DRIVE", default=False)
 @click.option("--config",       envvar="MONSOON_SYNC_CONFIG", default="/app/sync/config/sync.yaml")
@@ -60,7 +60,7 @@ def main(date, region, bucket, enable_drive, config, cluster, drive_root):
 
     with tempfile.TemporaryDirectory() as tmp:
         sync_root = Path(tmp) / "sync-root"
-        local_blend = sync_root / "blend" / "output_google" / date
+        local_blend = sync_root / "blend" / "output_google" / region / date
         local_blend.mkdir(parents=True)
 
         # Download blend outputs
@@ -68,7 +68,7 @@ def main(date, region, bucket, enable_drive, config, cluster, drive_root):
         download_gcs_prefix(bucket, blend_prefix, local_blend)
 
         if enable_drive:
-            _sync_to_drive(sync_root, date, config, cluster, drive_root)
+            _sync_to_drive(sync_root, date, region, config, cluster, drive_root)
 
     # Update the latest.txt marker
     write_gcs_text(bucket, f"{region}/latest.txt", date)
@@ -78,6 +78,7 @@ def main(date, region, bucket, enable_drive, config, cluster, drive_root):
 def _sync_to_drive(
     sync_root: Path,
     date: str,
+    region: str,
     config: str,
     cluster: str,
     drive_root: str | None,
@@ -93,7 +94,7 @@ def _sync_to_drive(
         sync_root=sync_root,
         cluster=cluster,
         drive_root=drive_root,
-        inventory_path=sync_root / "sync" / "state" / "drive_inventory.sqlite3",
+        region=region,
     )
     with SyncInventory(sync_config.inventory_path) as inventory:
         engine = SyncEngine(sync_config, GoogleDriveClient.authenticated(), inventory)

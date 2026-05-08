@@ -13,14 +13,14 @@ fi
 source /home/marchakitus/.bashrc
 
 conda activate /net/scratch2/marchakitus/conda-envs/AIFS_ENS
-python ./run_model.py --date $DATE_F
+python ./run_model_ENS.py --date $DATE_F
 
 conda deactivate
 conda activate /net/scratch2/marchakitus/conda-envs/operational
-python ./post_process.py --date $DATE_F
+python ./post_process.py --date $DATE_F --model AIFS_ENS
 
 # set -euo pipefail
-python ./verify_completion.py --date $DATE_F
+# python ./verify_completion.py --date $DATE_F
 
-cd ../../blend/utils
-python ./main.py --date $DATE_F
+# cd ../../blend/utils
+# python ./main.py --date $DATE_F
