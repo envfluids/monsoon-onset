@@ -20,9 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY docker/sync/src/ ./src/
 
-# Copy science scripts (unmodified) into expected directory structure
+# Copy shared sync code and configuration
 COPY sync/utils/ ./sync/utils/
-COPY sync_IITM/utils/ ./sync_IITM/utils/
+COPY sync/config/ ./sync/config/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

@@ -1,9 +1,24 @@
-import os
+from __future__ import annotations
+
 from pathlib import Path
-from glob import glob
 from datetime import datetime
-import logging
+import argparse
 import json
+import logging
+import shutil
+import subprocess
+
+try:
+    from .drive import GoogleDriveClient
+    from .sync_config import default_project_root, load_sync_config
+    from .sync_engine import SyncEngine
+    from .sync_inventory import SyncInventory
+except ImportError:  # pragma: no cover - supports python sync/utils/main.py
+    from drive import GoogleDriveClient
+    from sync_config import default_project_root, load_sync_config
+    from sync_engine import SyncEngine
+    from sync_inventory import SyncInventory
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -12,258 +27,189 @@ logging.basicConfig(
         "%(pathname)s:%(lineno)d - %(message)s"
     ),
 )
+logger = logging.getLogger(__name__)
 
 
-def parse_date(date_str):
-    """
-    Parses a date string in the format 'YYYYMMDDTHH' and returns a datetime object.
-
-    Args:
-        date_str (str): The date string to parse, e.g., '20250428T14'.
-
-    Returns:
-        datetime: A datetime object representing the parsed date and time.
-    """
-    try:
-        return datetime.strptime(date_str, "%Y%m%dT%H")
-    except ValueError as e:
-        raise ValueError(
-            f"Invalid date format: {date_str}. Expected format 'YYYYMMDDTHH'."
-        ) from e
+def parse_forecast_date(date_str: str) -> datetime:
+    return datetime.strptime(date_str, "%Y%m%dT%H")
 
 
-def is_more_recent(date_str1, date_str2):
-    """
-    Compares two date strings using parse_date and checks if date_str2 is more recent than date_str1.
-
-    Args:
-        date_str1 (str): The first date string in the format 'YYYYMMDDTHH'.
-        date_str2 (str): The second date string in the format 'YYYYMMDDTHH'.
-
-    Returns:
-        bool: True if date_str2 is more recent than date_str1, False otherwise.
-    """
-    date1 = parse_date(date_str1)
-    date2 = parse_date(date_str2)
-    return date2 > date1
-
-
-def find_most_recent_date(date_list):
-    """
-    Finds the most recent date from a list of date strings.
-
-    The date strings are expected to be in 'YYYYMMDD' format.
-    This format allows for direct string comparison to determine recency,
-    as lexicographical order will correspond to chronological order.
-
-    Args:
-        date_list: A list of strings, where each string is a date
-                   formatted as 'YYYYMMDD'. Example: ["20230115", "20230120"].
-
-    Returns:
-        A string representing the most recent date from the list.
-        Returns None if the input list is empty or None.
-
-    Raises:
-        ValueError: If any date string in the list is not in the
-                    expected 'YYYYMMDD' format or is not a valid date string.
-    """
-    if not date_list:
-        return None  # Handle empty or None list
-
-    most_recent = ""  # Initialize with an empty string
-
+def most_recent_date(date_list: list[str]) -> str | None:
+    valid_dates = []
     for date_str in date_list:
-        # Basic validation for format (8 digits)
-        if (
-            not isinstance(date_str, str)
-            or len(date_str) != 8
-            or not date_str.isdigit()
-        ):
-            raise ValueError(
-                f"Invalid date format: '{date_str}'. Expected 'YYYYMMDD' numeric string."
-            )
-
-        if date_str > most_recent:
-            most_recent = date_str
-
-    return most_recent
+        try:
+            parse_forecast_date(date_str)
+        except ValueError:
+            continue
+        valid_dates.append(date_str)
+    return max(valid_dates) if valid_dates else None
 
 
-def sync_IMERG(cluster):
-    base = Path(__file__).resolve().parent.parent.parent
-    IMERG_output = base / "IMERG" / "output"
-    try:
-        date_dirs = glob(str(IMERG_output / "*"))
-        date = find_most_recent_date([d.split("/")[-1] for d in date_dirs])
-    except IndexError as e:
-        logging.error(f"Failed to find latest directory: {e}")
-        logging.info("Exiting sync process.")
-        return
-    drive_log = base / "sync" / "logs" / "IMERG_drive.txt"
-    if not os.path.exists(drive_log):
-        logging.info(f"Creating drive sync reference file at {drive_log}")
-        with open(drive_log, "w") as f:
-            f.write("")  # Placeholder for the first run
-    else:
-        with open(drive_log, "r") as f:
-            drive_dates = f.read()
-            dates_list = drive_dates.split("\n")
-            if date in dates_list:
-                logging.info(
-                    f"Date {date} already exists in drive sync reference file."
-                )
-                return
-            else:
-                logging.info(
-                    f"Date {date} does not exist in drive sync reference file."
-                )
-                try:
-                    from drive import drive_sync_IMERG
-
-                    drive_sync_IMERG(date, cluster)
-                    logging.info("IMERG data synced successfully.")
-                    logging.info(f"Adding date {date} to drive sync reference file.")
-                    with open(drive_log, "a") as f:
-                        f.write(date + "\n")
-                except Exception as e:
-                    logging.error(f"Failed to sync with Google Drive: {e}")
-                    return
+def load_runtime_config(project_root: Path) -> dict:
+    config_file = project_root / ".config" / "config.json"
+    if not config_file.exists():
+        return {}
+    with config_file.open("r", encoding="utf-8") as handle:
+        return json.load(handle)
 
 
-def main():
-    base = Path(__file__).resolve().parent.parent.parent
-    operational_dir = base.parent / "monsoon-operational"
+def update_live_assets(project_root: Path) -> None:
+    operational_dir = project_root.parent / "monsoon-operational"
     live_dir = operational_dir / "docs" / "assets"
     maps_dir = live_dir / "images"
     data_dir = live_dir / "data"
+    latest_root = project_root / "sync" / "latest"
 
-    config_file = base / ".config" / "config.json"
-    with open(config_file, "r") as f:
-        config = json.load(f)
-    cluster = config["cluster"]
-    logging.info(f"Cluster: {cluster}")
-    cluster_id = config["cluster_id"]
-    logging.info(f"Cluster ID: {cluster_id}")
-
-    latest = base / "sync" / "latest"
-    try:
-        latest_dir = glob(str(latest / "*"))[0]
-        date = latest_dir.split("/")[-1]
-    except IndexError as e:
-        logging.error(f"Failed to find latest directory: {e}")
-        logging.info("Exiting sync process.")
+    if not latest_root.exists():
+        logger.info("No sync/latest directory found; skipping live asset update.")
         return
 
+    date = most_recent_date([path.name for path in latest_root.iterdir() if path.is_dir()])
+    if not date:
+        logger.info("No dated folders found in sync/latest; skipping live asset update.")
+        return
+
+    latest_dir = latest_root / date
     live_date_ref = data_dir / "latest.txt"
-    if not os.path.exists(live_date_ref):
-        logging.info(f"Creating live date reference file at {live_date_ref}")
-        with open(live_date_ref, "w") as f:
-            f.write("XXXXXXXXTXX")  # Placeholder for the first run
-
-    command = f"cd {operational_dir} && git pull"
-    try:
-        result = os.system(command)
-        if result != 0:
-            raise RuntimeError(f"Command failed with exit code {result}: {command}")
-        logging.info("Pulled latest changes from operational repo.")
-    except Exception as e:
-        logging.error(f"Failed to pull changes from operational repo: {e}")
-        return
-
-    with open(live_date_ref, "r") as f:
-        live_date = f.read().strip()
-
-    if is_more_recent(live_date, date):
-        logging.info(
-            f"Latest forecast {date} is more recent that live date {live_date}. Updating live date."
-        )
-
-        command = f"rm -r {maps_dir}/*"
-        os.system(command)
-        command = f"rm -r {data_dir}/*"
-        os.system(command)
-
-        latest_maps = latest_dir + "/maps" + "/map_bars_with_probs_country_*.png"
-        command = f"cp {latest_maps} {maps_dir}"
-        os.system(command)
-
-        # latest_data = latest_dir + "/blend_output_summary.csv"
-        # command = f"cp {latest_data} {data_dir}"
-        # os.system(command)
-
-        current_name = glob(str(maps_dir / "*"))[0]
-        remove_str = "_" + current_name.split("/")[-1].split("_")[-1].split(".")[0]
-        new_name = current_name.replace(remove_str, "")
-        command = f"mv {current_name} {new_name}"
-        os.system(command)
-        logging.info(f"Renamed {current_name} file to {new_name}")
-
-        latest_messages = latest_dir + "/messages" + "/message_templates_output_eng.csv"
-        command = f"cp {latest_messages} {data_dir}"
-        os.system(command)
-
-        with open(data_dir / "latest.txt", "w") as f:
-            f.write(date)
-
-        with open(data_dir / "cluster.txt", "w") as f:
-            f.write(cluster_id)
-            # f.write(socket.gethostname())
-
-        logging.info(f"Updated live date to {date}.")
-
-        command = f"cd {operational_dir} && git add . && git commit -m 'Updated live date to {date}' && git push"
+    live_date = live_date_ref.read_text(encoding="utf-8").strip() if live_date_ref.exists() else ""
+    if live_date:
         try:
-            result = os.system(command)
-            if result != 0:
-                raise RuntimeError(f"Command failed with exit code {result}: {command}")
-            logging.info("Pushed changes to operational repo.")
-        except Exception as e:
-            logging.error(f"Failed to push changes to operational repo: {e}")
-    elif is_more_recent(date, live_date):
-        logging.info(
-            f"Latest forecast {date} is older than the live date {live_date}. No need to update."
-        )
+            if parse_forecast_date(date) <= parse_forecast_date(live_date):
+                logger.info("Live assets are already current: live=%s latest=%s", live_date, date)
+                return
+        except ValueError:
+            logger.warning("Invalid live date %r; replacing with %s", live_date, date)
+
+    runtime_config = load_runtime_config(project_root)
+    cluster_id = runtime_config.get("cluster_id", runtime_config.get("cluster", "unknown"))
+
+    _run_git(operational_dir, "pull")
+    _replace_live_files(latest_dir, maps_dir, data_dir)
+    live_date_ref.write_text(date, encoding="utf-8")
+    (data_dir / "cluster.txt").write_text(str(cluster_id), encoding="utf-8")
+    _run_git(operational_dir, "add", ".")
+    _run_git(operational_dir, "commit", "-m", f"Updated live date to {date}", allow_failure=True)
+    _run_git(operational_dir, "push")
+    logger.info("Updated live assets to %s", date)
+
+
+def _replace_live_files(latest_dir: Path, maps_dir: Path, data_dir: Path) -> None:
+    maps_dir.mkdir(parents=True, exist_ok=True)
+    data_dir.mkdir(parents=True, exist_ok=True)
+    for path in maps_dir.iterdir():
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+    for path in data_dir.iterdir():
+        if path.name in {"latest.txt", "cluster.txt"}:
+            continue
+        if path.is_file() or path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+    map_files = sorted((latest_dir / "maps").glob("map_bars_with_probs_country_*.png"))
+    if map_files:
+        copied_map = maps_dir / map_files[0].name
+        shutil.copy2(map_files[0], copied_map)
+        suffix = "_" + copied_map.stem.split("_")[-1]
+        renamed = copied_map.with_name(copied_map.stem.replace(suffix, "") + copied_map.suffix)
+        copied_map.rename(renamed)
+        logger.info("Copied live map %s", renamed)
     else:
-        logging.info(
-            f"Latest forecast {date} is the same as the live date {live_date}. No need to update."
-        )
+        logger.warning("No live map found under %s", latest_dir / "maps")
 
-    drive_log = base / "sync" / "logs" / "drive.txt"
-    if not os.path.exists(drive_log):
-        logging.info(f"Creating drive sync reference file at {drive_log}")
-        with open(drive_log, "w") as f:
-            f.write("")  # Placeholder for the first run
+    messages = latest_dir / "messages" / "message_templates_output_eng.csv"
+    if messages.exists():
+        shutil.copy2(messages, data_dir / messages.name)
     else:
-        with open(drive_log, "r") as f:
-            drive_dates = f.read()
-            dates_list = drive_dates.split("\n")
-            if date in dates_list:
-                logging.info(
-                    f"Date {date} already exists in drive sync reference file."
-                )
-            else:
-                logging.info(
-                    f"Date {date} does not exist in drive sync reference file."
-                )
-                try:
-                    from drive import drive_sync
+        logger.warning("No message template found at %s", messages)
 
-                    drive_sync(date, cluster)
-                    logging.info(f"Adding date {date} to drive sync reference file.")
-                    with open(drive_log, "a") as f:
-                        f.write(date + "\n")
-                except Exception as e:
-                    logging.error(f"Failed to sync with Google Drive: {e}")
 
-    # Sync IMERG data
-    try:
-        logging.info("Syncing IMERG data...")
-        sync_IMERG(cluster)
-    except Exception as e:
-        logging.error(f"Failed to sync IMERG data: {e}")
+def _run_git(repo: Path, *args: str, allow_failure: bool = False) -> None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0 and not allow_failure:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed in {repo}: {result.stderr.strip()}"
+        )
+    if result.returncode != 0:
+        logger.info("git %s skipped: %s", " ".join(args), result.stderr.strip())
+
+
+def run_drive_action(args) -> None:
+    config = load_sync_config(
+        args.config,
+        sync_root=args.sync_root,
+        cluster=args.cluster,
+        drive_root=args.drive_root,
+        inventory_path=args.inventory,
+    )
+    dates = set(args.date) if args.date else None
+    rules = set(args.rule) if args.rule else None
+    with SyncInventory(config.inventory_path) as inventory:
+        engine = SyncEngine(config, GoogleDriveClient.authenticated(), inventory)
+        if args.action == "sync":
+            summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
+        elif args.action == "reconcile":
+            summary = engine.reconcile(
+                dates=dates,
+                rule_names=rules,
+                repair_mode=args.repair_mode,
+            )
+        else:
+            for item in engine.list_drive(date=args.date[0] if args.date else None):
+                logger.info("%s", item.get("path"))
+            return
+    logger.info("%s summary: %s", args.action, summary)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Monsoon operational sync")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=["sync", "reconcile", "ls-drive", "live"],
+        default="sync",
+    )
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--sync-root", type=Path, default=None)
+    parser.add_argument("--cluster", type=str, default=None)
+    parser.add_argument("--drive-root", type=str, default=None)
+    parser.add_argument("--inventory", type=Path, default=None)
+    parser.add_argument("--date", type=str, nargs="+", default=None)
+    parser.add_argument("--rule", type=str, nargs="+", default=None)
+    parser.add_argument("--repair-mode", choices=["report", "upload-missing"], default="report")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--skip-live",
+        action="store_true",
+        help="Skip live repository asset updates before the default sync action.",
+    )
+    return parser
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    project_root = default_project_root()
+
+    if args.action == "live":
+        update_live_assets(project_root)
         return
-    logging.info("Sync process completed successfully.")
+
+    if args.action == "sync" and not args.skip_live:
+        try:
+            update_live_assets(project_root)
+        except Exception:
+            logger.exception("Live asset update failed; continuing with Drive sync.")
+
+    run_drive_action(args)
 
 
 if __name__ == "__main__":

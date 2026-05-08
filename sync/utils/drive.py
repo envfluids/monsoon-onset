@@ -9,7 +9,6 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
 import logging
 import argparse
-import json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -218,6 +217,161 @@ def get_folder_id_by_path(service, path_string):
     return current_parent_id
 
 
+def find_folder_id(service, folder_name, parent_id="root"):
+    """Finds an existing folder by name within a parent without creating it."""
+    try:
+        safe_folder_name = folder_name.replace("'", "\\'")
+        query = (
+            f"mimeType='application/vnd.google-apps.folder' and "
+            f"name='{safe_folder_name}' and "
+            f"'{parent_id}' in parents and "
+            f"trashed=false"
+        )
+        response = (
+            service.files()
+            .list(
+                q=query,
+                spaces="drive",
+                fields="files(id, name)",
+                pageSize=10,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        folders = response.get("files", [])
+        return folders[0].get("id") if folders else None
+    except HttpError as error:
+        logging.error(
+            f"Error finding folder '{folder_name}' in parent '{parent_id}': {error}"
+        )
+        return None
+
+
+def resolve_folder_path(service, path_string, create=False):
+    """Resolve a Drive folder path. Optionally create missing folders."""
+    path_parts = [part for part in path_string.strip("/").split("/") if part]
+    if not path_parts:
+        return "root"
+
+    current_parent_id = "root"
+    for part in path_parts:
+        folder_id = (
+            get_or_create_folder_id(service, part, current_parent_id)
+            if create
+            else find_folder_id(service, part, current_parent_id)
+        )
+        if folder_id is None:
+            return None
+        current_parent_id = folder_id
+    return current_parent_id
+
+
+class GoogleDriveClient:
+    """Small path-oriented wrapper used by the configurable sync engine."""
+
+    def __init__(self, service):
+        self.service = service
+
+    @classmethod
+    def authenticated(cls):
+        service = authenticate()
+        if not service:
+            raise RuntimeError("Could not authenticate with Google Drive")
+        return cls(service)
+
+    def list_files(self, drive_path, create=False):
+        folder_id = resolve_folder_path(self.service, drive_path, create=create)
+        if folder_id is None:
+            return {}
+
+        files = {}
+        page_token = None
+        while True:
+            response = (
+                self.service.files()
+                .list(
+                    q=(
+                        f"'{folder_id}' in parents and trashed=false and "
+                        "mimeType!='application/vnd.google-apps.folder'"
+                    ),
+                    spaces="drive",
+                    fields="nextPageToken, files(id, name, size, modifiedTime, md5Checksum)",
+                    pageSize=1000,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            for file_data in response.get("files", []):
+                files[file_data["name"]] = file_data
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+        return files
+
+    def upload_file(self, local_file_path, drive_path):
+        folder_id = resolve_folder_path(self.service, drive_path, create=True)
+        if folder_id is None:
+            raise RuntimeError(f"Could not resolve Drive path: {drive_path}")
+
+        file_path = Path(local_file_path)
+        media = MediaFileUpload(
+            str(file_path),
+            mimetype="application/octet-stream",
+            resumable=True,
+        )
+        metadata = {"name": file_path.name, "parents": [folder_id]}
+        return (
+            self.service.files()
+            .create(
+                body=metadata,
+                media_body=media,
+                fields="id, name, size, modifiedTime, md5Checksum",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+
+    def list_tree(self, drive_path):
+        folder_id = resolve_folder_path(self.service, drive_path, create=False)
+        if folder_id is None:
+            return []
+        rows = []
+        self._list_tree(folder_id, drive_path.rstrip("/"), rows)
+        return rows
+
+    def _list_tree(self, folder_id, current_path, rows):
+        page_token = None
+        while True:
+            response = (
+                self.service.files()
+                .list(
+                    q=f"'{folder_id}' in parents and trashed=false",
+                    spaces="drive",
+                    fields=(
+                        "nextPageToken, files(id, name, mimeType, size, "
+                        "modifiedTime, md5Checksum)"
+                    ),
+                    pageSize=1000,
+                    pageToken=page_token,
+                    supportsAllDrives=True,
+                    includeItemsFromAllDrives=True,
+                )
+                .execute()
+            )
+            for item in response.get("files", []):
+                item_path = f"{current_path}/{item['name']}"
+                row = {**item, "path": item_path}
+                rows.append(row)
+                if item.get("mimeType") == "application/vnd.google-apps.folder":
+                    self._list_tree(item["id"], item_path, rows)
+            page_token = response.get("nextPageToken")
+            if not page_token:
+                break
+
+
 def check_file_exists(service, file_name, drive_folder_id):
     """Checks if a file with the given name exists in the Drive folder."""
     try:
@@ -375,8 +529,8 @@ def drive_sync(date, cluster):  # Added cluster parameter with default
     """Main function to perform the sync operation for a given date and cluster."""
 
     # Define the base Google Drive folder path using date and cluster
-    # Example: /MO Forecast Benchmarking/operational_data/midway
-    DRIVE_CLUSTER_BASE_PATH = f"/MO Forecast Benchmarking/operational_data/{cluster}"
+    # Example: /MO Forecast Benchmarking/operational_data_2026/{cluster}
+    DRIVE_CLUSTER_BASE_PATH = f"/MO_operational_data_2026/{cluster}"
 
     # Define local paths
     try:
@@ -798,59 +952,71 @@ def drive_sync_IMD(date):  # Added cluster parameter with default
         logging.error("CRITICAL: Could not authenticate with Google Drive. Aborting.")
 
 
+def _build_engine(args):
+    try:
+        from .sync_config import load_sync_config
+        from .sync_engine import SyncEngine
+        from .sync_inventory import SyncInventory
+    except ImportError:  # pragma: no cover - supports python drive.py
+        from sync_config import load_sync_config
+        from sync_engine import SyncEngine
+        from sync_inventory import SyncInventory
+
+    config = load_sync_config(
+        args.config,
+        sync_root=args.sync_root,
+        cluster=args.cluster,
+        drive_root=args.drive_root,
+        inventory_path=args.inventory,
+    )
+    inventory = SyncInventory(config.inventory_path)
+    return SyncEngine(config, GoogleDriveClient.authenticated(), inventory), inventory
+
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Process weather data for a given year"
-    )
+    parser = argparse.ArgumentParser(description="Configurable Google Drive sync")
     parser.add_argument(
-        "--date", type=str, help="Dates for the upload in YYYYMMDDTHH format", nargs="+"
+        "action",
+        nargs="?",
+        choices=["sync", "reconcile", "ls-drive"],
+        default="sync",
     )
-    args = parser.parse_args()
-    sync_dates = args.date
-
-    base = Path(__file__).resolve().parent.parent.parent
-    config_file = base / ".config" / "config.json"
-    with open(config_file, "r") as f:
-        config = json.load(f)
-    cluster = config["cluster"]
-    logging.info(f"Cluster: {cluster}")
-
-    logging.info(f"Syncing for dates: {sync_dates}")    
-    for sync_date in sync_dates:
-        # Call the drive_sync function with the provided date and cluster
-        logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
-        # Call the drive_sync function with the provided date and cluster
-        drive_sync(date=sync_date, cluster=cluster)
-    # IMERG_sync_date = "20250615" # Or get dynamically, e.g., from command line args
-    # IMERG_sync_cluster = "derecho"   # Or get dynamically
-    # drive_sync_IMERG(date=IMERG_sync_date, cluster=IMERG_sync_cluster)
-
-def debug():
-    parser = argparse.ArgumentParser(
-        description="Process weather data for a given year"
-    )
+    parser.add_argument("--config", type=Path, default=None)
+    parser.add_argument("--sync-root", type=Path, default=None)
+    parser.add_argument("--cluster", type=str, default=None)
+    parser.add_argument("--drive-root", type=str, default=None)
+    parser.add_argument("--inventory", type=Path, default=None)
+    parser.add_argument("--date", type=str, nargs="+", default=None)
+    parser.add_argument("--rule", type=str, nargs="+", default=None)
     parser.add_argument(
-        "--date", type=str, help="Dates for the upload in YYYYMMDDTHH format", nargs="+"
+        "--repair-mode",
+        choices=["report", "upload-missing"],
+        default="report",
     )
+    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    sync_dates = args.date
 
-    base = Path(__file__).resolve().parent.parent.parent
-    config_file = base / ".config" / "config.json"
-    with open(config_file, "r") as f:
-        config = json.load(f)
-    cluster = config["cluster"]
-    logging.info(f"Cluster: {cluster}")
+    dates = set(args.date) if args.date else None
+    rules = set(args.rule) if args.rule else None
 
-    logging.info(f"Syncing for dates: {sync_dates}")    
-    for sync_date in sync_dates:
-        # Call the drive_sync function with the provided date and cluster
-        logging.info(f"Syncing for date: {sync_date}, cluster: {cluster}")
-        # Call the drive_sync function with the provided date and cluster
-        # drive_sync(date=sync_date, cluster=cluster)
-        drive_sync_S2S(date=sync_date, cluster=cluster)
+    engine, inventory = _build_engine(args)
+    try:
+        if args.action == "sync":
+            summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
+            logging.info("Sync summary: %s", summary)
+        elif args.action == "reconcile":
+            summary = engine.reconcile(
+                dates=dates,
+                rule_names=rules,
+                repair_mode=args.repair_mode,
+            )
+            logging.info("Reconcile summary: %s", summary)
+        else:
+            for item in engine.list_drive(date=args.date[0] if args.date else None):
+                logging.info("%s", item.get("path"))
+    finally:
+        inventory.close()
 
 
 if __name__ == "__main__":
     main()
-    # debug()

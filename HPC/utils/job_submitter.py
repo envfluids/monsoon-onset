@@ -1,4 +1,3 @@
-from download_ic import get_data
 import logging
 import json
 from pathlib import Path
@@ -15,7 +14,6 @@ logging.basicConfig(
     ),
 )
 
-MODELS = ["AIFS", "AIFS_ENS"]
 SCRIPT_BASE = "run_"
 ALLOWED_HOURS = ["00"]
 MAX_RETRIES = 5  # Max number of submission attempts
@@ -104,7 +102,7 @@ def submit_job(command, cluster, job_name):
     else:
         logging.error(f"Ultimately failed to submit job {job_name} to {cluster} after {MAX_RETRIES} attempts.")
 
-def run_pipeline(DATE_F=None):
+def run_pipeline(models, DATE_F=None):
     if DATE_F:
         logging.info(f"Date string provided: {DATE_F}")
     else:
@@ -114,11 +112,11 @@ def run_pipeline(DATE_F=None):
     if DATE_F:
         hour = DATE_F.split("T")[-1]
         if hour in ALLOWED_HOURS:
-            for model in MODELS:
+            for model in models:
                 logging.info("IC download script was successful, new data available")
                 logging.info(f"Initializing compute job for date: {DATE_F}")
                 cluster, script_dir = get_cluster()
-                JOB_NAME = f"{model}_fc_{DATE_F}"
+                JOB_NAME = f"{model}_{DATE_F}"
                 script_base = f"{SCRIPT_BASE}_{model}_"
                 script_path = script_dir / f"{script_base}{cluster}.sh"
                 log_dir = script_dir / "logs" / model
@@ -157,12 +155,14 @@ def run_pipeline(DATE_F=None):
 
 def main():
     parser = argparse.ArgumentParser(description="Run the full AIFS pipeline for a given date")
+    parser.add_argument("--models", nargs="+", required=True, help="List of models to run in the pipeline")
     parser.add_argument("--date", type=str, default=None, help="Date for the pipeline in YYYYMMDDHH format")
 
     args = parser.parse_args()
     DATE_F = args.date
+    models = args.models
 
-    run_pipeline(DATE_F=DATE_F)
+    run_pipeline(models=models, DATE_F=DATE_F)
 
 if __name__ == "__main__":
     main()

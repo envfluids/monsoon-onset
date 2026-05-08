@@ -8,6 +8,7 @@
 */logs/*
 */raw/*
 */latest/*
+sync/state/
 **/.auth/*
 **/Thumbs.db
 .config/

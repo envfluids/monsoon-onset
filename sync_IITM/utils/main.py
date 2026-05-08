@@ -99,8 +99,8 @@ def valid_date_or_none(date_str):
 def get_local_tp_dates(tp_dir):
     dates = []
 
-    for nc_file in sorted(tp_dir.glob("tp_*.nc")):
-        date = nc_file.stem.replace("tp_", "", 1)
+    for nc_file in sorted(tp_dir.glob("tp_0p25_*.nc")):
+        date = nc_file.stem.replace("tp_0p25_", "", 1)
         if valid_date_or_none(date):
             dates.append(date)
         else:
@@ -160,10 +160,10 @@ def main():
     cluster_id = config["cluster_id"]
     logging.info(f"Cluster ID: {cluster_id}")
 
-    tp_dir = base / "AIFS" / "output" / "tp_0p25"
+    tp_dir = base / "AIFS" / "output" / "india" / "tp"
     local_dates = get_local_tp_dates(tp_dir)
     if not local_dates:
-        logging.error("No valid tp_*.nc files found in tp_0p25 directory.")
+        logging.error("No valid tp_*.nc files found in tp directory.")
         logging.info("Exiting sync process.")
         return
 
