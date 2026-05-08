@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /net/monsoon/operational/monsoon-onset/NeuralGCM/utils
+cd /net/monsoon/operational/monsoon-onset
 
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
@@ -11,7 +11,7 @@ else
 fi
 
 conda activate /net/scratch2/marchakitus/conda-envs/operational
-timeout 15m python ./pipeline.py
+timeout 15m python ./HPC/utils/main.py --pipelines ngcm
 
 if [ $? -eq 124 ]; then
   echo "ERROR NeuralGCM Job timed out after 15 minutes."

@@ -132,7 +132,7 @@ def main(version, date_f, output_dir, lead_time, save_fields=None):
 
 
 if __name__ == "__main__":
-    OUTPUT_DIR = "../raw/output"
+    OUTPUT_DIR = "../raw/output/AIFS"
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
     )
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     date_f = args.date
 
     version = 2
-    lead_time = 41 * 24
+    lead_time = 46 * 24
 
     logging.info(f"Date: {date_f}")
     logging.info(f"Version: {version}")

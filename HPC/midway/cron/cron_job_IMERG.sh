@@ -1,11 +1,11 @@
 #!/bin/bash
 
-cd /project/pedramh/monsoon/monsoon-onset/IMERG/utils
+cd /project/pedramh/monsoon/monsoon-onset
 
 source /home/marchakitus/.bashrc
 
 conda activate /project/pedramh/monsoon/conda-envs/monsoon
-timeout 10m python ./pipeline.py
+timeout 10m python ./HPC/utils/main.py --pipelines imerg
 
 if [ $? -eq 124 ]; then
   echo "ERROR Job timed out after 10 minutes."

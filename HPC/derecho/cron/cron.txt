@@ -1,0 +1,4 @@
+*/10 * * * * /glade/derecho/scratch/marchakitus/monsoon-onset/HPC/derecho/cron/cron_job_sync.sh >> /glade/derecho/scratch/marchakitus/monsoon-onset/sync/logs/cron.log 2>&1
+*/15 * * * * /glade/derecho/scratch/marchakitus/monsoon-onset/HPC/derecho/cron/cron_job_AIFS.sh >> /glade/derecho/scratch/marchakitus/monsoon-onset/AIFS/logs/cron.log 2>&1
+*/30 * * * * /glade/derecho/scratch/marchakitus/monsoon-onset/HPC/derecho/cron/cron_job_NGCM.sh >> /glade/derecho/scratch/marchakitus/monsoon-onset/NeuralGCM/logs/cron.log 2>&1
+0 * * * * /glade/derecho/scratch/marchakitus/monsoon-onset/HPC/derecho/cron/cron_job_IMERG.sh >> /glade/derecho/scratch/marchakitus/monsoon-onset/IMERG/logs/cron.log 2>&1

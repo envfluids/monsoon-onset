@@ -5,9 +5,10 @@
 **/model_ds/*
 **/large/*
 */EKR/*
-*/logs/*
+**/logs/*
 */raw/*
 */latest/*
+sync/state/
 **/.auth/*
 **/Thumbs.db
 .config/

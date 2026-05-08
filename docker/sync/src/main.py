@@ -49,39 +49,57 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 
 @click.command()
 @click.option("--date",         envvar="DATE",           required=True)
-@click.option("--region",       envvar="FORECAST_REGION", default="india")
+@click.option("--region",       envvar="FORECAST_REGION", required=True)
 @click.option("--bucket",       envvar="GCS_BUCKET",      required=True)
 @click.option("--enable-drive/--no-drive", envvar="ENABLE_DRIVE", default=False)
-def main(date, region, bucket, enable_drive):
+@click.option("--config",       envvar="MONSOON_SYNC_CONFIG", default="/app/sync/config/sync.yaml")
+@click.option("--cluster",      envvar="MONSOON_CLUSTER", default="gcp")
+@click.option("--drive-root",   envvar="MONSOON_DRIVE_ROOT", default=None)
+def main(date, region, bucket, enable_drive, config, cluster, drive_root):
     blend_prefix = f"{region}/output/blend/{date}/"
 
     with tempfile.TemporaryDirectory() as tmp:
-        local_blend = Path(tmp) / "blend"
-        local_blend.mkdir()
+        sync_root = Path(tmp) / "sync-root"
+        local_blend = sync_root / "blend" / "output_google" / region / date
+        local_blend.mkdir(parents=True)
 
         # Download blend outputs
         logger.info(f"Downloading blend outputs from gs://{bucket}/{blend_prefix}")
         download_gcs_prefix(bucket, blend_prefix, local_blend)
 
         if enable_drive:
-            _sync_to_drive(local_blend, date, region)
+            _sync_to_drive(sync_root, date, region, config, cluster, drive_root)
 
     # Update the latest.txt marker
     write_gcs_text(bucket, f"{region}/latest.txt", date)
     logger.info(f"Sync complete for {date}")
 
 
-def _sync_to_drive(local_dir: Path, date: str, region: str) -> None:
-    """Sync outputs to Google Drive using the original drive.py science script."""
-    import sys
-    sys.path.insert(0, "/app/sync/utils")
-    try:
-        import drive
-        service = drive.authenticate()
-        drive.drive_sync(date, cluster="gcp")
-        logger.info("Google Drive sync complete")
-    except Exception as e:
-        logger.error(f"Google Drive sync failed (non-fatal): {e}")
+def _sync_to_drive(
+    sync_root: Path,
+    date: str,
+    region: str,
+    config: str,
+    cluster: str,
+    drive_root: str | None,
+) -> None:
+    """Sync staged outputs to Google Drive through the shared sync engine."""
+    from sync.utils.drive import GoogleDriveClient
+    from sync.utils.sync_config import load_sync_config
+    from sync.utils.sync_engine import SyncEngine
+    from sync.utils.sync_inventory import SyncInventory
+
+    sync_config = load_sync_config(
+        config,
+        sync_root=sync_root,
+        cluster=cluster,
+        drive_root=drive_root,
+        region=region,
+    )
+    with SyncInventory(sync_config.inventory_path) as inventory:
+        engine = SyncEngine(sync_config, GoogleDriveClient.authenticated(), inventory)
+        summary = engine.sync(dates={date}, rule_names={"blend_google"})
+    logger.info("Google Drive sync complete: %s", summary)
 
 
 if __name__ == "__main__":
