@@ -6,6 +6,7 @@
 #SBATCH -t 00:30:00
 #SBATCH --mail-user=marchakitus@uchicago.edu
 #SBATCH --mail-type=all
+#SBATCH --qos=protected
 
 source /home/marchakitus/.bashrc
 
