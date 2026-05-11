@@ -85,6 +85,11 @@ def preprocess(ds):
 def process_member(member, date):
     # cdo = Cdo()
     logging.info(f"Processing member: {member}")
+    region = "india"
+    output_base = f"../output/{region}"
+    os.makedirs(f"{output_base}", exist_ok=True)
+    os.makedirs(f"{output_base}/tp", exist_ok=True)
+    os.makedirs(f"{output_base}/tcw", exist_ok=True)
     ds = (
         xr.open_zarr(f"../raw/output/{date}/member_{member}.zarr")
         .rename(
@@ -99,8 +104,8 @@ def process_member(member, date):
     ds = preprocess(ds)
     ds_tcw = process_tcw(ds[["specific_humidity"]])
     ds_tcw = set_atts_tcw(ds_tcw)
-    regrid_input_path = f"../output/tcw/{member}_{date}_INTERMEDIATE.nc"
-    regrid_output_path = f"../output/tcw/{member}_{date}_INTERMEDIATE_2.nc"
+    regrid_input_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE.nc"
+    regrid_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_2.nc"
     ds_tcw = ds_tcw.transpose("time", "lat", "lon", ...)
     ds_tcw.to_netcdf(regrid_input_path)
     # cdo.remapcon(grid_file, input=regrid_input_path, output=regrid_output_path)
@@ -118,14 +123,14 @@ def process_member(member, date):
     ds_tcw = post_process_tcw(ds_tcw)
     ds_tcw = ds_tcw.expand_dims("number")
     ds_tcw["number"] = [member]
-    member_output_path = f"../output/tcw/{member}_{date}_INTERMEDIATE_3.nc"
+    member_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_3.nc"
     ds_tcw.to_netcdf(member_output_path)
     ds_tcw.close()
     os.remove(regrid_output_path)
 
     ds_tp = set_atts_tp(ds[["tp"]])
-    regrid_input_path = f"../output/tp/{member}_{date}_INTERMEDIATE.nc"
-    regrid_output_path = f"../output/tp/{member}_{date}_INTERMEDIATE_2.nc"
+    regrid_input_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE.nc"
+    regrid_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_2.nc"
     ds_tp = ds_tp.transpose("time", "lat", "lon", ...)
     ds_tp.to_netcdf(regrid_input_path)
     # cdo.remapcon(grid_file, input=regrid_input_path, output=regrid_output_path)
@@ -143,7 +148,7 @@ def process_member(member, date):
     ds_tp = post_process_tp(ds_tp)
     ds_tp.expand_dims("number")
     ds_tp["number"] = [member]
-    member_output_path = f"../output/tp/{member}_{date}_INTERMEDIATE_3.nc"
+    member_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_3.nc"
     ds_tp.to_netcdf(member_output_path)
     ds_tp.close()
     os.remove(regrid_output_path)

@@ -64,11 +64,11 @@ def get_model_data(base, date_f):
     date_times = dat_ap.time.values
     last_dt = pd.to_datetime(date_times[-1])
     target_dt = last_dt - pd.Timedelta(days=5)
-    fname = target_dt.strftime("tp_%Y%m%dT%H.nc")
+    fname = target_dt.strftime("tp_2p0_%Y%m%dT%H.nc")
     dateF = last_dt.strftime("%Y%m%d")
 
-    NGCM_DATA_PATH = base / "NeuralGCM" / "output" / "tp" / fname
-    AIFS_DATA_PATH = base / "AIFS" / "output" / "tp" / fname
+    NGCM_DATA_PATH = base / "NeuralGCM" / "output" / "india" / "tp" / fname
+    AIFS_DATA_PATH = base / "AIFS" / "output" / "india" / "tp" / fname
     df_ngcm = xr.open_dataset(NGCM_DATA_PATH)
     df_AIFS = xr.open_dataset(AIFS_DATA_PATH)
 

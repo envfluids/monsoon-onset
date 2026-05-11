@@ -30,8 +30,8 @@ def main():
     AIFS_sji_path = AIFS_output_path / "sji" / f"sji_{date}.nc"
     AIFS_tcw_path = AIFS_output_path / "tcw" / f"tcw_{date}.nc"
 
-    NGCM_output_path = base / "NeuralGCM" / "output"
-    NGCM_tp_path = NGCM_output_path / "tp" / f"tp_{date}.nc"
+    NGCM_output_path = base / "NeuralGCM" / "output" / "india"
+    NGCM_tp_path = NGCM_output_path / "tp" / f"tp_2p0_{date}.nc"
     NGCM_sji_path = NGCM_output_path / "sji" / f"sji_{date}.nc"
     NGCM_tcw_path = NGCM_output_path / "tcw" / f"tcw_{date}.nc"
 

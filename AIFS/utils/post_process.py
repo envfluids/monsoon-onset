@@ -295,7 +295,7 @@ def main():
     elif model == "AIFS_ENS":
         logging.info("Loading AIFS-ENS data")
         in_path = f"../raw/output/AIFS_ENS/init_{date}.zarr"
-        AIFS_ENS = xr.open_dataset(in_path, chunks={})
+        AIFS_ENS = xr.open_zarr(in_path, chunks={})
         post_process_ethiopia(AIFS_ENS, date, model)
 
 if __name__ == "__main__":

@@ -231,7 +231,7 @@ def should_submit(spec, date_f, explicit_date):
             return False
 
     if spec.name == "s2s" and not explicit_date:
-        output_path = ROOT / "S2S" / "output" / date_f
+        output_path = ROOT / "S2S" / "output" / "india" /date_f
         if output_path.exists():
             logging.info("Output path %s already exists. Exiting.", output_path)
             return False

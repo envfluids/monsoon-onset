@@ -57,6 +57,9 @@ def main():
     )
     args = parser.parse_args()
     date = args.date
+    region = "india"
+    output_base = f"../output/{region}"
+    os.makedirs(f"{output_base}/sji", exist_ok=True)
     logging.info(f"Merging data for date: {date}")
     ngcm_out = xr.open_mfdataset(
         f"../raw/output/{date}/*.zarr", engine="zarr", preprocess=preprocess
@@ -69,19 +72,19 @@ def main():
     )
     logging.info("Calculating & Merging SJI")
     ngcm_out = calculate_sji(ngcm_out)
-    ngcm_out.to_netcdf(f"../output/sji/sji_{date}.nc")
+    ngcm_out.to_netcdf(f"{output_base}/sji/sji_{date}.nc")
     ngcm_out.close()
 
     logging.info("Merging tcwv")
-    tcw_files = glob.glob(f"../output/tcw/*_{date}_INTERMEDIATE_3.nc")
+    tcw_files = glob.glob(f"{output_base}/tcw/*_{date}_INTERMEDIATE_3.nc")
     tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
-    tcw.to_netcdf(f"../output/tcw/tcw_{date}.nc")
+    tcw.to_netcdf(f"{output_base}/tcw/tcw_{date}.nc")
     tcw.close()
 
     logging.info("Merging tp")
-    tp_files = glob.glob(f"../output/tp/*_{date}_INTERMEDIATE_3.nc")
+    tp_files = glob.glob(f"{output_base}/tp/*_{date}_INTERMEDIATE_3.nc")
     tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
-    tp.to_netcdf(f"../output/tp/tp_{date}.nc")
+    tp.to_netcdf(f"{output_base}/tp/tp_2p0_{date}.nc")
     tp.close()
 
     logging.info("Removing intermediate files")
