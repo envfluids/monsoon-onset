@@ -1,15 +1,9 @@
 import xarray as xr
 import numpy as np
 import os
-import pandas as pd
-import matplotlib.pyplot as plt
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
-import xarray as xr
-import numpy as np
 from matplotlib.colors import ListedColormap
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 import logging
 logging.basicConfig(

@@ -1,6 +1,7 @@
 import os
 import io
 from pathlib import Path
+import threading
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
@@ -104,7 +105,13 @@ def authenticate():
         return None
 
     try:
-        service = build("drive", "v3", credentials=creds, num_retries=NUM_API_RETRIES)
+        service = build(
+            "drive",
+            "v3",
+            credentials=creds,
+            num_retries=NUM_API_RETRIES,
+            cache_discovery=False,
+        )
         logging.info(
             f"Authentication successful. Drive service created. API calls will be retried up to {NUM_API_RETRIES} times on transient server errors (5xx)."
         )
@@ -272,6 +279,8 @@ class GoogleDriveClient:
 
     def __init__(self, service):
         self.service = service
+        self._folder_id_cache = {"": "root"}
+        self._folder_id_cache_lock = threading.RLock()
 
     @classmethod
     def authenticated(cls):
@@ -280,8 +289,40 @@ class GoogleDriveClient:
             raise RuntimeError("Could not authenticate with Google Drive")
         return cls(service)
 
+    def new_worker_client(self):
+        return type(self).authenticated()
+
+    def _resolve_folder_path(self, drive_path, create=False):
+        path_parts = [part for part in drive_path.strip("/").split("/") if part]
+        if not path_parts:
+            return "root"
+
+        current_parent_id = "root"
+        current_path_parts = []
+        for part in path_parts:
+            current_path_parts.append(part)
+            cache_key = "/".join(current_path_parts)
+            with self._folder_id_cache_lock:
+                cached_folder_id = self._folder_id_cache.get(cache_key)
+            if cached_folder_id:
+                current_parent_id = cached_folder_id
+                continue
+
+            folder_id = (
+                get_or_create_folder_id(self.service, part, current_parent_id)
+                if create
+                else find_folder_id(self.service, part, current_parent_id)
+            )
+            if folder_id is None:
+                return None
+
+            with self._folder_id_cache_lock:
+                self._folder_id_cache[cache_key] = folder_id
+            current_parent_id = folder_id
+        return current_parent_id
+
     def list_files(self, drive_path, create=False):
-        folder_id = resolve_folder_path(self.service, drive_path, create=create)
+        folder_id = self._resolve_folder_path(drive_path, create=create)
         if folder_id is None:
             return {}
 
@@ -312,7 +353,7 @@ class GoogleDriveClient:
         return files
 
     def upload_file(self, local_file_path, drive_path):
-        folder_id = resolve_folder_path(self.service, drive_path, create=True)
+        folder_id = self._resolve_folder_path(drive_path, create=True)
         if folder_id is None:
             raise RuntimeError(f"Could not resolve Drive path: {drive_path}")
 
@@ -335,7 +376,7 @@ class GoogleDriveClient:
         )
 
     def list_tree(self, drive_path):
-        folder_id = resolve_folder_path(self.service, drive_path, create=False)
+        folder_id = self._resolve_folder_path(drive_path, create=False)
         if folder_id is None:
             return []
         rows = []
@@ -930,7 +971,7 @@ def drive_sync_IMD(date):  # Added cluster parameter with default
 
     if drive_service:
         logging.info("Google Drive authentication successful.")
-        logging.info(f"Starting Google Drive sync process...")
+        logging.info("Starting Google Drive sync process...")
         # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
         IMD_base_drive_folder_id = get_folder_id_by_path(
             drive_service, DRIVE_IMD_BASE_PATH

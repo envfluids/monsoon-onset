@@ -167,7 +167,12 @@ def run_drive_action(args) -> None:
             engine = SyncEngine(config, drive_client, inventory)
             logger.info("Running %s for region=%s drive_root=%s", args.action, config.region, config.drive_root)
             if args.action == "sync":
-                summary = engine.sync(dates=dates, rule_names=rules, dry_run=args.dry_run)
+                summary = engine.sync(
+                    dates=dates,
+                    rule_names=rules,
+                    dry_run=args.dry_run,
+                    workers=args.workers,
+                )
             elif args.action == "reconcile":
                 summary = engine.reconcile(
                     dates=dates,
@@ -198,6 +203,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--date", type=str, nargs="+", default=None)
     parser.add_argument("--rule", type=str, nargs="+", default=None)
     parser.add_argument("--repair-mode", choices=["report", "upload-missing"], default="report")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Parallel upload workers for sync actions. Use 1 for serial uploads.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument(
         "--skip-live",
@@ -209,6 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    if args.workers < 1:
+        raise ValueError("--workers must be at least 1")
+
     project_root = default_project_root()
 
     if args.action == "live":

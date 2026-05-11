@@ -3,9 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import fnmatch
 import logging
 import re
+import threading
 
 try:
     from .sync_config import SyncConfig, SyncRule
@@ -72,6 +74,57 @@ class SyncEngine:
         dates: set[str] | None = None,
         rule_names: set[str] | None = None,
         dry_run: bool = False,
+        workers: int = 4,
+    ) -> SyncSummary:
+        if workers < 1:
+            raise ValueError("workers must be at least 1")
+
+        if workers == 1:
+            return self._sync_serial(
+                dates=dates,
+                rule_names=rule_names,
+                dry_run=dry_run,
+            )
+
+        items = self.discover(dates=dates, rule_names=rule_names)
+        counters = defaultdict(int)
+        counters["discovered"] = len(items)
+        folder_cache: dict[str, dict[str, dict]] = {}
+        pending_uploads: list[LocalSyncItem] = []
+
+        for item in items:
+            record = self.inventory.get(
+                item.region,
+                item.rule,
+                item.date,
+                item.relative_path,
+            )
+            if record and record.status == "uploaded" and _same_signature(record, item):
+                counters["skipped_inventory"] += 1
+                continue
+
+            remote_files = self._remote_files(item.drive_path, folder_cache, create=not dry_run)
+            remote = remote_files.get(item.file_name)
+            if remote:
+                self._record_uploaded(item, remote)
+                counters["skipped_remote"] += 1
+                continue
+
+            if dry_run:
+                logger.info("Would upload %s to %s", item.local_path, item.drive_path)
+                continue
+
+            pending_uploads.append(item)
+
+        self._upload_parallel(pending_uploads, workers, counters)
+        return SyncSummary(**counters)
+
+    def _sync_serial(
+        self,
+        *,
+        dates: set[str] | None,
+        rule_names: set[str] | None,
+        dry_run: bool,
     ) -> SyncSummary:
         items = self.discover(dates=dates, rule_names=rule_names)
         counters = defaultdict(int)
@@ -110,6 +163,41 @@ class SyncEngine:
                 counters["errors"] += 1
 
         return SyncSummary(**counters)
+
+    def _upload_parallel(
+        self,
+        items: list[LocalSyncItem],
+        workers: int,
+        counters,
+    ) -> None:
+        if not items:
+            return
+
+        thread_state = threading.local()
+
+        def client_for_thread():
+            drive_client = getattr(thread_state, "drive_client", None)
+            if drive_client is None:
+                new_worker_client = getattr(self.drive, "new_worker_client", None)
+                drive_client = new_worker_client() if new_worker_client else self.drive
+                thread_state.drive_client = drive_client
+            return drive_client
+
+        def upload(item: LocalSyncItem):
+            uploaded = client_for_thread().upload_file(item.local_path, item.drive_path)
+            return item, uploaded
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(upload, item): item for item in items}
+            for future in as_completed(futures):
+                item = futures[future]
+                try:
+                    uploaded_item, uploaded = future.result()
+                    self._record_uploaded(uploaded_item, uploaded)
+                    counters["uploaded"] += 1
+                except Exception:
+                    logger.exception("Failed to upload %s", item.local_path)
+                    counters["errors"] += 1
 
     def reconcile(
         self,

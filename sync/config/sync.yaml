@@ -53,6 +53,12 @@ regions:
         drive_path: "{drive_root}/{date}/S2S"
         date_regex: "\\d{8}T\\d{2}"
 
+      - name: model_diagnostics
+        kind: dated_directory
+        local_root: "model_diagnostics/output/india"
+        drive_path: "{drive_root}/{date}"
+        date_regex: "\\d{8}T\\d{2}"
+
       - name: IMD
         kind: files
         local_root: "IMD/output"

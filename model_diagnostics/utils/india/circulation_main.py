@@ -1,12 +1,6 @@
-from pathlib import Path
-if __name__ == "__main__":
-    from AIFS import plot_aifs
-    from NeuralGCM import plot_neuralgcm
-    from AIFS_SJI import plot_sji
-else:
-    from circulation.AIFS import plot_aifs
-    from circulation.NeuralGCM import plot_neuralgcm
-    from circulation.AIFS_SJI import plot_sji
+from .AIFS import plot_aifs
+from .NeuralGCM import plot_neuralgcm
+from .AIFS_SJI import plot_sji
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -17,21 +11,22 @@ logging.basicConfig(
 )
 
 def plot_circulation(base, date):
-    AIFS_path = base / "AIFS" / "raw" / "output" / f"init_{date}.nc"
+    AIFS_path = base / "AIFS" / "raw" / "output" /"AIFS" / f"init_{date}.nc"
     NGCM_path = base / "NeuralGCM" / "raw" / "output" / f"{date}"
-    output_dir = base / "blend" / "output" / f"{date}" / "circulation"
+    output_dir = base / "model_diagnostics" / "output" / "india" / f"{date}" / "circulation_plots"
     logging.info(f"AIFS path: {AIFS_path}")
     logging.info(f"NGCM path: {NGCM_path}")
     logging.info(f"Output directory: {output_dir}")
-    if not output_dir.exists():
-        output_dir.mkdir(exist_ok=True)
-        logging.info(f"Creating directory: {output_dir}")
+    logging.info(f"Creating directory: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
     logging.info("Plotting AIFS")
     plot_aifs(AIFS_path, output_dir)
     logging.info("Plotting SJI")
     plot_sji(AIFS_path, output_dir)
     logging.info("Plotting NeuralGCM")
     plot_neuralgcm(NGCM_path, output_dir)
+
+    # logging.info("Plotting precipitation")
 
 
 # def main():

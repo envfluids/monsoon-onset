@@ -1,11 +1,8 @@
 import xarray as xr
 import numpy as np
-import os
-import pandas as pd
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 from matplotlib.colors import ListedColormap
-import matplotlib.dates as mdates
 import matplotlib.patches as patches
 import logging
 logging.basicConfig(
@@ -29,10 +26,7 @@ def process_tp(tp):
     tp["step"] = tp["step"].astype(int)
     tp["step"] = tp["step"] - 6
     tp["day"] = tp["step"] // 24
-    # Now set 'day' as a coordinate
-    #ds_model_TS = tp.set_coords("day")
     ds_model_TS_daily = tp.groupby("day").sum(dim="step")
-    #ds_model_TS_daily = tp.transpose("day", "time", "lat", "lon")
     return ds_model_TS_daily
 
 

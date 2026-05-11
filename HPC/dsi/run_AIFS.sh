@@ -19,8 +19,11 @@ conda deactivate
 conda activate /net/scratch2/marchakitus/conda-envs/operational
 python ./post_process.py --date $DATE_F
 
-# set -euo pipefail
+set -euo pipefail
 python ./verify_completion.py --date $DATE_F
+
+cd ../../model_diagnostics/utils
+python ./main.py --date $DATE_F
 
 cd ../../blend/utils
 python ./main.py --date $DATE_F

@@ -16,8 +16,9 @@ fi
 source /home/marchakitus/.bashrc
 
 conda activate /net/scratch2/marchakitus/conda-envs/operational_pip
-timeout 3600s python ./main.py
+python ./main.py
+# timeout 3600s python ./main.py
 
-if [ $? -eq 124 ]; then
-  echo "ERROR: Job timed out after 1 hour."
-fi
+# if [ $? -eq 124 ]; then
+#   echo "ERROR: Job timed out after 1 hour."
+# fi

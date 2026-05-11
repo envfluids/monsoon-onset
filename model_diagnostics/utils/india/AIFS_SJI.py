@@ -1,10 +1,7 @@
 import xarray as xr
 import numpy as np
-import os
 import pandas as pd
 import matplotlib.pyplot as plt
-import xarray as xr
-from matplotlib.colors import ListedColormap
 import matplotlib.dates as mdates
 import logging
 logging.basicConfig(
@@ -149,10 +146,6 @@ def plot_wym_index_with_valid_dates(wym_index, save_dir=None):
 
 
 def plot_sji(input_path, save_dir):
-    # Data directory [Make dyanmic for different day forecast]
-    # data_dir = '/glade/derecho/scratch/marchakitus/monsoon/full_field_ref' # Directory where the data is stored
-    # aifs_fname = 'AIFS_20250428T12.nc' # AIFS file name
-    # aifs_file_path = os.path.join(data_dir, aifs_fname)
     ds = xr.open_dataset(input_path)
 
     def compute_daily_mean(var_name):
