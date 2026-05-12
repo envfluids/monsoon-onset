@@ -169,10 +169,13 @@ def main():
         "v_850",
         "u_200",
         "v_200",
+        "u_700",
+        "v_700",
         "tp",
         "tcw",
         "msl",
     ]
+    
     lead_time = 24 * 46
     n_members = 25
 
