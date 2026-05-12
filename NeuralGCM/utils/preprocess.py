@@ -368,6 +368,18 @@ def main():
     logging.info(f"Intermediate output file: {out_file_interp}")
     logging.info(f"Final output file: {out_file_ic}")
 
+    if os.path.exists(out_file_interp):
+        logging.warning(
+            f"Intermediate output file already exists. It will be removed: {out_file_interp}"
+        )
+        os.remove(out_file_interp)
+
+    if os.path.exists(out_file_ic):
+        logging.warning(
+            f"Final output file {out_file_ic} already exists exiting"
+        )
+        return
+
     # --- Step 1: Run NCL Interpolation ---
     ncl_success = run_ncl(in_file, out_file_interp)
 

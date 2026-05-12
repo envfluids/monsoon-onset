@@ -4,8 +4,6 @@ import xarray as xr
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import warnings
-import os
-from pathlib import Path
 import geopandas as gpd
 from shapely.geometry import box
 
@@ -159,6 +157,7 @@ def NGCM_Prob_Calc_first(df_ngcm, lat, lon, df):
 
 
 def plot_precip(base, date, source=None):
+    logging.info("Starting precipitation plotting...")
     region = "india"
     onsets_2024_path = base / "blend" / "data" / "support" / "onsets_2024.csv"
     df_onset_dates = pd.read_csv(onsets_2024_path)
