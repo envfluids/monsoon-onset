@@ -31,7 +31,7 @@ regions:
 
       - name: blend
         kind: dated_directory
-        local_root: "blend/output"
+        local_root: "blend/output/india2026"
         drive_path: "{drive_root}/{date}/blend"
         date_regex: "\\d{8}T\\d{2}"
 
@@ -90,6 +90,12 @@ regions:
           - ".nfs*"
         patterns:
           - "AIFS_ENS/tp/tp_0p25_{date}.nc"
+
+      - name: blend
+        kind: dated_directory
+        local_root: "blend/output/ethiopia2026"
+        drive_path: "{drive_root}/{date}/blend"
+        date_regex: "\\d{8}T\\d{2}"
 
       - name: blend_google
         kind: dated_directory

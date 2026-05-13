@@ -116,7 +116,7 @@ BLENDS: tuple[BlendConfig, ...] = (
                 path_template="NCUM/output/precipitation_amount/precipitation_amount_{date}.nc",
             ),
         ),
-        output_dir_template="blend/output/india2026/{date}/AIFS_NCUM_blend",
+        output_dir_template="blend/output/india2026/{date}/AIFS_NCUM",
     ),
 )
 

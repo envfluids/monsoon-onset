@@ -17,7 +17,6 @@ What it does
 
 import logging
 import re
-import sys
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -88,9 +87,9 @@ def get_data(date: str, base: Path, source: str | None = None):
     logging.info("STEP 6: get_data started")
 
     if source == "google":
-        out_path = base / "blend" / "output_google" / "india2026" / date / "AIFS_NCUM_blend"
+        out_path = base / "blend" / "output_google" / "india2026" / date / "AIFS_NCUM"
     else:
-        out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM_blend"
+        out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM"
 
     support_dir = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
     coefs_dir   = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
