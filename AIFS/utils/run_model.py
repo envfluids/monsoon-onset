@@ -1,40 +1,46 @@
+import argparse
+import copy
 import datetime
-from scipy.sparse import load_npz
+import gc
+import logging
+from pathlib import Path
+
 import numpy as np
 import xarray as xr
-import os
-import pickle
-
-from anemoi.inference.runners.simple import SimpleRunner
 from anemoi.inference.outputs.printer import print_state
-
-import gc
-import copy
-
-import argparse
-import logging
+from anemoi.inference.runners.simple import SimpleRunner
+from preprocess_ic import get_ic
+from scipy.sparse import load_npz
 
 logging.basicConfig(
     level=logging.INFO,
     format=(
-        "%(asctime)s - %(levelname)s - %(name)s - "
-        "%(pathname)s:%(lineno)d - %(message)s"
+        "%(asctime)s - %(levelname)s - %(name)s - %(pathname)s:%(lineno)d - %(message)s"
     ),
 )
 
-TFM_N320_LATLON = load_npz(
-    "../EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
+BASE = Path(__file__).resolve().parent.parent
+TFM_N320_LATLON_NAME = (
+    "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
 )
+TFM_N320_LATLON_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "EKR"
+    / "mir_16_linear"
+    / TFM_N320_LATLON_NAME
+)
+
+TFM_N320_LATLON = load_npz(TFM_N320_LATLON_PATH)
 
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
 
 
-def get_state(date_f):
-    logging.info(f"Reading input state for date: {date_f}")
-    with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
-        data = pickle.load(f)
-        return data
+# def get_state(date_f):
+#     logging.info(f"Reading input state for date: {date_f}")
+#     with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
+#         data = pickle.load(f)
+#         return data
 
 
 def process_step(output_state):
@@ -56,15 +62,15 @@ def process_step(output_state):
     return step_ds
 
 
-def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
-    if version == 0:
-        local_checkpoint_path = "../weights/aifs_single_v0.2.1.ckpt"
-    elif version == 1:
-        local_checkpoint_path = "../weights/AIFS_v1.ckpt"
-    elif version == 2:
-        local_checkpoint_path = "../weights/aifs-single-mse-1.1.ckpt"
-    else:
-        raise ValueError("Invalid version number")
+def run(date_f, forecast_hours, output_dir, save_fields=None):
+    local_checkpoint_path = "../weights/aifs-single-mse-1.1.ckpt"
+    date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
+
+    filename = output_dir / f"init_{date_f}.nc"
+    if filename.exists():
+        logging.warning(f"Output file {filename} already exists. Skipping model run.")
+        return
+
     year = date.year
     month = date.month
     day = date.day
@@ -74,7 +80,8 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     hour_str = str(hour).zfill(2)
 
     # Get the input state
-    input_state = get_state(date_f)
+    logging.info(f"Getting input state for date: {date_f}")
+    input_state = get_ic(date)
 
     # Initialize runner on the GPU
     runner = SimpleRunner(local_checkpoint_path, device="cuda")
@@ -110,29 +117,14 @@ def run(date, date_f, forecast_hours, version, output_dir, save_fields=None):
     del datasets
     ds = ds.expand_dims("time")
     ds["time"] = [np.datetime64(f"{year}-{month_str}-{day_str}T{hour_str}:00:00")]
-    ds.to_netcdf(
-        os.path.join(output_dir, f"init_{year}{month_str}{day_str}T{hour_str}.nc")
-    )
+    ds.to_netcdf(filename)
     del runner
     gc.collect()
     logging.info(f"Completed forecast for {output_dir}")
 
 
-def main(version, date_f, output_dir, lead_time, save_fields=None):
-    date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
-    logging.info(f"Running for: {date_f}")
-    logging.info(f"Output directory: {output_dir}")
-    if os.path.exists(f"{output_dir}/init_{date_f}.nc"):
-        print("Skipping:", date_f, "already exits")
-        logging.warning(f"File {output_dir}/init_{date_f}.nc already exists. Exiting.")
-    else:
-        run(date, date_f, lead_time, version, output_dir, save_fields)
+def main():
 
-
-if __name__ == "__main__":
-    OUTPUT_DIR = "../raw/output/AIFS"
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
     )
@@ -145,11 +137,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     date_f = args.date
 
-    version = 2
-    lead_time = 46 * 24
+    output_dir = BASE / "raw" / "output" / "AIFS"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
+    lead_time = 46 * 24
     logging.info(f"Date: {date_f}")
-    logging.info(f"Version: {version}")
     logging.info(f"Lead time: {lead_time} hours")
 
     save_fields = [
@@ -160,10 +152,22 @@ if __name__ == "__main__":
         "v_200",
         "u_700",
         "v_700",
+        "z_200",
+        "z_500",
+        "z_700",
+        "z_850",
         "tp",
         "tcw",
         "msl",
     ]
 
-    main(version, date_f, OUTPUT_DIR, lead_time, save_fields=save_fields)
+    logging.info(f"Running for: {date_f}")
+    logging.info(f"Output directory: {output_dir}")
+
+    run(date_f, lead_time, output_dir, save_fields)
+
     logging.info("Exiting inference script")
+
+
+if __name__ == "__main__":
+    main()

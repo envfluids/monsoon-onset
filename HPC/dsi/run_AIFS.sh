@@ -25,5 +25,5 @@ python ./verify_completion.py --date $DATE_F
 cd ../../model_diagnostics/utils
 python ./main.py --date $DATE_F --region india
 
-cd ../../blend/utils
-python ./main.py --date $DATE_F
+# cd ../../blend/utils
+# python ./main.py --date $DATE_F

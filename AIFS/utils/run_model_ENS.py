@@ -1,19 +1,17 @@
-from scipy.sparse import load_npz
+import argparse
+import gc
+import logging
+import shutil
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
-import xarray as xr
-import os
-import pickle
 import torch
-import shutil
-
-from anemoi.inference.runners.simple import SimpleRunner
+import xarray as xr
 from anemoi.inference.outputs.printer import print_state
-
-import gc
-
-import argparse
-import logging
+from anemoi.inference.runners.simple import SimpleRunner
+from preprocess_ic import get_ic, postprocess_ens
+from scipy.sparse import load_npz
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,24 +20,34 @@ logging.basicConfig(
     ),
 )
 
-TFM_N320_LATLON = load_npz(
-    "../EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
+BASE = Path(__file__).resolve().parent.parent
+TFM_N320_LATLON_NAME = (
+    "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
 )
+TFM_N320_LATLON_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "EKR"
+    / "mir_16_linear"
+    / TFM_N320_LATLON_NAME
+)
+
+TFM_N320_LATLON = load_npz(TFM_N320_LATLON_PATH)
 
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
 
 
-def get_state(date_f):
-    logging.info(f"Reading input state for date: {date_f}")
-    with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
-        data = pickle.load(f)
-        vars_to_remove = ["swvl1", "swvl2"]
-        for key in vars_to_remove:
-            if key in data["fields"]:
-                logging.info(f"Removing variable {key} from input state")
-                data["fields"].pop(key)
-        return data
+# def get_state(date_f):
+#     logging.info(f"Reading input state for date: {date_f}")
+#     with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
+#         data = pickle.load(f)
+#         vars_to_remove = ["swvl1", "swvl2"]
+#         for key in vars_to_remove:
+#             if key in data["fields"]:
+#                 logging.info(f"Removing variable {key} from input state")
+#                 data["fields"].pop(key)
+#         return data
+
 
 def process_step(output_state):
     output_state, runcount = output_state
@@ -62,23 +70,20 @@ def process_step(output_state):
 
 def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path):
     date = pd.to_datetime(date_f, format="%Y%m%dT%H")
-    filename = os.path.join(output_dir, f"init_{date_f}_partial.zarr")
-    final_filename = filename.replace("_partial.zarr", ".zarr")
-    if os.path.exists(final_filename):
+    filename = output_dir / f"init_{date_f}_partial.zarr"
+    final_filename = output_dir / f"init_{date_f}.zarr"
+    if final_filename.exists():
         logging.warning(
             f"Final output file {final_filename} already exists. Skipping model run."
         )
         return final_filename
 
-
-    input_state = get_state(date_f)
+    input_state = postprocess_ens(get_ic(date))
 
     for ens_number in range(n_members):
         if ens_number == 0:
-            if os.path.exists(filename):
-                logging.warning(
-                    f"Partial output file {filename} already exists."
-                )
+            if filename.exists():
+                logging.warning(f"Partial output file {filename} already exists.")
                 shutil.rmtree(filename)
         torch.manual_seed(ens_number)
         runner = SimpleRunner(cpkt_path, device="cuda")
@@ -138,9 +143,7 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path):
         del runner
         del ds
         gc.collect()
-    
-    
-    os.rename(filename, final_filename)
+    filename.rename(final_filename)
     return final_filename
 
 
@@ -155,11 +158,10 @@ def main():
     )
     args = parser.parse_args()
     date_f = args.date
-    output_dir = "../raw/output/AIFS_ENS"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir, exist_ok=True)
+    output_dir = BASE / "raw" / "output" / "AIFS_ENS"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    cpkt_path = "../weights/aifs-ens-crps-1.0.ckpt"
+    cpkt_path = BASE / "weights" / "aifs-ens-crps-1.0.ckpt"
     logging.info(f"Running for: {date_f}")
     logging.info(f"Output directory: {output_dir}")
 
@@ -171,18 +173,23 @@ def main():
         "v_200",
         "u_700",
         "v_700",
+        "z_200",
+        "z_500",
+        "z_700",
+        "z_850",
         "tp",
         "tcw",
         "msl",
     ]
-    
+
     lead_time = 24 * 46
     n_members = 25
 
-    logging.info("Exiting inference script")
-
-    final_filename = run_model(output_dir, n_members, date_f, lead_time, save_fields, cpkt_path)
+    final_filename = run_model(
+        output_dir, n_members, date_f, lead_time, save_fields, cpkt_path
+    )
     logging.info(f"Model run complete. Final output saved to {final_filename}")
+    logging.info("Exiting inference script")
 
 
 if __name__ == "__main__":

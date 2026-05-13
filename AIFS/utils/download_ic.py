@@ -1,12 +1,11 @@
-import earthkit.data as ekd
+import argparse
 import datetime
-from collections import defaultdict
-from scipy.sparse import load_npz
-import numpy as np
-from ecmwf.opendata import Client as OpendataClient
-import pickle
-import os
 import logging
+from pathlib import Path
+
+import requests
+from ecmwf.opendata import Client as OpendataClient
+from tqdm import tqdm
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,124 +14,133 @@ logging.basicConfig(
     ),
 )
 
+BASE_URL = "https://data.ecmwf.int/forecasts/"
+
+DATE_SOURCE = "azure"
+STREAMS = ["oper"]
+
+BASE = Path(__file__).resolve().parent.parent
+
+FINAL_OUTPUT_DIR = BASE / "raw" / "ifs_ic" / "AIFS"
+GRIB_OUTPUT_DIR = BASE / "raw" / "ifs_ic" / "grib"
+
+FINAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GRIB_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 def check_new_data(date_str=None):
-    now_utc = datetime.datetime.utcnow()
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
     logging.info(f"Current UTC time: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}")
 
     if date_str:
-        DATE = datetime.datetime.strptime(date_str, "%Y%m%dT%H")
+        logging.info(f"Using provided date: {date_str}")
+        date = datetime.datetime.strptime(date_str, "%Y%m%dT%H")
     else:
-        DATE = OpendataClient().latest()
-    # DATE = datetime.datetime(2026, 3, 21, 12)
-    DATE_FORMATTED = DATE.strftime("%Y%m%dT%H")
+        logging.info(f"Fetching latest available date from {DATE_SOURCE}...")
+        try:
+            date = OpendataClient(source=DATE_SOURCE).latest()
+        except Exception as e:
+            logging.error(f"Error fetching latest date from {DATE_SOURCE}: {e}")
+            logging.warning("Falling back to ECMWF for latest date...")
+            try:
+                date = OpendataClient().latest()
+            except Exception as e:
+                logging.error(f"Error fetching latest date from ECMWF: {e}")
+                logging.error("Unable to fetch latest date. Exiting.")
+                raise RuntimeError("Unable to fetch latest date from both sources.")
 
-    logging.info(f"Latest available date: {DATE.strftime('%Y-%m-%d %H:%M:%S')}")
+        date = date - datetime.timedelta(hours=date.hour)
+        logging.info(f"Latest available date: {date.strftime('%Y-%m-%d %H:%M:%S')}")
 
-    OUTPUT_DIR = "../raw/ifs_ic"
-    # Create the output directory if it doesn't exist
-
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-    OUTPUT_FILE = os.path.join(OUTPUT_DIR, f"input_state_{DATE_FORMATTED}.pkl")
-    # Check if the file already exists
-    if os.path.exists(OUTPUT_FILE):
-        logging.info(f"File {OUTPUT_FILE} already exists. Exiting.")
-        return None, None
-    else:
-        return DATE, OUTPUT_FILE
+        return date
 
 
-def save_data(DATE, OUTPUT_FILE):
-    TFM_LATLON_N320 = load_npz(
-        "../EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
-    )
+def get_url(date, stream):
+    ymd = date.strftime("%Y%m%d")
+    hh = date.strftime("%H")
+    return f"{BASE_URL}{ymd}/{hh}z/ifs/0p25/{stream}/{ymd}{hh}0000-0h-{stream}-fc.grib2"
 
-    PARAM_SFC = [
-        "10u",
-        "10v",
-        "2d",
-        "2t",
-        "msl",
-        "skt",
-        "sp",
-        "tcw",
-        "lsm",
-        "z",
-        "slor",
-        "sdor",
-    ]
-    PARAM_SOIL = ["vsw", "sot"]
-    PARAM_PL = ["gh", "t", "u", "v", "w", "q"]
-    LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
-    SOIL_LEVELS = [1, 2]
 
-    logging.info(f"Downloading data for date: {DATE.strftime('%Y-%m-%d %H:%M:%S')}")
+def download_file(url, out_dir=GRIB_OUTPUT_DIR):
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    def get_open_data(param, levelist=[]):
-        fields = defaultdict(list)
-        # Get the data for the current date and the previous date
-        for date in [DATE - datetime.timedelta(hours=6), DATE]:
-            data = ekd.from_source(
-                "ecmwf-open-data", date=date, param=param, levelist=levelist
-            )
-            for f in data:
-                # Open data is between -180 and 180, we need to shift it to 0-360
-                assert f.to_numpy().shape == (721, 1440)
-                values = np.roll(f.to_numpy(), -f.shape[1] // 2, axis=1)
-                # Interpolate the data to from 0.25 to N320
-                values = TFM_LATLON_N320 * values.flatten()
-                # Add the values to the list
-                name = (
-                    f"{f.metadata('param')}_{f.metadata('levelist')}"
-                    if levelist
-                    else f.metadata("param")
-                )
-                fields[name].append(values)
+    filename = url.rsplit("/", 1)[-1]
+    out_path = out_dir / filename
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
 
-        # Create a single matrix for each parameter
-        for param, values in fields.items():
-            fields[param] = np.stack(values)
+    if out_path.exists():
+        logging.info(f"File {out_path} already exists. Skipping download.")
+        return None
 
-        return fields
+    logging.info(f"Downloading: {url}")
 
-    fields = {}
+    try:
+        with requests.get(url, stream=True) as response:
+            response.raise_for_status()
 
-    sfc = get_open_data(param=PARAM_SFC)
+            total = int(response.headers.get("content-length", 0))
+            chunk_size = 1024 * 1024  # 1 MB
 
-    fields.update(sfc)
-    soil = get_open_data(param=PARAM_SOIL, levelist=SOIL_LEVELS)
+            with (
+                open(tmp_path, "wb") as f,
+                tqdm(
+                    total=total,
+                    unit="B",
+                    unit_scale=True,
+                    unit_divisor=1024,
+                    desc=f"Downloading {filename}",
+                ) as progress,
+            ):
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    if chunk:  # skip keep-alive chunks
+                        f.write(chunk)
+                        progress.update(len(chunk))
 
-    mapping = {"sot_1": "stl1", "sot_2": "stl2", "vsw_1": "swvl1", "vsw_2": "swvl2"}
-    for k, v in soil.items():
-        fields[mapping[k]] = v
+        tmp_path.replace(out_path)
+        logging.info(f"Data saved to {out_path}")
+        return out_path
 
-    pl = get_open_data(param=PARAM_PL, levelist=LEVELS)
-
-    fields.update(pl)
-
-    # Transform GH to Z
-    for level in LEVELS:
-        gh = fields.pop(f"gh_{level}")
-        fields[f"z_{level}"] = gh * 9.80665
-
-    input_state = dict(date=DATE, fields=fields)
-
-    with open(OUTPUT_FILE, "wb") as f:
-        pickle.dump(input_state, f)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
 
 
 def get_data(date_str=None):
-    DATE, OUTPUT_FILE = check_new_data(date_str)
-    if DATE:
-        save_data(DATE, OUTPUT_FILE)
-        logging.info(f"Data saved to {OUTPUT_FILE}")
-        DATE_FORMATTED = DATE.strftime("%Y%m%dT%H")
-        return DATE_FORMATTED
+    date = check_new_data(date_str)
+    downloaded_files = []
+    if date:
+        date_prev = date - datetime.timedelta(hours=6)
+        for s in STREAMS:
+            for d in [date_prev, date]:
+                download_status = download_file(get_url(d, s))
+                if download_status:
+                    downloaded_files.append(download_status)
+
+    if downloaded_files:
+        date_formatted = date.strftime("%Y%m%dT%H")
+        logging.info(f"New data downloaded successfully for {date_formatted}.")
+        return date_formatted
     else:
         logging.info("No new data to download.")
         return None
 
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download initial conditions for IFS model"
+    )
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="Date to download in format YYYYMMDDTHH. Defaults to latest.",
+    )
+    args = parser.parse_args()
+
+    date_str = args.date
+
+    get_data(date_str)
+
+
 if __name__ == "__main__":
-    get_data()
+    main()
