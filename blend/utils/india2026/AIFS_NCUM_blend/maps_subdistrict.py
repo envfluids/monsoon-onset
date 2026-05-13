@@ -12,11 +12,9 @@ blend/maps_subdistrict/india2026/AIFS_NCUM_blend/
     map_maxperiod_<date>.pdf  / .png
 """
 
-import argparse
 from datetime import timedelta
 import logging
 from pathlib import Path
-import logging
 
 import geopandas as gpd
 import matplotlib

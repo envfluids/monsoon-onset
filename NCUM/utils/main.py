@@ -21,7 +21,16 @@ def main():
         return
     else:
         logging.info(f"New forecast downloaded with date string: {date_f}. Proceeding to run blending pipeline.")
-        cmd = ["python", str(REPO_ROOT / "blend" / "utils" / "main.py"), "--date", date_f]
+        cmd = [
+            "python",
+            str(REPO_ROOT / "blend" / "utils" / "main.py"),
+            "--date",
+            date_f,
+            "--region",
+            "india",
+            "--model",
+            "NCUM",
+        ]
         subprocess.run(cmd, check=True)
 
 if __name__ == "__main__":

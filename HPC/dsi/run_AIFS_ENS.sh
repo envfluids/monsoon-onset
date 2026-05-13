@@ -22,5 +22,5 @@ python ./post_process.py --date $DATE_F --model AIFS_ENS
 # set -euo pipefail
 # python ./verify_completion.py --date $DATE_F
 
-# cd ../../blend/utils
-# python ./main.py --date $DATE_F
+cd ../../blend/utils
+python ./main.py --date $DATE_F --region ethiopia --model AIFS_ENS

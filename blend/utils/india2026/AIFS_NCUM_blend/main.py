@@ -88,9 +88,9 @@ def get_data(date: str, base: Path, source: str | None = None):
     logging.info("STEP 6: get_data started")
 
     if source == "google":
-        out_path = base / "blend" / "output_google" / "india2026" / "AIFS_NCUM_blend" / date
+        out_path = base / "blend" / "output_google" / "india2026" / date / "AIFS_NCUM_blend"
     else:
-        out_path = base / "blend" / "output" / "india2026" / "AIFS_NCUM_blend" / date
+        out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM_blend"
 
     support_dir = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
     coefs_dir   = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
@@ -272,15 +272,6 @@ def get_data(date: str, base: Path, source: str | None = None):
 
 def main():
     logging.info("STEP 1: main() started")
-
-    # Force logging to stdout
-    root = logging.getLogger()
-    root.setLevel(logging.INFO)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s %(levelname)s: %(message)s")
-    handler.setFormatter(formatter)
-    root.addHandler(handler)
 
     parser = argparse.ArgumentParser(description="Download initial conditions for IFS model")
     parser.add_argument("--date", default=None, help="Date to download in format YYYYMMDDTHH. Defaults to latest.")
