@@ -23,6 +23,7 @@ COPY docker/downloader/src/ ./src/
 # Copy science scripts (unmodified) into expected utils/ directories
 COPY AIFS/utils/download_ic.py    ./AIFS/utils/download_ic.py
 COPY NeuralGCM/utils/download_ncep.py ./NeuralGCM/utils/download_ncep.py
+COPY gencast/utils/download_sst.py ./gencast/utils/download_sst.py
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

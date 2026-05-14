@@ -50,7 +50,8 @@ The pipeline's working storage. Organized by region:
 ```
 {region}/
   raw/
-    ecmwf/{date}/input_state_{date}.pkl       <- ECMWF IFS initial conditions
+    ecmwf/{date}/grib/*.grib2                 <- ECMWF IFS GRIB initial conditions
+    gencast/sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
     ncep/{date}/gdas_{date}.pgrb2             <- NCEP GDAS initial conditions
   intermediate/
     latest_date.txt                           <- latest ECMWF date from opendata API
@@ -77,6 +78,7 @@ Read-only static files. Never auto-deleted, always versioned:
 ```
 aifs/
   aifs-single-mse-1.1.ckpt                   <- AIFS model checkpoint
+  aifs-ens-crps-1.0.ckpt                     <- AIFS-ENS model checkpoint
   EKR/mir_16_linear/{hash}.npz               <- sparse IFS->N320 transform matrix
   grids/grid_2p0.txt                          <- 2-degree CDO remap grid
   data/india_mask_2p0.nc                      <- land mask
@@ -260,9 +262,10 @@ SOURCE=ecmwf
 DATE={date}
 FORECAST_REGION={region}
 ```
-The container fetches the latest ECMWF IFS analysis (0.25-degree global) via `download_ic.get_data()`, saves it as `input_state_{ecmwf_date}.pkl`, and uploads to:
+The container fetches the latest ECMWF IFS analysis (0.25-degree global) via `download_ic.get_data()`, saves GRIB files, downloads the matching GenCast SST IC, and uploads to:
 ```
-gs://{bucket}/{region}/raw/ecmwf/{ecmwf_date}/input_state_{ecmwf_date}.pkl
+gs://{bucket}/{region}/raw/ecmwf/{ecmwf_date}/grib/
+gs://{bucket}/{region}/raw/gencast/sst/{ecmwf_date}/sst_{ecmwf_date}.nc
 ```
 It also writes the actual ECMWF date (which may differ slightly from `DATE`) to:
 ```
@@ -304,12 +307,14 @@ Batch job spec:
 - Logs to Cloud Logging via `logsPolicy.destination: CLOUD_LOGGING`
 
 The AIFS container (`docker/aifs/src/main.py`) does:
-1. Downloads `input_state_{ecmwf_date}.pkl` from GCS (reads `latest_ecmwf_date.txt` to find the right filename)
-2. Downloads the AIFS checkpoint (`aifs-single-mse-1.1.ckpt`) from the weights bucket
-3. Downloads the sparse IFS-to-N320 transform matrix (`.npz`) from the weights bucket
-4. Runs `run_model.py` (deterministic 41-day, 6-hourly forecast)
-5. Runs `post_process.py` (regrid to 2-degree, compute SJI, TP, TCW)
+1. Downloads ECMWF GRIB files from GCS (reads `latest_ecmwf_date.txt` to find the right filename)
+2. Downloads the requested AIFS checkpoint (`aifs-single-mse-1.1.ckpt` or `aifs-ens-crps-1.0.ckpt`) from the weights bucket
+3. Downloads the sparse transform matrices (`.npz`) from the weights bucket
+4. Runs `run_model.py` or `run_model_ENS.py`, depending on `AIFS_MODEL`
+5. Runs `post_process.py --model AIFS|AIFS_ENS`
 6. Uploads outputs to `gs://{bucket}/{region}/output/aifs/{ecmwf_date}/`
+
+`AIFS_MODEL` defaults to `AIFS`; set it to `AIFS_ENS` or `both` to run the ensemble path.
 
 After creating the job, the workflow polls `googleapis.batch.v1.projects.locations.jobs.get` every 60 seconds until `status.state == "SUCCEEDED"` or `"FAILED"`.
 

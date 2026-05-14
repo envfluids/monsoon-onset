@@ -198,14 +198,17 @@ bucket at runtime using the paths below.
 
 | File | Weights bucket path |
 |---|---|
-| AIFS checkpoint | `aifs/AIFS_v1.ckpt` |
+| AIFS checkpoint | `aifs/aifs-single-mse-1.1.ckpt` |
+| AIFS-ENS checkpoint | `aifs/aifs-ens-crps-1.0.ckpt` |
 | Sparse interpolation matrix (used by `download_ic.py`) | `aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz` |
 | Sparse interpolation matrix (used by `run_model.py`) | `aifs/EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz` |
 
 ```bash
 WEIGHTS_BUCKET="monsoon-dev-weights-<PROJECT_ID>"
 
-gcloud storage cp AIFS_v1.ckpt gs://${WEIGHTS_BUCKET}/aifs/AIFS_v1.ckpt
+gcloud storage cp aifs-single-mse-1.1.ckpt gs://${WEIGHTS_BUCKET}/aifs/aifs-single-mse-1.1.ckpt
+
+gcloud storage cp aifs-ens-crps-1.0.ckpt gs://${WEIGHTS_BUCKET}/aifs/aifs-ens-crps-1.0.ckpt
 
 gcloud storage cp 9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz \
   gs://${WEIGHTS_BUCKET}/aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz

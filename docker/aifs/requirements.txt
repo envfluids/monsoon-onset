@@ -10,3 +10,4 @@ h5netcdf
 gcsfs
 google-cloud-storage
 zarr
+earthkit-data

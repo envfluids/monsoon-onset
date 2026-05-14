@@ -1,37 +1,39 @@
 # -----------------------------------------------------------------------------
-# Monsoon AIFS
-# ECMWF AIFS and AIFS-ENS model inference (PyTorch + GPU)
-# Target: Cloud Batch with GPU
+# Monsoon GenCast
+# GenCast model inference (JAX + GPU)
+# Target: Cloud Batch
 # -----------------------------------------------------------------------------
 
-# Use NVIDIA PyTorch base image with CUDA
-FROM nvcr.io/nvidia/pytorch:26.01-py3
+FROM nvcr.io/nvidia/jax:26.03-py3
 
 WORKDIR /app
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libeccodes-dev \
     libeccodes-tools \
     cdo \
+    nco \
+    curl \
+    bzip2 \
+    lsb-release \
+    ca-certificates \
+    gcsfuse \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY docker/aifs/requirements.txt .
+COPY docker/gencast/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY docker/aifs/src/ ./src/
+COPY docker/gencast/src/ ./src/
 
-# Copy science scripts (unmodified) into the expected utils/ directory structure
-COPY AIFS/utils/ ./AIFS/utils/
-COPY AIFS/grids/ ./AIFS/grids/
-COPY AIFS/data/ ./AIFS/data/
+# Copy science scripts (unmodified) into expected directory structure
+COPY gencast/utils/ ./gencast/utils/
+COPY gencast/data/ ./gencast/data/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-ENV AIFS_MODEL=AIFS
 
 # Entry point
 ENTRYPOINT ["python", "-m", "src.main"]

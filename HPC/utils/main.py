@@ -26,6 +26,13 @@ class JobSpec:
 
 
 @dataclass(frozen=True)
+class CompanionJobSpec:
+    prep_path: Path
+    prep_function: str
+    job: JobSpec
+
+
+@dataclass(frozen=True)
 class PipelineSpec:
     name: str
     downloader_path: Path
@@ -119,8 +126,21 @@ PIPELINES["aifs_ens"]["jobs"] = [
 PIPELINES["ecmwf"] = {}
 PIPELINES["ecmwf"]["pipeline"] = PIPELINES["aifs"]["pipeline"]
 PIPELINES["ecmwf"]["jobs"] = []
+GENCAST_COMPANION = CompanionJobSpec(
+    prep_path=ROOT / "gencast" / "utils" / "download_sst.py",
+    prep_function="get_sst",
+    job=JobSpec(
+        label="GenCast",
+        script_name="run_gencast.sh",
+        work_dir=ROOT / "gencast" / "utils",
+        log_name="GenCast",
+        optional=True,
+    ),
+)
+
 PIPELINES["ecmwf"]["jobs"].extend(PIPELINES["aifs"]["jobs"])
 PIPELINES["ecmwf"]["jobs"].extend(PIPELINES["aifs_ens"]["jobs"])
+PIPELINES["ecmwf"]["companions"] = [GENCAST_COMPANION]
 
 
 def normalize_date(value, pipeline):
@@ -176,42 +196,78 @@ def run_imd_companion(date_f, dry_run=False):
     )
 
 
+def submit_job_spec(job, cluster_config, date_f, dry_run=False):
+    script_path = cluster_config.script_dir / job.script_name
+    if not script_path.exists():
+        if job.optional:
+            logging.info(
+                "Skipping optional %s script missing on %s: %s",
+                job.label,
+                cluster_config.name,
+                script_path,
+            )
+            return None
+        raise FileNotFoundError(f"Required HPC script is missing: {script_path}")
+
+    command = build_command(
+        cluster=cluster_config.name,
+        label=job.label,
+        script_path=script_path,
+        log_dir=cluster_config.script_dir / "logs" / job.log_name,
+        date_f=date_f,
+    )
+    if not dry_run:
+        (cluster_config.script_dir / "logs" / job.log_name).mkdir(
+            parents=True, exist_ok=True
+        )
+    return submit_job(
+        command=command,
+        cluster=cluster_config.name,
+        label=job.label,
+        cwd=job.work_dir,
+        dry_run=dry_run,
+    )
+
+
+def submit_companion_job(companion, cluster_config, date_f, dry_run=False):
+    job = companion.job
+    script_path = cluster_config.script_dir / job.script_name
+    if not script_path.exists():
+        logging.info(
+            "Skipping optional %s script missing on %s: %s",
+            job.label,
+            cluster_config.name,
+            script_path,
+        )
+        return
+
+    if dry_run:
+        logging.info(
+            "Dry run: would call %s:%s(%s)",
+            companion.prep_path.relative_to(ROOT),
+            companion.prep_function,
+            date_f,
+        )
+    else:
+        call_function(companion.prep_path, companion.prep_function, date_f)
+
+    job_id = submit_job_spec(job, cluster_config, date_f, dry_run=dry_run)
+    if not dry_run and not job.optional and job_id is None:
+        raise RuntimeError(f"Required companion job submission failed: {job.label}")
+
+
 def submit_pipeline_jobs(pipeline, date_f, dry_run=False):
     cluster_config = get_cluster()
     if pipeline == "imerg":
         run_imd_companion(date_f, dry_run=dry_run)
 
     for job in PIPELINES[pipeline]['jobs']:
-        script_path = cluster_config.script_dir / job.script_name
-        if not script_path.exists():
-            if job.optional:
-                logging.info(
-                    "Skipping optional %s script missing on %s: %s",
-                    job.label,
-                    cluster_config.name,
-                    script_path,
-                )
-                continue
-            raise FileNotFoundError(f"Required HPC script is missing: {script_path}")
+        job_id = submit_job_spec(job, cluster_config, date_f, dry_run=dry_run)
+        if not dry_run and not job.optional and job_id is None:
+            raise RuntimeError(f"Required HPC job submission failed: {job.label}")
 
-        command = build_command(
-            cluster=cluster_config.name,
-            label=job.label,
-            script_path=script_path,
-            log_dir=cluster_config.script_dir / "logs" / job.log_name,
-            date_f=date_f,
-        )
-        if not dry_run:
-            (cluster_config.script_dir / "logs" / job.log_name).mkdir(
-                parents=True, exist_ok=True
-            )
-        submit_job(
-            command=command,
-            cluster=cluster_config.name,
-            label=job.label,
-            cwd=job.work_dir,
-            dry_run=dry_run,
-        )
+    for companion in PIPELINES[pipeline].get("companions", []):
+        submit_companion_job(companion, cluster_config, date_f, dry_run=dry_run)
 
 
 def should_submit(spec, date_f, explicit_date):

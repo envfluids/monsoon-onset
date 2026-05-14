@@ -22,7 +22,7 @@ Response shape:
   }
 
 GCS layout assumed:
-  <region>/raw/ecmwf/<date>/input_state_<date>.pkl
+  <region>/raw/ecmwf/<date>/grib/<ecmwf-grib-files>
   <region>/raw/ncep/<date>/gdas_<date>.pgrb2
   <region>/output/<aifs|neuralgcm>/<date>/<sji|tcw|tp>/<sji|tcw|tp>_<date>.nc
   <region>/output/blend/<date>/blend_output_summary.csv
@@ -139,10 +139,19 @@ def read_gcs_text(bucket: str, path: str) -> str:
 # Per-stage state probes
 # ---------------------------------------------------------------------------
 
-def ic_path(source: str, region: str, date: str) -> str:
+def ecmwf_grib_names(date: str) -> list[str]:
+    base = datetime.strptime(date, "%Y%m%dT%H")
+    dates = [base - timedelta(hours=12), base - timedelta(hours=6), base]
+    return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+
+
+def ic_paths(source: str, region: str, date: str) -> list[str]:
     if source == "ecmwf":
-        return f"{region}/raw/ecmwf/{date}/input_state_{date}.pkl"
-    return f"{region}/raw/ncep/{date}/gdas_{date}.pgrb2"
+        return [
+            f"{region}/raw/ecmwf/{date}/grib/{filename}"
+            for filename in ecmwf_grib_names(date)
+        ]
+    return [f"{region}/raw/ncep/{date}/gdas_{date}.pgrb2"]
 
 
 def forecast_paths(model: str, region: str, date: str) -> list[str]:
@@ -162,7 +171,10 @@ def model_state(bucket: str, region: str, source: str, model: str, date: str) ->
     if not date:
         return {"ic_date": "", "ic_in_gcs": False, "forecast_complete": False, "missing": []}
 
-    ic_in_gcs = gcs_object_exists(bucket, ic_path(source, region, date))
+    ic_in_gcs = all(
+        gcs_object_exists(bucket, path)
+        for path in ic_paths(source, region, date)
+    )
 
     missing: list[str] = []
     for path in forecast_paths(model, region, date):

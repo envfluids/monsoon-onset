@@ -17,6 +17,7 @@ __pycache__/
 .vscode/*
 
 /blend/data/
+/gencast/data/
 
 .terraform
 .terraform.lock.hcl

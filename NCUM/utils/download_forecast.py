@@ -136,7 +136,7 @@ def download_forecast(date: str, api_key: str, server: str, output_path: Path) -
 
 
 
-def get_data(date: str | None, overwrite: bool) -> str | None:
+def get_data(date: str | None = None, overwrite: bool = False) -> str | None:
 
     if date is None:
         date = datetime.now().strftime("%Y%m%dT00")

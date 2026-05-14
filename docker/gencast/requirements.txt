@@ -1,0 +1,17 @@
+# ngcm inference
+jax[tpu]
+flax
+"https://github.com/google-deepmind/graphcast/archive/refs/tags/v0.2.zip"
+
+# Data processing
+xarray
+h5py
+h5netcdf
+gcsfs
+zarr
+earthkit-data
+google-cloud-storage
+
+# Utilities
+python-dateutil>=2.8.0
+click>=8.1.0

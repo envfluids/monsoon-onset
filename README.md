@@ -40,9 +40,9 @@ Supported `--pipelines` values are:
 
 | Pipeline | Data check/download function | Submitted script | Work directory | Notes |
 | --- | --- | --- | --- | --- |
-| `aifs` | `AIFS/utils/download_ic.py:get_data` | `run_AIFS.sh` | `AIFS/utils` | Submits only 00 UTC cycles. |
+| `aifs` | `AIFS/utils/download_ic.py:get_data` | `run_AIFS.sh`, optional `run_gencast.sh` | `AIFS/utils`, `gencast/utils` | Submits only 00 UTC cycles. If `run_gencast.sh` exists, downloads GenCast SST after AIFS submission and submits GenCast after SST succeeds. |
 | `aifs_ens` | `AIFS/utils/download_ic.py:get_data` | `run_AIFS_ENS.sh` | `AIFS/utils` | Optional script. It is checked in for `dsi`; missing scripts are skipped. |
-| `ecmwf` | `AIFS/utils/download_ic.py:get_data` | `run_AIFS.sh`, `run_AIFS_ENS.sh` | `AIFS/utils` | Composite pipeline used by the DSI AIFS cron wrapper. |
+| `ecmwf` | `AIFS/utils/download_ic.py:get_data` | `run_AIFS.sh`, `run_AIFS_ENS.sh`, optional `run_gencast.sh` | `AIFS/utils`, `gencast/utils` | Composite pipeline used by the DSI AIFS cron wrapper. If `run_gencast.sh` exists, downloads GenCast SST after AIFS submissions and submits GenCast after SST succeeds. |
 | `ngcm` | `NeuralGCM/utils/download_ncep.py:get_data` | `run_NGCM.sh` | `NeuralGCM/utils` | Submits only 00 UTC cycles. |
 | `imerg` | `IMERG/utils/download_imerg.py:get_data` | `process_IMERG.sh` | `IMERG/utils` | Also calls `IMERG/utils/download_imd.py:get_imd_data` for the same date before job submission. |
 | `s2s` | `S2S/utils/download_forecast.py:get_data` | `process_S2S.sh` | `S2S/utils` | Optional script. Allows 00 and 12 UTC cycles; date ranges are supported only for `s2s`. |
@@ -131,7 +131,7 @@ submitted through the central orchestrator.
 ### AIFS
 
 - Downloader: `AIFS/utils/download_ic.py`
-- Raw initial conditions: `AIFS/raw/ifs_ic/input_state_{date}.pkl`
+- Raw initial conditions: `AIFS/raw/ifs_ic/grib/*-0h-oper-fc.grib2`
 - Deterministic raw output: `AIFS/raw/output/AIFS/init_{date}.nc`
 - Ensemble raw output: `AIFS/raw/output/AIFS_ENS/init_{date}.zarr`
 - Post-processing script: `AIFS/utils/post_process.py`
