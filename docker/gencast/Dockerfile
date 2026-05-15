@@ -17,7 +17,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     bzip2 \
     lsb-release \
     ca-certificates \
-    gcsfuse \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
