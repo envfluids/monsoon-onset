@@ -12,12 +12,14 @@ output "cloud_run_services" {
   }
 }
 
-output "pipeline_state_service" {
-  description = "Cloud Run service metadata for the pipeline-state service"
-  value = {
-    name = google_cloud_run_v2_service.pipeline_state.name
-    uri  = google_cloud_run_v2_service.pipeline_state.uri
-  }
+output "pipeline_state_service_name" {
+  description = "Cloud Run service name for the pipeline-state service"
+  value       = google_cloud_run_v2_service.pipeline_state.name
+}
+
+output "pipeline_state_url" {
+  description = "Cloud Run service URL for the pipeline-state service"
+  value       = google_cloud_run_v2_service.pipeline_state.uri
 }
 
 output "batch_job_template" {

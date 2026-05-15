@@ -93,12 +93,14 @@ variable "cloud_run_services" {
   }))
 }
 
-variable "pipeline_state_service" {
-  description = "Cloud Run service metadata for the pipeline-state service"
-  type = object({
-    name = string
-    uri  = string
-  })
+variable "pipeline_state_service_name" {
+  description = "Cloud Run service name for the pipeline-state service"
+  type        = string
+}
+
+variable "pipeline_state_url" {
+  description = "Cloud Run service URL for the pipeline-state service"
+  type        = string
 }
 
 variable "batch_job_template" {

@@ -39,7 +39,7 @@ resource "google_project_iam_member" "workflow_run_invoker" {
 resource "google_cloud_run_v2_service_iam_member" "workflow_pipeline_state_invoker" {
   project  = var.project_id
   location = var.region
-  name     = var.pipeline_state_service.name
+  name     = var.pipeline_state_service_name
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.workflow.email}"
 }
@@ -134,16 +134,17 @@ resource "google_workflows_workflow" "main_pipeline" {
     region             = var.region
     environment        = var.environment
     cloud_run_jobs     = var.cloud_run_services
-    pipeline_state_url = var.pipeline_state_service.uri
-    batch_config       = var.batch_job_template
-    common_bucket      = var.common_bucket
-    region_buckets     = var.region_buckets
-    regions            = var.regions
-    models_in_use      = local.models_in_use
-    regions_by_model   = local.regions_by_model
-    model_images       = local.model_images
-    pipeline_sa        = var.pipeline_service_account_email
-    full_field_models  = var.full_field_models
+    pipeline_state_url = var.pipeline_state_url
+
+    batch_config      = var.batch_job_template
+    common_bucket     = var.common_bucket
+    region_buckets    = var.region_buckets
+    regions           = var.regions
+    models_in_use     = local.models_in_use
+    regions_by_model  = local.regions_by_model
+    model_images      = local.model_images
+    pipeline_sa       = var.pipeline_service_account_email
+    full_field_models = var.full_field_models
   })
 
   labels = {

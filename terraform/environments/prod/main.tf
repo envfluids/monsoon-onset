@@ -40,6 +40,13 @@ variable "notification_emails" {
   default     = []
 }
 
+variable "external_api_secrets" {
+  description = "Map of env-var name → secret value for external APIs (e.g., ECMWF MARS). Pass via TF_VAR_external_api_secrets or a gitignored *.tfvars file."
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
 locals {
   environment = "prod"
 
@@ -139,18 +146,20 @@ module "compute" {
   region_buckets        = module.storage.region_bucket_names
   service_account_email = module.storage.pipeline_service_account_email
 
+  external_api_secrets = var.external_api_secrets
+
   # Prod: on-demand GPUs for reliability
   use_preemptible_gpu = false
 
-  # Container images (pinned versions in prod)
-  downloader_image     = "gcr.io/${var.project_id}/monsoon-downloader:v1.0.0"
-  pipeline_state_image = "gcr.io/${var.project_id}/monsoon-pipeline-state:v1.0.0"
-  postprocess_image    = "gcr.io/${var.project_id}/monsoon-postprocess:v1.0.0"
-  blend_image          = "gcr.io/${var.project_id}/monsoon-blend:v1.0.0"
-  sync_image           = "gcr.io/${var.project_id}/monsoon-sync:v1.0.0"
-  aifs_image           = "gcr.io/${var.project_id}/monsoon-aifs:v1.0.0"
-  neuralgcm_image      = "gcr.io/${var.project_id}/monsoon-neuralgcm:v1.0.0"
-  gencast_image        = "gcr.io/${var.project_id}/monsoon-gencast:v1.0.0"
+  # Container images — pulled from Artifact Registry created by storage module
+  downloader_image     = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
+  pipeline_state_image = "${module.storage.artifact_registry_url}/monsoon-pipeline-state:latest"
+  postprocess_image    = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
+  blend_image          = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
+  sync_image           = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
+  aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
+  neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
+  gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
 
   depends_on = [module.networking, module.storage]
 }
@@ -172,11 +181,12 @@ module "orchestration" {
   # Prod: frequent runs matching current HPC schedule
   pipeline_schedule = "*/15 * * * *" # Every 15 minutes (checks for new data)
 
-  cloud_run_services     = module.compute.cloud_run_services
-  pipeline_state_service = module.compute.pipeline_state_service
-  batch_job_template     = module.compute.batch_job_template
-  common_bucket          = module.storage.common_bucket_name
-  region_buckets         = module.storage.region_bucket_names
+  cloud_run_services          = module.compute.cloud_run_services
+  pipeline_state_service_name = module.compute.pipeline_state_service_name
+  pipeline_state_url          = module.compute.pipeline_state_url
+  batch_job_template          = module.compute.batch_job_template
+  common_bucket               = module.storage.common_bucket_name
+  region_buckets              = module.storage.region_bucket_names
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email

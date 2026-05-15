@@ -123,6 +123,24 @@ variable "gencast_image" {
 }
 
 # -----------------------------------------------------------------------------
+# External API credentials (managed in Secret Manager via terraform)
+# -----------------------------------------------------------------------------
+
+variable "external_api_secrets" {
+  description = <<-EOT
+    Map of env-var name → secret value. Each entry becomes a Secret Manager
+    secret (id = lower-kebab-cased env-var name), a version holding the value,
+    an IAM binding granting the pipeline SA `secretAccessor`, and an env mount
+    on whichever Cloud Run job declares the env-var name under its `secrets`
+    field. Values are sensitive — pass via TF_VAR_external_api_secrets or a
+    gitignored *.tfvars file. Empty map = no secrets created.
+  EOT
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
+# -----------------------------------------------------------------------------
 # GPU Configuration
 # -----------------------------------------------------------------------------
 

@@ -1,16 +1,9 @@
 # -----------------------------------------------------------------------------
-# Monsoon Pipeline Workflow — Region-Agnostic, Multi-Region
+# Monsoon Pipeline Workflow — Greedy, IC-Driven, Deduplicated
 #
-# 1. Probe pipeline-state for the global multi-region view.
-# 2. Download external ICs (ECMWF, NCEP) in parallel — guarded by per-source
-#    presence flags (skipped when not needed by any configured region).
-# 3. Run each model once across all its regions (shared IC + full-field; the
-#    container itself loops over regions internally).
-# 4. Per-region downstream: postprocess gate → blend (if region uses it)
-#    → sync (if region uses it).
-#
-# Region names appear only in `for` iterators and template-time renderings of
-# var.regions — the workflow body itself is region-agnostic.
+# Each run probes pipeline-state, downloads missing ICs by source/date, greedily
+# runs models whose IC source is present, then blends/syncs regions whose
+# expected inputs are present. GCS artifacts are the success signal.
 # -----------------------------------------------------------------------------
 
 main:
@@ -27,22 +20,17 @@ main:
           - region_names: ${jsonencode([for r, _ in regions : r])}
           - regions_by_model: ${jsonencode(regions_by_model)}
           - pipeline_state_url: "${pipeline_state_url}"
-          # Default fallbacks for pipeline-state response fields that may be
-          # omitted when a source/model/region isn't configured. The expression
-          # language doesn't accept inline map literals, so we pre-define them.
-          - default_ic:
-              present: true
+          - default_ic_download:
+              source: ""
               date: ""
-          - default_model_info:
+              missing: []
+          - default_model_action:
+              model: ""
               date: ""
-              complete: true
-          - default_region_block: {}
-          - default_blend_info:
+              regions: []
+          - default_region_action:
+              region: ""
               date: ""
-              present: false
-          - default_sync_info:
-              date: ""
-              needs_run: false
 
     - probe_state_initial:
         call: pipeline_state
@@ -51,81 +39,97 @@ main:
           date: $${requested_date}
         result: state
 
-    - extract_initial:
-        assign:
-          - ecmwf_state: $${default(map.get(state.ic, "ecmwf"), default_ic)}
-          - ncep_state: $${default(map.get(state.ic, "ncep"), default_ic)}
-
-    - log_initial_plan:
-        call: sys.log
-        args:
-          severity: INFO
-          text: $${"PS date=" + state.date + " ecmwf_date=" + ecmwf_state.date + " ecmwf_present=" + string(ecmwf_state.present) + " ncep_date=" + ncep_state.date + " ncep_present=" + string(ncep_state.present)}
-
     - maybe_return_checked:
         switch:
           - condition: $${action == "check"}
             next: return_checked
           - condition: true
-            next: maybe_download_ics
+            next: log_initial_plan
+
+    - log_initial_plan:
+        call: sys.log
+        args:
+          severity: INFO
+          text: $${"initial actions=" + json.encode_to_string(state.actions)}
 
     # -------------------------------------------------------------------------
-    # IC download (parallel; skipped per-branch when source not needed or
-    # already present in GCS)
+    # 1. Download missing ICs by source. A failed source logs an error and the
+    #    post-download state probe will keep dependent model work blocked.
     # -------------------------------------------------------------------------
-    - maybe_download_ics:
+    - download_ics:
         parallel:
           branches:
             - download_ecmwf:
                 steps:
-                  - check_ecmwf:
+                  - load_ecmwf_download:
+                      assign:
+                        - ecmwf_download: $${default(map.get(state.actions.ic_to_download_by_source, "ecmwf"), default_ic_download)}
+                  - maybe_download_ecmwf:
                       switch:
-                        - condition: $${ecmwf_state.present or not(ecmwf_state.date)}
+                        - condition: $${ecmwf_download.date == ""}
                           next: ecmwf_done
                         - condition: true
                           next: run_download_ecmwf
                   - run_download_ecmwf:
-                      call: googleapis.run.v2.projects.locations.jobs.run
-                      args:
-                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
-                        body:
-                          overrides:
-                            containerOverrides:
-                              - env:
-                                  - name: SOURCE
-                                    value: "ecmwf"
-                                  - name: DATE
-                                    value: $${ecmwf_state.date}
+                      try:
+                        call: googleapis.run.v2.projects.locations.jobs.run
+                        args:
+                          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
+                          body:
+                            overrides:
+                              containerOverrides:
+                                - env:
+                                    - name: SOURCE
+                                      value: "ecmwf"
+                                    - name: DATE
+                                      value: $${ecmwf_download.date}
+                      except:
+                        as: e
+                        steps:
+                          - log_ecmwf_download_failed:
+                              call: sys.log
+                              args:
+                                severity: ERROR
+                                text: $${"ecmwf download failed for " + ecmwf_download.date + ": " + json.encode_to_string(e)}
                   - ecmwf_done:
                       assign:
                         - ecmwf_branch_done: true
             - download_ncep:
                 steps:
-                  - check_ncep:
+                  - load_ncep_download:
+                      assign:
+                        - ncep_download: $${default(map.get(state.actions.ic_to_download_by_source, "ncep"), default_ic_download)}
+                  - maybe_download_ncep:
                       switch:
-                        - condition: $${ncep_state.present or not(ncep_state.date)}
+                        - condition: $${ncep_download.date == ""}
                           next: ncep_done
                         - condition: true
                           next: run_download_ncep
                   - run_download_ncep:
-                      call: googleapis.run.v2.projects.locations.jobs.run
-                      args:
-                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
-                        body:
-                          overrides:
-                            containerOverrides:
-                              - env:
-                                  - name: SOURCE
-                                    value: "ncep"
-                                  - name: DATE
-                                    value: $${ncep_state.date}
+                      try:
+                        call: googleapis.run.v2.projects.locations.jobs.run
+                        args:
+                          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
+                          body:
+                            overrides:
+                              containerOverrides:
+                                - env:
+                                    - name: SOURCE
+                                      value: "ncep"
+                                    - name: DATE
+                                      value: $${ncep_download.date}
+                      except:
+                        as: e
+                        steps:
+                          - log_ncep_download_failed:
+                              call: sys.log
+                              args:
+                                severity: ERROR
+                                text: $${"ncep download failed for " + ncep_download.date + ": " + json.encode_to_string(e)}
                   - ncep_done:
                       assign:
                         - ncep_branch_done: true
 
-    # -------------------------------------------------------------------------
-    # Re-probe state so post-IC view drives model launch decisions
-    # -------------------------------------------------------------------------
     - probe_state_post_ic:
         call: pipeline_state
         args:
@@ -133,94 +137,109 @@ main:
           date: $${requested_date}
         result: state_post_ic
 
-    - extract_post_ic:
-        assign:
-          - models_state: $${state_post_ic.models}
+    - log_post_ic_plan:
+        call: sys.log
+        args:
+          severity: INFO
+          text: $${"post-ic actions=" + json.encode_to_string(state_post_ic.actions)}
 
     # -------------------------------------------------------------------------
-    # Run models (parallel; one branch per model in use; per-branch skip when
-    # model already complete across all its regions)
+    # 2. Run each model at most once per IC date. Duplicate Batch job IDs mean
+    #    another workflow already started the same model/date, so poll it.
     # -------------------------------------------------------------------------
-    - maybe_run_models:
+    - run_models:
         parallel:
           branches:
 %{ for model in models_in_use ~}
             - run_${model}:
                 steps:
-                  - load_${model}_info:
+                  - load_${model}_action:
                       assign:
-                        - ${model}_info: $${default(map.get(models_state, "${model}"), default_model_info)}
+                        - ${model}_action: $${default(map.get(state_post_ic.actions.models_to_run_by_model, "${model}"), default_model_action)}
                   - maybe_skip_${model}:
                       switch:
-                        - condition: $${not(${model}_info.date) or ${model}_info.complete}
+                        - condition: $${${model}_action.date == ""}
                           next: ${model}_done
                         - condition: true
-                          next: submit_${model}_batch
+                          next: prepare_${model}_batch
+                  - prepare_${model}_batch:
+                      assign:
+                        - ${model}_job_id: $${"${replace(model, "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
+                        - ${model}_job_name: $${"projects/" + project_id + "/locations/${region}/jobs/" + ${model}_job_id}
                   - submit_${model}_batch:
-                      call: googleapis.batch.v1.projects.locations.jobs.create
-                      args:
-                        parent: $${"projects/" + project_id + "/locations/${region}"}
-                        jobId: $${"${model}-" + text.replace_all(${model}_info.date, "T", "-") + "-" + string(int(sys.now()))}
-                        body:
-                          taskGroups:
-                            - taskCount: 1
-                              taskSpec:
-                                computeResource:
-                                  cpuMilli: 8000
-                                  memoryMib: ${model == "aifs_ens" || model == "neuralgcm" ? 65536 : 32768}
-                                maxRetryCount: 1
-                                maxRunDuration: "${model == "aifs_ens" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
-                                runnables:
-                                  - container:
-                                      imageUri: "${model_images[model]}"
-                                      enableImageStreaming: ${batch_config.image_streaming}
-                                    environment:
-                                      variables:
-                                        DATE: $${${model}_info.date}
-                                        MODEL: "${model}"
-                                        FORECAST_REGIONS: ${jsonencode(jsonencode(regions_by_model[model]))}
-                                        GCS_COMMON_BUCKET: $${common_bucket}
-                                        GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
-                                        UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
-                          allocationPolicy:
-                            serviceAccount:
-                              email: "${pipeline_sa}"
-                            instances:
-                              - installGpuDrivers: true
-                                policy:
-                                  machineType: "${batch_config.machine_type}"
-                                  bootDisk:
-                                    image: "${batch_config.os_image}"
-                                    sizeGb: ${batch_config.boot_disk_gb}
-                                  provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
-                                  accelerators:
-                                    - type: "${batch_config.gpu_type}"
-                                      count: ${batch_config.gpu_count}
-                            location:
-                              allowedLocations: ["regions/${region}"]
-                            network:
-                              networkInterfaces:
-                                - network: "${batch_config.vpc_network}"
-                                  subnetwork: "${batch_config.vpc_subnet}"
-                                  noExternalIpAddress: true
-                          logsPolicy:
-                            destination: CLOUD_LOGGING
-                        connector_params:
-                          skip_polling: true
-                      result: ${model}_job
+                      try:
+                        call: googleapis.batch.v1.projects.locations.jobs.create
+                        args:
+                          parent: $${"projects/" + project_id + "/locations/${region}"}
+                          jobId: $${${model}_job_id}
+                          body:
+                            taskGroups:
+                              - taskCount: 1
+                                taskSpec:
+                                  computeResource:
+                                    cpuMilli: 8000
+                                    memoryMib: ${model == "aifs_ens" || model == "neuralgcm" ? 65536 : 32768}
+                                  maxRetryCount: 1
+                                  maxRunDuration: "${model == "aifs_ens" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
+                                  runnables:
+                                    - container:
+                                        imageUri: "${model_images[model]}"
+                                        enableImageStreaming: ${batch_config.image_streaming}
+                                      environment:
+                                        variables:
+                                          DATE: $${${model}_action.date}
+                                          MODEL: "${model}"
+                                          FORECAST_REGIONS: $${json.encode_to_string(${model}_action.regions)}
+                                          GCS_COMMON_BUCKET: $${common_bucket}
+                                          GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
+                                          UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
+                            allocationPolicy:
+                              serviceAccount:
+                                email: "${pipeline_sa}"
+                              instances:
+                                - installGpuDrivers: true
+                                  policy:
+                                    machineType: "${batch_config.machine_type}"
+                                    bootDisk:
+                                      image: "${batch_config.os_image}"
+                                      sizeGb: ${batch_config.boot_disk_gb}
+                                    provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
+                                    accelerators:
+                                      - type: "${batch_config.gpu_type}"
+                                        count: ${batch_config.gpu_count}
+                              location:
+                                allowedLocations: ["regions/${region}"]
+                              network:
+                                networkInterfaces:
+                                  - network: "${batch_config.vpc_network}"
+                                    subnetwork: "${batch_config.vpc_subnet}"
+                                    noExternalIpAddress: true
+                            logsPolicy:
+                              destination: CLOUD_LOGGING
+                          connector_params:
+                            skip_polling: true
+                      except:
+                        as: e
+                        steps:
+                          - handle_${model}_submit_error:
+                              switch:
+                                - condition: $${e.code == 409}
+                                  next: poll_${model}
+                                - condition: true
+                                  raise: $${e}
                   - poll_${model}:
                       steps:
                         - get_${model}_status:
                             call: googleapis.batch.v1.projects.locations.jobs.get
                             args:
-                              name: $${${model}_job.name}
+                              name: $${${model}_job_name}
                             result: ${model}_status
                         - check_${model}_state:
                             switch:
                               - condition: $${${model}_status.status.state == "SUCCEEDED"}
                                 next: ${model}_done
-                              - condition: $${${model}_status.status.state == "FAILED"}
-                                raise: '$${"${model} job failed " + ${model}_job.name}'
+                              - condition: $${${model}_status.status.state == "FAILED" or ${model}_status.status.state == "CANCELLED"}
+                                raise: '$${"${model} job did not complete successfully: " + ${model}_job_name + " state=" + ${model}_status.status.state}'
                         - sleep_${model}:
                             call: sys.sleep
                             args:
@@ -231,9 +250,6 @@ main:
                         - ${model}_branch_done: true
 %{ endfor ~}
 
-    # -------------------------------------------------------------------------
-    # Re-probe state for per-region downstream decisions
-    # -------------------------------------------------------------------------
     - probe_state_post_models:
         call: pipeline_state
         args:
@@ -241,33 +257,30 @@ main:
           date: $${requested_date}
         result: state_post_models
 
-    - extract_post_models:
-        assign:
-          - per_region: $${state_post_models.per_region}
-          - primary_date: $${state_post_models.date}
+    - log_post_model_plan:
+        call: sys.log
+        args:
+          severity: INFO
+          text: $${"post-model actions=" + json.encode_to_string(state_post_models.actions)}
 
     # -------------------------------------------------------------------------
-    # Per-region downstream stages (sequential; cheap enough that we don't
-    # need to parallelize across regions)
+    # 3. Blend any region/date whose configured model outputs are now present.
     # -------------------------------------------------------------------------
-    - per_region_loop:
+    - blend_loop:
         for:
           value: region_name
           in: $${region_names}
           steps:
-            - load_region_block:
+            - load_blend_action:
                 assign:
-                  - region_cfg: $${map.get(regions, region_name)}
-                  - region_block: $${default(map.get(per_region, region_name), default_region_block)}
-                  - blend_info: $${default(map.get(region_block, "blend"), default_blend_info)}
-                  - sync_info: $${default(map.get(region_block, "sync"), default_sync_info)}
-            - maybe_postprocess:
+                  - blend_action: $${default(map.get(state_post_models.actions.regions_to_blend_by_region, region_name), default_region_action)}
+            - maybe_blend:
                 switch:
-                  - condition: $${"blend" in region_cfg.stages or "sync" in region_cfg.stages}
-                    next: postprocess
+                  - condition: $${blend_action.date == ""}
+                    next: end_blend_iteration
                   - condition: true
-                    next: end_region_iteration
-            - postprocess:
+                    next: verify_before_blend
+            - verify_before_blend:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:
                   name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.postprocess.name}"
@@ -276,18 +289,11 @@ main:
                       containerOverrides:
                         - env:
                             - name: DATE
-                              value: $${primary_date}
+                              value: $${blend_action.date}
                             - name: FORECAST_REGION
                               value: $${region_name}
                             - name: GCS_COMMON_BUCKET
                               value: $${common_bucket}
-                result: postprocess_result
-            - maybe_blend:
-                switch:
-                  - condition: $${"blend" in region_cfg.stages and blend_info.date != "" and not(blend_info.present)}
-                    next: run_blend
-                  - condition: true
-                    next: maybe_sync
             - run_blend:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:
@@ -297,20 +303,42 @@ main:
                       containerOverrides:
                         - env:
                             - name: DATE
-                              value: $${blend_info.date}
+                              value: $${blend_action.date}
                             - name: FORECAST_REGION
                               value: $${region_name}
                             - name: GCS_COMMON_BUCKET
                               value: $${common_bucket}
                             - name: GCS_REGION_BUCKETS
                               value: $${json.encode_to_string(region_buckets)}
-                result: blend_result
+            - end_blend_iteration:
+                assign:
+                  - last_blend_region_checked: $${region_name}
+
+    - probe_state_post_blend:
+        call: pipeline_state
+        args:
+          base_url: $${pipeline_state_url}
+          date: $${requested_date}
+        result: state_post_blend
+
+    # -------------------------------------------------------------------------
+    # 4. Sync final regional outputs whose expected files are present.
+    # -------------------------------------------------------------------------
+    - sync_loop:
+        for:
+          value: region_name
+          in: $${region_names}
+          steps:
+            - load_sync_inputs:
+                assign:
+                  - region_cfg: $${map.get(regions, region_name)}
+                  - sync_action: $${default(map.get(state_post_blend.actions.regions_to_sync_by_region, region_name), default_region_action)}
             - maybe_sync:
                 switch:
-                  - condition: $${"sync" in region_cfg.stages and default(map.get(sync_info, "needs_run"), false)}
-                    next: run_sync
+                  - condition: $${sync_action.date == ""}
+                    next: end_sync_iteration
                   - condition: true
-                    next: end_region_iteration
+                    next: run_sync
             - run_sync:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:
@@ -320,23 +348,34 @@ main:
                       containerOverrides:
                         - env:
                             - name: DATE
-                              value: $${sync_info.date}
+                              value: $${sync_action.date}
                             - name: FORECAST_REGION
                               value: $${region_name}
                             - name: GCS_REGION_BUCKETS
                               value: $${json.encode_to_string(region_buckets)}
                             - name: SYNC_SPEC
                               value: $${json.encode_to_string(region_cfg.sync)}
-                result: sync_result
-            - end_region_iteration:
+            - end_sync_iteration:
                 assign:
-                  - last_region_processed: $${region_name}
+                  - last_sync_region_checked: $${region_name}
 
-    - return_result:
+    - maybe_return_partial:
+        switch:
+          - condition: $${len(state_post_blend.actions.blocked) > 0}
+            next: return_partial
+          - condition: true
+            next: return_completed
+
+    - return_completed:
         return:
           status: "completed"
-          date: $${primary_date}
-          regions: $${region_names}
+          state: $${state_post_blend}
+
+    - return_partial:
+        return:
+          status: "partial"
+          blocked: $${state_post_blend.actions.blocked}
+          state: $${state_post_blend}
 
     - return_checked:
         return:

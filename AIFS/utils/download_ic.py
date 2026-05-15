@@ -62,7 +62,7 @@ def get_url(date, stream):
     return f"{BASE_URL}{ymd}/{hh}z/ifs/0p25/{stream}/{ymd}{hh}0000-0h-{stream}-fc.grib2"
 
 
-def download_file(url, out_dir=GRIB_OUTPUT_DIR, max_retries=5, backoff_factor=3):
+def download_file(url, out_dir=GRIB_OUTPUT_DIR, max_retries=25, backoff_factor=2):
     out_dir.mkdir(parents=True, exist_ok=True)
 
     filename = url.rsplit("/", 1)[-1]

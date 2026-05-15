@@ -28,9 +28,11 @@ Response shape (sketch — actual contents depend on the configured regions):
       "ethiopia": {"sync":  {"present":true,"latest":"20260513T00","needs_run":false}}
     },
     "actions": {
-      "models_to_run": [...],
-      "regions_to_blend": [...],
-      "regions_to_sync": [...]
+      "ic_to_download": [{"source":"ecmwf","date":"20260513T00"}],
+      "models_to_run": [{"model":"aifs","date":"20260513T00","regions":["india"]}],
+      "regions_to_blend": [{"region":"india","date":"20260513T00"}],
+      "regions_to_sync": [{"region":"india","date":"20260513T00"}],
+      "blocked": [...]
     }
   }
 
@@ -201,8 +203,30 @@ def model_marker_path(model: str, region: str, date: str) -> str:
     return f"intermediate/{model}_{region}_{date}_done"
 
 
+def model_region_outputs_present(model: str, region: str, date: str) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return False
+
+    if model == "aifs" and region == "india":
+        return gcs_object_exists(bucket, f"output/aifs/{date}/tp/tp_2p0_{date}.nc")
+    if model == "aifs" and region == "ethiopia":
+        return gcs_prefix_has_objects(bucket, f"output/aifs/{date}/AIFS/")
+    if model == "aifs_ens" and region == "ethiopia":
+        return gcs_prefix_has_objects(bucket, f"output/aifs_ens/{date}/AIFS_ENS/")
+    if model == "neuralgcm" and region == "india":
+        return gcs_object_exists(bucket, f"output/neuralgcm/{date}/tp/tp_2p0_{date}.nc")
+    if model == "gencast":
+        return gcs_object_exists(bucket, f"output/gencast/{date}/init_{date}.nc")
+
+    return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/")
+
+
 def model_region_done(model: str, region: str, date: str) -> bool:
-    return gcs_object_exists(GCS_COMMON_BUCKET, model_marker_path(model, region, date))
+    return (
+        gcs_object_exists(GCS_COMMON_BUCKET, model_marker_path(model, region, date))
+        and model_region_outputs_present(model, region, date)
+    )
 
 
 def blend_present(region: str, date: str) -> bool:
@@ -272,9 +296,11 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             continue
         date_for_source = _ic_date_for_source(source, requested_date, lookback_days, today)
         ic_dates[source] = date_for_source
+        missing_paths = _missing_ic_paths(source, date_for_source) if date_for_source else []
         ic_state[source] = {
             "date": date_for_source,
-            "present": bool(date_for_source) and ic_present(source, date_for_source),
+            "present": bool(date_for_source) and not missing_paths,
+            "missing": missing_paths,
         }
 
     primary_date = requested_date or _primary_date(ic_dates)
@@ -283,13 +309,24 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
     for model in _models_in_use():
         source = MODEL_IC_SOURCE[model]
         model_date = ic_dates.get(source, "")
+        model_ic_present = bool(model_date) and ic_state.get(source, {}).get("present", False)
         region_results = {}
         for region in _regions_for_model(model):
             present = bool(model_date) and model_region_done(model, region, model_date)
-            region_results[region] = {"present": present, "date": model_date}
-        complete = bool(model_date) and all(r["present"] for r in region_results.values())
+            region_results[region] = {
+                "present": present,
+                "date": model_date,
+                "output_present": bool(model_date) and model_region_outputs_present(model, region, model_date),
+                "marker_present": bool(model_date) and gcs_object_exists(
+                    GCS_COMMON_BUCKET,
+                    model_marker_path(model, region, model_date),
+                ),
+            }
+        complete = model_ic_present and all(r["present"] for r in region_results.values())
         models_state[model] = {
             "date": model_date,
+            "ic_source": source,
+            "ic_present": model_ic_present,
             "complete": complete,
             "regions": region_results,
         }
@@ -314,7 +351,7 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             }
         per_region[region] = block
 
-    actions = _derive_actions(models_state, per_region)
+    actions = _derive_actions(ic_state, models_state, per_region)
 
     return {
         "date": primary_date,
@@ -329,6 +366,15 @@ def _primary_date(ic_dates: dict[str, str]) -> str:
     """Most workflows treat a single date as 'the' forecast date.
     Prefer NCEP (NeuralGCM-paced) when present; fall back to ECMWF."""
     return ic_dates.get("ncep") or ic_dates.get("ecmwf") or ""
+
+
+def _missing_ic_paths(source: str, date: str) -> list[str]:
+    if not date:
+        return []
+    paths = ic_ecmwf_paths(date) if source == "ecmwf" else ic_ncep_paths(date)
+    if source == "ecmwf":
+        paths.append(f"ic/gencast_sst/{date}/sst_{date}.nc")
+    return [p for p in paths if not gcs_object_exists(GCS_COMMON_BUCKET, p)]
 
 
 def _blend_date_for_region(region: str, models_state: dict) -> str:
@@ -384,27 +430,76 @@ def _sync_date_for_region(
     return ""
 
 
-def _derive_actions(models_state: dict, per_region: dict) -> dict:
+def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dict:
+    ic_to_download = []
+    ic_to_download_by_source = {}
+    blocked = []
+
+    for source, state in ic_state.items():
+        action = {"source": source, "date": "", "missing": []}
+        if not state.get("date"):
+            blocked.append({"type": "ic_unavailable", "source": source})
+        elif not state.get("present"):
+            action = {
+                "source": source,
+                "date": state["date"],
+                "missing": state.get("missing", []),
+            }
+            ic_to_download.append(action)
+        ic_to_download_by_source[source] = action
+
     models_to_run = []
+    models_to_run_by_model = {}
     for model, m in models_state.items():
+        action = {"model": model, "date": "", "regions": []}
         if not m["date"]:
+            blocked.append({"type": "model_blocked", "model": model, "reason": "ic_unavailable"})
+            models_to_run_by_model[model] = action
+            continue
+        if not m.get("ic_present"):
+            blocked.append({
+                "type": "model_blocked",
+                "model": model,
+                "date": m["date"],
+                "reason": "ic_missing",
+                "ic_source": m.get("ic_source", ""),
+            })
+            models_to_run_by_model[model] = action
             continue
         pending_regions = [r for r, info in m["regions"].items() if not info["present"]]
         if pending_regions:
-            models_to_run.append({"model": model, "date": m["date"], "regions": pending_regions})
+            action = {"model": model, "date": m["date"], "regions": pending_regions}
+            models_to_run.append(action)
+        models_to_run_by_model[model] = action
 
-    regions_to_blend = [
-        r for r, block in per_region.items()
-        if "blend" in block and block["blend"].get("date") and not block["blend"].get("present")
-    ]
-    regions_to_sync = [
-        r for r, block in per_region.items()
-        if "sync" in block and block["sync"].get("needs_run")
-    ]
+    regions_to_blend = []
+    regions_to_blend_by_region = {}
+    for region, block in per_region.items():
+        action = {"region": region, "date": ""}
+        if "blend" in block and block["blend"].get("date") and not block["blend"].get("present"):
+            action = {"region": region, "date": block["blend"]["date"]}
+            regions_to_blend.append(action)
+        regions_to_blend_by_region[region] = action
+
+    regions_to_sync = []
+    regions_to_sync_by_region = {}
+    for region, block in per_region.items():
+        action = {"region": region, "date": ""}
+        if "sync" in block and block["sync"].get("needs_run"):
+            action = {"region": region, "date": block["sync"]["date"]}
+            regions_to_sync.append(action)
+        regions_to_sync_by_region[region] = action
+
     return {
+        "ic_to_download": ic_to_download,
+        "ic_to_download_by_source": ic_to_download_by_source,
         "models_to_run": models_to_run,
+        "models_to_run_by_model": models_to_run_by_model,
         "regions_to_blend": regions_to_blend,
+        "regions_to_blend_by_region": regions_to_blend_by_region,
         "regions_to_sync": regions_to_sync,
+        "regions_to_sync_by_region": regions_to_sync_by_region,
+        "blocked": blocked,
     }
 
 

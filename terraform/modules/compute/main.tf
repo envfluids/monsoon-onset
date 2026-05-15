@@ -32,6 +32,9 @@ locals {
       memory  = "4Gi"
       cpu     = "2"
       timeout = "900s"
+      # Optional env-var names to mount from Secret Manager when supplied in
+      # var.external_api_secrets.
+      secrets = ["ECMWF_API_KEY", "ECMWF_API_URL"]
     }
     postprocess = {
       name    = "${var.name_prefix}-${var.environment}-postprocess"
@@ -39,6 +42,7 @@ locals {
       memory  = "16Gi"
       cpu     = "4"
       timeout = "1800s"
+      secrets = []
     }
     blend = {
       name    = "${var.name_prefix}-${var.environment}-blend"
@@ -46,6 +50,7 @@ locals {
       memory  = "8Gi"
       cpu     = "4"
       timeout = "1800s"
+      secrets = []
     }
     sync = {
       name    = "${var.name_prefix}-${var.environment}-sync"
@@ -53,8 +58,66 @@ locals {
       memory  = "1Gi"
       cpu     = "1"
       timeout = "600s"
+      secrets = []
     }
   }
+
+  # Env-var name → Secret Manager secret_id (lower-kebab-case).
+  # Keys are non-sensitive (only the values in var.external_api_secrets are);
+  # nonsensitive() unwraps the keyset so it can be used as for_each below.
+  external_secret_names = nonsensitive(toset(keys(var.external_api_secrets)))
+
+  secret_id_for_env = {
+    for name in local.external_secret_names : name => lower(replace(name, "_", "-"))
+  }
+
+  cloud_run_service_secret_ids = {
+    for name, service in local.cloud_run_services :
+    name => {
+      for secret_name in service.secrets :
+      secret_name => lookup(local.secret_id_for_env, secret_name, null)
+      if contains(local.external_secret_names, secret_name)
+    }
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Secret Manager — one secret + version per entry in external_api_secrets.
+# Values come from a sensitive terraform variable; only the digest of the
+# version lives in state.
+# -----------------------------------------------------------------------------
+
+resource "google_secret_manager_secret" "external_api" {
+  for_each = local.external_secret_names
+
+  project   = var.project_id
+  secret_id = local.secret_id_for_env[each.key]
+
+  # Org policy `constraints/gcp.resourceLocations` blocks `global` replication;
+  # pin to the same region as the rest of the pipeline.
+  replication {
+    user_managed {
+      replicas {
+        location = var.region
+      }
+    }
+  }
+}
+
+resource "google_secret_manager_secret_version" "external_api" {
+  for_each = local.external_secret_names
+
+  secret      = google_secret_manager_secret.external_api[each.key].id
+  secret_data = var.external_api_secrets[each.key]
+}
+
+resource "google_secret_manager_secret_iam_member" "pipeline_secret_accessor" {
+  for_each = google_secret_manager_secret.external_api
+
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${var.service_account_email}"
 }
 
 # -----------------------------------------------------------------------------
@@ -68,6 +131,14 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
   project             = var.project_id
   location            = var.region
   deletion_protection = var.environment != "dev"
+
+  # Ensure secrets, versions, and IAM bindings exist before the job revision
+  # tries to mount them — Cloud Run validates secret access at revision-create
+  # time and rejects the update if IAM hasn't propagated yet.
+  depends_on = [
+    google_secret_manager_secret_version.external_api,
+    google_secret_manager_secret_iam_member.pipeline_secret_accessor,
+  ]
 
   template {
     template {
@@ -104,6 +175,19 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
         env {
           name  = "PROJECT_ID"
           value = var.project_id
+        }
+
+        dynamic "env" {
+          for_each = local.cloud_run_service_secret_ids[each.key]
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
+            }
+          }
         }
 
         # FORECAST_REGION, FORECAST_REGIONS, SYNC_SPEC, DATE, etc. are set per-execution

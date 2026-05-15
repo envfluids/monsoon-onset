@@ -34,6 +34,13 @@ variable "region" {
   default     = "us-central1"
 }
 
+variable "external_api_secrets" {
+  description = "Map of env-var name → secret value for external APIs (e.g., ECMWF MARS). Pass via TF_VAR_external_api_secrets or a gitignored *.tfvars file."
+  type        = map(string)
+  default     = {}
+  sensitive   = true
+}
+
 locals {
   environment = "dev"
 
@@ -133,6 +140,8 @@ module "compute" {
   region_buckets        = module.storage.region_bucket_names
   service_account_email = module.storage.pipeline_service_account_email
 
+  external_api_secrets = var.external_api_secrets
+
   # Dev: use spot GPUs for model Batch jobs
   use_preemptible_gpu = true
 
@@ -168,11 +177,12 @@ module "orchestration" {
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
-  cloud_run_services     = module.compute.cloud_run_services
-  pipeline_state_service = module.compute.pipeline_state_service
-  batch_job_template     = module.compute.batch_job_template
-  common_bucket          = module.storage.common_bucket_name
-  region_buckets         = module.storage.region_bucket_names
+  cloud_run_services          = module.compute.cloud_run_services
+  pipeline_state_service_name = module.compute.pipeline_state_service_name
+  pipeline_state_url          = module.compute.pipeline_state_url
+  batch_job_template          = module.compute.batch_job_template
+  common_bucket               = module.storage.common_bucket_name
+  region_buckets              = module.storage.region_bucket_names
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email

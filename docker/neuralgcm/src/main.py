@@ -72,7 +72,7 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
 
 def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
     _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
-    logger.info(f"Wrote to gs://{bucket_name}/{gcs_path}")
+    logger.info(f"Wrote to gs://{bucket_name}/{gcs_path}: {content!r}")
 
 
 # ---------------------------------------------------------------------------
