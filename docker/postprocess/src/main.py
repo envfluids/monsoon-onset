@@ -6,15 +6,12 @@ AIFS and NeuralGCM each run their own post-processing as part of their container
 so this step is purely a gate check.
 
 Environment Variables:
-    DATE            : NeuralGCM date YYYYMMDDTHH
-    FORECAST_REGION : e.g. 'india'
+    DATE            : Forecast init date YYYYMMDDTHH
+    FORECAST_REGION : e.g. 'india' or 'ethiopia'
     GCS_BUCKET      : Region data bucket
-    GCS_COMMON_BUCKET : Common data bucket for shared markers
 """
 
 import logging
-import os
-from datetime import datetime, timedelta
 
 import click
 from google.cloud import storage
@@ -27,22 +24,18 @@ LOG_FORMAT = (
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-def required_output_paths(region: str, date: str, aifs_date: str) -> list[str]:
+def required_output_paths(region: str, date: str) -> list[str]:
     if region == "ethiopia":
         return [
-            f"output/aifs/{aifs_date}/ethiopia/AIFS/tp/tp_0p25_{aifs_date}.nc",
-            f"output/aifs_ens/{aifs_date}/ethiopia/AIFS_ENS/tp/tp_0p25_{aifs_date}.nc",
+            f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc",
+            f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc",
         ]
     if region == "india":
         return [
-            f"output/aifs/{aifs_date}/india/tp/tp_0p25_{aifs_date}.nc",
+            f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
             f"output/ncum/{date}/precipitation_amount/precipitation_amount_{date}.nc",
         ]
     return []
-
-
-def _read_gcs_text(bucket_name: str, gcs_path: str) -> str:
-    return storage.Client().bucket(bucket_name).blob(gcs_path).download_as_text().strip()
 
 
 def _blob_exists(bucket_name: str, gcs_path: str) -> bool:
@@ -54,17 +47,8 @@ def _blob_exists(bucket_name: str, gcs_path: str) -> bool:
 @click.option("--region", envvar="FORECAST_REGION", default="india")
 @click.option("--bucket", envvar="GCS_BUCKET",      required=True)
 def main(date, region, bucket):
-    common_bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
-    # Determine the AIFS IC date (12h before NeuralGCM date)
-    try:
-        ecmwf_date = _read_gcs_text(common_bucket, "intermediate/latest_ecmwf_date.txt")
-        logger.info(f"ECMWF date from GCS: {ecmwf_date}")
-    except Exception:
-        ecmwf_date = (datetime.strptime(date, "%Y%m%dT%H") - timedelta(hours=12)).strftime("%Y%m%dT%H")
-        logger.warning(f"Could not read latest_ecmwf_date.txt; using computed aifs_date={ecmwf_date}")
-
     missing = []
-    required_paths = required_output_paths(region, date, ecmwf_date)
+    required_paths = required_output_paths(region, date)
     if not required_paths:
         raise RuntimeError(f"No blend input requirements are configured for region={region!r}")
 

@@ -41,7 +41,7 @@ jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
-N_MEMBERS = 4
+N_MEMBERS = 24
 N_DAYS = 50
 N_STEPS = N_DAYS * 2 # 2 steps per day (12h interval)
 
