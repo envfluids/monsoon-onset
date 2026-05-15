@@ -122,3 +122,26 @@ variable "batch_job_template" {
     vpc_subnet      = string
   })
 }
+
+variable "gencast_tpu_template" {
+  description = "Cloud TPU queued resource template for GenCast inference"
+  type = object({
+    zone                   = string
+    runtime_version        = string
+    accelerator_type       = string
+    accelerator_name       = string
+    topology               = string
+    machine_type           = string
+    global_device_count    = number
+    local_device_count     = number
+    process_count          = number
+    request_valid_duration = string
+    poll_interval_seconds  = number
+    max_polls              = number
+    image                  = string
+    artifact_registry_host = string
+    vpc_network            = string
+    vpc_subnet             = string
+    enable_external_ips    = bool
+  })
+}

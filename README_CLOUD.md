@@ -117,10 +117,11 @@ The identity used by Cloud Workflows and Cloud Scheduler to invoke jobs and writ
 |------|-------|---------|
 | `roles/run.developer` | Project | Invoke and run Cloud Run Jobs with overrides |
 | `roles/batch.jobsEditor` | Project | Submit and poll Cloud Batch model jobs |
+| `roles/tpu.admin` | Project | Submit, poll, and delete GenCast TPU queued resources |
 | `roles/workflows.invoker` | Project | Allow Cloud Scheduler to trigger workflow executions |
 | `roles/logging.logWriter` | Project | Write `sys.log` entries from the workflow |
 | `roles/storage.objectAdmin` | Common and regional data buckets | Read and write lightweight workflow marker objects |
-| `roles/iam.serviceAccountUser` | Pipeline SA | Attach the pipeline SA to Cloud Run and Batch jobs |
+| `roles/iam.serviceAccountUser` | Pipeline SA | Attach the pipeline SA to Cloud Run, Batch, and TPU jobs |
 
 **`monsoon-{env}-pipeline`** (storage module)
 The identity used by all Cloud Run Job containers at runtime.
@@ -207,7 +208,7 @@ If all forecasts that can run are already complete, the workflow skips directly 
 
 ### 6. run_models (parallel)
 
-**Service: Cloud Batch and Cloud Run Jobs** - AIFS and NeuralGCM branches run concurrently. Each branch downloads missing ICs before launching its model job.
+**Service: Cloud Batch, Cloud TPU, and Cloud Run Jobs** - AIFS, NeuralGCM, and GenCast branches run concurrently after their ICs are present.
 
 **Branch A - run_aifs:**
 
@@ -229,7 +230,7 @@ It also writes the actual ECMWF date to:
 gs://{common_bucket}/intermediate/latest_ecmwf_date.txt
 ```
 
-After ICs are present, the branch creates separate Cloud Batch jobs for deterministic AIFS and, where that region requires it, AIFS-ENS.
+After ICs are present, the workflow creates separate Cloud Batch jobs for deterministic AIFS and, where a region requires it, AIFS-ENS. GenCast uses the same ECMWF IC source but runs on a TPU queued resource instead of the GPU Batch path.
 
 **Branch B - run_neuralgcm:**
 
@@ -300,6 +301,17 @@ The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
 9. Writes a completion marker: `gs://{common_bucket}/intermediate/neuralgcm_{date}_done`
 
 The workflow polls every 120 seconds (longer than AIFS because NeuralGCM takes more time).
+
+**GenCast TPU queued resource:**
+
+GenCast runs on a TPU v5p-32 slice with topology `2x4x4`. The default zone is `us-central1-a`; set `gencast_tpu_zone = "us-east5-a"` to move TPU capacity east. If the TPU zone is outside the primary region, Terraform creates a matching regional subnet and NAT on the existing VPC.
+
+The workflow submits one queued resource per GenCast date, using a stable ID `gencast-{date}`. Duplicate submissions poll the existing queued resource. The startup script runs the GenCast container on every TPU VM host with JAX distributed initialization enabled. `run_gencast.py` logs and validates:
+- global device count: `32`
+- local device count per TPU VM: `4`
+- process count: `8`
+
+Only JAX process 0 uploads full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts.
 
 ### 7. postprocess
 

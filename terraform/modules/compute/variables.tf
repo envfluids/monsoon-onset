@@ -37,6 +37,12 @@ variable "vpc_subnetwork" {
   type        = string
 }
 
+variable "tpu_vpc_subnetwork" {
+  description = "VPC subnetwork ID for TPU VM jobs. Defaults to vpc_subnetwork when empty."
+  type        = string
+  default     = ""
+}
+
 # -----------------------------------------------------------------------------
 # Forecast regions
 # -----------------------------------------------------------------------------
@@ -183,4 +189,72 @@ variable "batch_enable_image_streaming" {
   description = "Enable Cloud Batch image streaming for model container runnables stored in Artifact Registry."
   type        = bool
   default     = false
+}
+
+# -----------------------------------------------------------------------------
+# GenCast TPU Configuration
+# -----------------------------------------------------------------------------
+
+variable "gencast_tpu_zone" {
+  description = "Zone for GenCast TPU queued resources. v5p is available in us-central1-a and us-east5-a."
+  type        = string
+  default     = "us-central1-a"
+
+  validation {
+    condition     = contains(["us-central1-a", "us-east5-a"], var.gencast_tpu_zone)
+    error_message = "GenCast TPU v5p jobs should use us-central1-a by default or us-east5-a when explicitly moving TPU capacity east."
+  }
+}
+
+variable "gencast_tpu_runtime_version" {
+  description = "Cloud TPU VM runtime for GenCast"
+  type        = string
+  default     = "tpu-ubuntu2204-base"
+}
+
+variable "gencast_tpu_topology" {
+  description = "GenCast TPU v5p topology (product = chip count). v5p-32 is 16 chips on 2x2x4."
+  type        = string
+  default     = "2x2x4"
+
+  validation {
+    condition     = var.gencast_tpu_topology == "2x2x4"
+    error_message = "GenCast is configured for a TPU v5p-32 slice (16 chips), which uses 2x2x4 topology."
+  }
+}
+
+variable "gencast_tpu_global_device_count" {
+  description = "Expected global TPU devices visible to GenCast after JAX distributed initialization. Equals the topology chip count."
+  type        = number
+  default     = 16
+}
+
+variable "gencast_tpu_local_device_count" {
+  description = "Expected local TPU devices visible per v5p TPU VM (ct5p-hightpu-4t serves 4 chips per host)"
+  type        = number
+  default     = 4
+}
+
+variable "gencast_tpu_process_count" {
+  description = "Expected number of TPU VM hosts for the GenCast v5p slice (chip count / 4)"
+  type        = number
+  default     = 4
+}
+
+variable "gencast_tpu_request_valid_duration" {
+  description = "How long a GenCast TPU queued resource request may wait for capacity before failing"
+  type        = string
+  default     = "14400s"
+}
+
+variable "gencast_tpu_poll_interval_seconds" {
+  description = "Workflow polling interval for GenCast TPU output completion"
+  type        = number
+  default     = 300
+}
+
+variable "gencast_tpu_max_polls" {
+  description = "Maximum workflow polls before GenCast TPU execution is treated as failed"
+  type        = number
+  default     = 96
 }

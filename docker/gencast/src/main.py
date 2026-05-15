@@ -118,7 +118,17 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field, graphc
     _setup_directories()
     _download_static_assets(graphcast_bucket)
     _download_inputs(date, common_bucket)
-    _run_inference(date)
+    run_metadata = _run_inference(date)
+
+    process_index = int(run_metadata.get("process_index", 0))
+    process_count = int(run_metadata.get("process_count", 1))
+    if process_index != 0:
+        logger.info(
+            "GenCast JAX process %s/%s completed inference; process 0 publishes GCS outputs.",
+            process_index,
+            process_count,
+        )
+        return
 
     if upload_full_field:
         _upload_full_field(date, common_bucket)
@@ -182,44 +192,45 @@ def _expected_ecmwf_grib_names(date: str) -> list[str]:
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def _run_inference(date: str) -> None:
+def _run_inference(date: str) -> dict[str, object]:
     env = {**os.environ, "PYTHONPATH": str(GENCAST_UTILS)}
     logger.info("Running GenCast run_gencast.py for %s", date)
-    _log_gpu_runtime(env)
+    _log_jax_runtime(env)
     subprocess.run(
         [sys.executable, "run_gencast.py", "--date", date],
         cwd=GENCAST_UTILS, check=True, env=env,
     )
+    return _read_run_metadata(date)
 
 
-def _log_gpu_runtime(env: dict[str, str]) -> None:
-    checks = [
-        ["nvidia-smi"],
+def _log_jax_runtime(env: dict[str, str]) -> None:
+    result = subprocess.run(
         [
             sys.executable,
             "-c",
-            (
-                "import jax; "
-                "print('jax', jax.__version__); "
-                "print('backend', jax.default_backend()); "
-                "print('devices', jax.devices())"
-            ),
+            "import jax; print('jax', jax.__version__)",
         ],
-    ]
-    for command in checks:
-        result = subprocess.run(
-            command,
-            cwd=GENCAST_UTILS,
-            env=env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
-        logger.info("%s exited %s", " ".join(command), result.returncode)
-        if result.stdout:
-            logger.info("%s stdout:\n%s", command[0], result.stdout)
-        if result.stderr:
-            logger.warning("%s stderr:\n%s", command[0], result.stderr)
+        cwd=GENCAST_UTILS,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    logger.info("JAX version probe exited %s", result.returncode)
+    if result.stdout:
+        logger.info("JAX version probe stdout:\n%s", result.stdout)
+    if result.stderr:
+        logger.warning("JAX version probe stderr:\n%s", result.stderr)
+
+
+def _read_run_metadata(date: str) -> dict[str, object]:
+    metadata_path = GENCAST_UTILS.parent / "raw" / "output" / f"run_metadata_{date}.json"
+    if not metadata_path.exists():
+        raise RuntimeError(f"Expected GenCast run metadata is missing: {metadata_path}")
+    with metadata_path.open() as f:
+        metadata = json.load(f)
+    logger.info("GenCast run metadata: %s", metadata)
+    return metadata
 
 
 def _upload_full_field(date: str, common_bucket: str) -> None:

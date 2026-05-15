@@ -3,6 +3,13 @@
 # Creates VPC, subnets, Cloud NAT, and firewall rules
 # -----------------------------------------------------------------------------
 
+locals {
+  internal_source_ranges = concat(
+    [var.subnet_cidr],
+    [for _, subnet in var.additional_subnets : subnet.cidr],
+  )
+}
+
 # -----------------------------------------------------------------------------
 # VPC
 # -----------------------------------------------------------------------------
@@ -41,6 +48,24 @@ resource "google_compute_subnetwork" "main" {
   }
 }
 
+resource "google_compute_subnetwork" "additional" {
+  for_each = var.additional_subnets
+
+  name          = "${var.name_prefix}-${var.environment}-${each.key}-subnet"
+  project       = var.project_id
+  region        = each.value.region
+  network       = google_compute_network.main.id
+  ip_cidr_range = each.value.cidr
+
+  private_ip_google_access = true
+
+  log_config {
+    aggregation_interval = "INTERVAL_5_SEC"
+    flow_sampling        = 0.5
+    metadata             = "INCLUDE_ALL_METADATA"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Cloud NAT
 # Enables outbound internet access for resources without public IPs
@@ -58,6 +83,32 @@ resource "google_compute_router_nat" "main" {
   project = var.project_id
   region  = var.region
   router  = google_compute_router.main.name
+
+  nat_ip_allocate_option             = "AUTO_ONLY"
+  source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
+
+  log_config {
+    enable = true
+    filter = "ERRORS_ONLY"
+  }
+}
+
+resource "google_compute_router" "additional" {
+  for_each = var.additional_subnets
+
+  name    = "${var.name_prefix}-${var.environment}-${each.key}-router"
+  project = var.project_id
+  region  = each.value.region
+  network = google_compute_network.main.id
+}
+
+resource "google_compute_router_nat" "additional" {
+  for_each = var.additional_subnets
+
+  name    = "${var.name_prefix}-${var.environment}-${each.key}-nat"
+  project = var.project_id
+  region  = each.value.region
+  router  = google_compute_router.additional[each.key].name
 
   nat_ip_allocate_option             = "AUTO_ONLY"
   source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"
@@ -92,7 +143,7 @@ resource "google_compute_firewall" "allow_internal" {
     protocol = "icmp"
   }
 
-  source_ranges = [var.subnet_cidr]
+  source_ranges = local.internal_source_ranges
 }
 
 # Allow SSH from IAP (Identity-Aware Proxy) for secure access
@@ -130,4 +181,3 @@ resource "google_compute_firewall" "allow_health_checks" {
 
   target_tags = ["allow-health-check"]
 }
-

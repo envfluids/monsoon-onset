@@ -34,7 +34,7 @@ locals {
       timeout = "900s"
       # Optional env-var names to mount from Secret Manager when supplied in
       # var.external_api_secrets.
-      secrets = ["ECMWF_API_KEY", "ECMWF_API_URL"]
+      secrets = ["ECMWF_API_KEY", "ECMWF_API_URL", "ECMWF_API_EMAIL"]
     }
     postprocess = {
       name    = "${var.name_prefix}-${var.environment}-postprocess"
@@ -201,6 +201,24 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
     }
 
     task_count = 1
+
+    # Force a new revision when any mounted secret version or its IAM grant
+    # changes. Without this Cloud Run never re-evaluates the Ready condition
+    # because the job spec itself is unchanged.
+    labels = {
+      secret-deps-hash = sha1(jsonencode([
+        for env_name, secret_id in local.cloud_run_service_secret_ids[each.key] : {
+          version_name = try(
+            google_secret_manager_secret_version.external_api[env_name].name,
+            ""
+          )
+          iam_etag = try(
+            google_secret_manager_secret_iam_member.pipeline_secret_accessor[env_name].etag,
+            ""
+          )
+        }
+      ]))
+    }
   }
 
   labels = {

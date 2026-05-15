@@ -47,8 +47,32 @@ variable "external_api_secrets" {
   sensitive   = true
 }
 
+variable "gencast_tpu_zone" {
+  description = "Zone for GenCast TPU v5p jobs. Defaults to us-central1-a; set to us-east5-a if TPU capacity is moved east."
+  type        = string
+  default     = "us-central1-a"
+
+  validation {
+    condition     = contains(["us-central1-a", "us-east5-a"], var.gencast_tpu_zone)
+    error_message = "GenCast TPU v5p jobs should use us-central1-a or us-east5-a."
+  }
+}
+
+variable "gencast_tpu_subnet_cidr" {
+  description = "CIDR for the optional GenCast TPU subnet when gencast_tpu_zone is outside the primary region"
+  type        = string
+  default     = "10.16.0.0/20"
+}
+
 locals {
-  environment = "prod"
+  environment        = "prod"
+  gencast_tpu_region = regex("^(.+)-[a-z]$", var.gencast_tpu_zone)[0]
+  additional_subnets = local.gencast_tpu_region == var.region ? {} : {
+    gencast-tpu = {
+      region = local.gencast_tpu_region
+      cidr   = var.gencast_tpu_subnet_cidr
+    }
+  }
 
   regions = {
     india = {
@@ -106,6 +130,8 @@ module "networking" {
   project_id  = var.project_id
   region      = var.region
   environment = local.environment
+
+  additional_subnets = local.additional_subnets
 }
 
 # -----------------------------------------------------------------------------
@@ -150,6 +176,8 @@ module "compute" {
 
   # Prod: on-demand GPUs for reliability
   use_preemptible_gpu = false
+  gencast_tpu_zone    = var.gencast_tpu_zone
+  tpu_vpc_subnetwork  = module.networking.subnetwork_ids_by_region[local.gencast_tpu_region]
 
   # Container images — pulled from Artifact Registry created by storage module
   downloader_image     = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
@@ -185,6 +213,7 @@ module "orchestration" {
   pipeline_state_service_name = module.compute.pipeline_state_service_name
   pipeline_state_url          = module.compute.pipeline_state_url
   batch_job_template          = module.compute.batch_job_template
+  gencast_tpu_template        = module.compute.gencast_tpu_template
   common_bucket               = module.storage.common_bucket_name
   region_buckets              = module.storage.region_bucket_names
 

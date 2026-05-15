@@ -1,14 +1,15 @@
 # -----------------------------------------------------------------------------
 # Monsoon GenCast
-# GenCast model inference (JAX + GPU)
-# Target: Cloud Batch
+# GenCast model inference (JAX + TPU)
+# Target: Cloud TPU VM queued resource
 # -----------------------------------------------------------------------------
 
-FROM nvcr.io/nvidia/jax:26.03-py3
+FROM python:3.11-slim
 
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
     libeccodes-dev \
     libeccodes-tools \
     cdo \

@@ -17,6 +17,14 @@ output "subnetwork_id" {
   value       = google_compute_subnetwork.main.id
 }
 
+output "subnetwork_ids_by_region" {
+  description = "Subnetwork IDs keyed by region, including optional regional subnets"
+  value = merge(
+    { (var.region) = google_compute_subnetwork.main.id },
+    { for _, subnet in google_compute_subnetwork.additional : subnet.region => subnet.id },
+  )
+}
+
 output "subnetwork_name" {
   description = "Subnetwork name"
   value       = google_compute_subnetwork.main.name

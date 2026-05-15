@@ -29,3 +29,11 @@ variable "subnet_cidr" {
   default     = "10.0.0.0/20"
 }
 
+variable "additional_subnets" {
+  description = "Additional regional subnets to create on the same VPC, keyed by logical name"
+  type = map(object({
+    region = string
+    cidr   = string
+  }))
+  default = {}
+}

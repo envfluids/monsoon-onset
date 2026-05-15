@@ -41,3 +41,26 @@ output "batch_job_template" {
     vpc_subnet      = var.vpc_subnetwork
   }
 }
+
+output "gencast_tpu_template" {
+  description = "Cloud TPU queued resource template for GenCast inference"
+  value = {
+    zone                   = var.gencast_tpu_zone
+    runtime_version        = var.gencast_tpu_runtime_version
+    accelerator_type       = "V5P"
+    accelerator_name       = "v5p-32"
+    topology               = var.gencast_tpu_topology
+    machine_type           = "ct5p-hightpu-4t"
+    global_device_count    = var.gencast_tpu_global_device_count
+    local_device_count     = var.gencast_tpu_local_device_count
+    process_count          = var.gencast_tpu_process_count
+    request_valid_duration = var.gencast_tpu_request_valid_duration
+    poll_interval_seconds  = var.gencast_tpu_poll_interval_seconds
+    max_polls              = var.gencast_tpu_max_polls
+    image                  = var.gencast_image
+    artifact_registry_host = split("/", var.gencast_image)[0]
+    vpc_network            = var.vpc_id
+    vpc_subnet             = var.tpu_vpc_subnetwork != "" ? var.tpu_vpc_subnetwork : var.vpc_subnetwork
+    enable_external_ips    = false
+  }
+}

@@ -1,0 +1,54 @@
+# Maps each container image to the source paths whose changes should trigger
+# a rebuild. Paths ending with "/" are prefixes (any file under that tree
+# matches); paths without a trailing slash must match a file exactly.
+#
+# Consumed by scripts/cloudbuild_detect_targets.py during Cloud Build runs to
+# produce a /workspace/targets file that gates the per-image build/push steps
+# in cloudbuild.yaml.
+#
+# When in doubt, list a path under more than one image — over-building is
+# cheaper than skipping an image whose source actually changed.
+
+images:
+  downloader:
+    - docker/downloader/
+    - AIFS/utils/download_ic.py
+    - NeuralGCM/utils/download_ncep.py
+    - gencast/utils/download_sst.py
+
+  pipeline-state:
+    - docker/pipeline-state/
+
+  sync:
+    - docker/sync/
+    - sync/utils/
+    - sync/config/
+
+  blend:
+    - docker/blend/
+    - blend/utils/
+
+  postprocess:
+    - docker/postprocess/
+
+  aifs:
+    - docker/aifs/
+    - AIFS/utils/
+    - AIFS/grids/
+    - AIFS/data/
+
+  neuralgcm:
+    - docker/neuralgcm/
+    - NeuralGCM/utils/
+    - NeuralGCM/grids/
+
+  gencast:
+    - docker/gencast/
+    - gencast/utils/
+    - gencast/data/
+
+# Any change to these paths rebuilds every image.
+global:
+  - cloudbuild.yaml
+  - .image-deps.yaml
+  - scripts/cloudbuild_detect_targets.py
