@@ -83,6 +83,14 @@ steps:
       - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest || true
     waitFor: ["-"]
 
+  - id: pull-cache-gencast
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest || true
+    waitFor: ["-"]
+
   - id: build-downloader
     name: gcr.io/cloud-builders/docker
     env: ["DOCKER_BUILDKIT=1"]
@@ -213,6 +221,24 @@ steps:
       - .
     waitFor: [pull-cache-neuralgcm]
 
+  - id: build-gencast
+    name: gcr.io/cloud-builders/docker
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - build
+      - --cache-from
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest
+      - --build-arg
+      - BUILDKIT_INLINE_CACHE=1
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:${_SHORT_SHA}
+      - -t
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest
+      - -f
+      - docker/gencast/Dockerfile
+      - .
+    waitFor: [pull-cache-gencast]
+
   # -----------------------------------------------------------------------------
   # Push all images
   # -----------------------------------------------------------------------------
@@ -273,6 +299,14 @@ steps:
       - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm
     waitFor: [build-neuralgcm]
 
+  - id: push-gencast
+    name: gcr.io/cloud-builders/docker
+    args:
+      - push
+      - --all-tags
+      - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast
+    waitFor: [build-gencast]
+
 images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest
@@ -288,5 +322,7 @@ images:
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:${_SHORT_SHA}
   - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:${_SHORT_SHA}
+  - ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest
 
 timeout: 3600s  # 1 hour max
