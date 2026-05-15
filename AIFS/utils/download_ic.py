@@ -15,10 +15,12 @@ logging.basicConfig(
     ),
 )
 
-BASE_URL = "https://data.ecmwf.int/forecasts/"
+ECMWF_BASE_URL = "https://data.ecmwf.int/forecasts/"
+GOOGLE_BASE_URL = "https://storage.googleapis.com/ecmwf-open-data/"
 
 DATE_SOURCE = "aws"
 STREAMS = ["oper"]
+RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
 BASE = Path(__file__).resolve().parent.parent
 
@@ -56,16 +58,54 @@ def check_new_data(date_str=None):
     return date
 
 
-def get_url(date, stream):
+def get_grib_filename(date, stream):
     ymd = date.strftime("%Y%m%d")
     hh = date.strftime("%H")
-    return f"{BASE_URL}{ymd}/{hh}z/ifs/0p25/{stream}/{ymd}{hh}0000-0h-{stream}-fc.grib2"
+    return f"{ymd}{hh}0000-0h-{stream}-fc.grib2"
 
 
-def download_file(url, out_dir=GRIB_OUTPUT_DIR, max_retries=5, backoff_factor=3):
+def get_url(date, stream, source="google"):
+    ymd = date.strftime("%Y%m%d")
+    hh = date.strftime("%H")
+    filename = get_grib_filename(date, stream)
+    path = f"{ymd}/{hh}z/ifs/0p25/{stream}/{filename}"
+    if source == "google":
+        return f"{GOOGLE_BASE_URL}{path}"
+    if source == "ecmwf":
+        return f"{ECMWF_BASE_URL}{path}"
+    raise ValueError(f"Unknown ECMWF GRIB source: {source}")
+
+
+def get_urls(date, stream):
+    return [get_url(date, stream, source) for source in ("google", "ecmwf")]
+
+
+def _cleanup_tmp(tmp_path):
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+
+def _sleep_before_retry(url, status_code, attempt, max_retries, backoff_factor):
+    sleep_seconds = backoff_factor * (2**attempt)
+    logging.warning(
+        "Download failed for %s with HTTP %s. Retrying in %s seconds "
+        "(attempt %s of %s).",
+        url,
+        status_code,
+        sleep_seconds,
+        attempt + 1,
+        max_retries,
+    )
+    time.sleep(sleep_seconds)
+
+
+def download_file(urls, out_dir=GRIB_OUTPUT_DIR, max_retries=5, backoff_factor=3):
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    filename = url.rsplit("/", 1)[-1]
+    if isinstance(urls, str):
+        urls = [urls]
+
+    filename = urls[0].rsplit("/", 1)[-1]
     out_path = out_dir / filename
     tmp_path = out_path.with_name(out_path.name + ".tmp")
 
@@ -73,58 +113,80 @@ def download_file(url, out_dir=GRIB_OUTPUT_DIR, max_retries=5, backoff_factor=3)
         logging.info(f"File {out_path} already exists. Skipping download.")
         return None
 
-    logging.info(f"Downloading: {url}")
+    last_error = None
+    for url in urls:
+        logging.info(f"Downloading: {url}")
 
-    for attempt in range(max_retries + 1):
-        try:
-            with requests.get(url, stream=True) as response:
-                response.raise_for_status()
+        for attempt in range(max_retries + 1):
+            try:
+                with requests.get(url, stream=True, timeout=(10, 120)) as response:
+                    response.raise_for_status()
 
-                total = int(response.headers.get("content-length", 0))
-                chunk_size = 1024 * 1024  # 1 MB
+                    total = int(response.headers.get("content-length", 0))
+                    chunk_size = 1024 * 1024  # 1 MB
 
-                with (
-                    open(tmp_path, "wb") as f,
-                    tqdm(
-                        total=total,
-                        unit="B",
-                        unit_scale=True,
-                        unit_divisor=1024,
-                        desc=f"Downloading {filename}",
-                    ) as progress,
+                    with (
+                        open(tmp_path, "wb") as f,
+                        tqdm(
+                            total=total,
+                            unit="B",
+                            unit_scale=True,
+                            unit_divisor=1024,
+                            desc=f"Downloading {filename}",
+                        ) as progress,
+                    ):
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:  # skip keep-alive chunks
+                                f.write(chunk)
+                                progress.update(len(chunk))
+
+                tmp_path.replace(out_path)
+                logging.info(f"Data saved to {out_path}")
+                return out_path
+
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                _cleanup_tmp(tmp_path)
+                last_error = e
+
+                if (
+                    status_code in RETRYABLE_HTTP_STATUS
+                    and attempt < max_retries
                 ):
-                    for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:  # skip keep-alive chunks
-                            f.write(chunk)
-                            progress.update(len(chunk))
+                    _sleep_before_retry(
+                        url, status_code, attempt, max_retries, backoff_factor
+                    )
+                    continue
 
-            tmp_path.replace(out_path)
-            logging.info(f"Data saved to {out_path}")
-            return out_path
+                logging.warning(
+                    "Download source failed for %s with HTTP %s; trying fallback if available.",
+                    url,
+                    status_code,
+                )
+                break
 
-        except requests.exceptions.HTTPError as e:
-            status_code = e.response.status_code if e.response is not None else None
-            if tmp_path.exists():
-                tmp_path.unlink()
+            except requests.exceptions.RequestException as e:
+                _cleanup_tmp(tmp_path)
+                last_error = e
 
-            if status_code != 429 or attempt == max_retries:
+                if attempt < max_retries:
+                    _sleep_before_retry(
+                        url, type(e).__name__, attempt, max_retries, backoff_factor
+                    )
+                    continue
+
+                logging.warning(
+                    "Download source failed for %s with %s; trying fallback if available.",
+                    url,
+                    type(e).__name__,
+                )
+                break
+
+            except Exception:
+                _cleanup_tmp(tmp_path)
                 raise
 
-            sleep_seconds = backoff_factor * (2**attempt)
-            logging.warning(
-                "Download hit HTTP 429 for %s. Retrying in %s seconds "
-                "(attempt %s of %s).",
-                url,
-                sleep_seconds,
-                attempt + 1,
-                max_retries,
-            )
-            time.sleep(sleep_seconds)
-
-        except Exception:
-            if tmp_path.exists():
-                tmp_path.unlink()
-            raise
+    raise RuntimeError(f"Unable to download {filename} from any configured source") from last_error
 
 
 def get_data(date_str=None):
@@ -135,7 +197,7 @@ def get_data(date_str=None):
         date_minus_12h = date - datetime.timedelta(hours=12)
         for s in STREAMS:
             for d in [date_minus_12h, date_prev, date]:
-                download_status = download_file(get_url(d, s))
+                download_status = download_file(get_urls(d, s))
                 if download_status:
                     downloaded_files.append(download_status)
 

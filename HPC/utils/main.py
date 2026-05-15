@@ -42,6 +42,8 @@ class PipelineSpec:
 
 
 ROOT = Path(__file__).resolve().parents[2]
+AIFS_GRIB_DIR = ROOT / "AIFS" / "raw" / "ifs_ic" / "grib"
+GENCAST_SST_DIR = ROOT / "gencast" / "raw" / "sst_ic"
 
 PIPELINES = {
     "aifs": {
@@ -183,6 +185,77 @@ def get_latest_date(spec):
     return call_function(spec.downloader_path, spec.downloader_function)
 
 
+def expected_ecmwf_grib_paths(date_f):
+    date = dt.datetime.strptime(date_f, "%Y%m%dT%H")
+    grib_dates = [date - dt.timedelta(hours=12), date - dt.timedelta(hours=6), date]
+    return [
+        AIFS_GRIB_DIR / f"{grib_date.strftime('%Y%m%d%H')}0000-0h-oper-fc.grib2"
+        for grib_date in grib_dates
+    ]
+
+
+def gencast_sst_path(date_f):
+    return GENCAST_SST_DIR / f"sst_{date_f}.nc"
+
+
+def get_latest_ecmwf_available_date():
+    date = call_function(
+        PIPELINES["aifs"]["pipeline"].downloader_path,
+        "check_new_data",
+    )
+    if date is None:
+        return None
+    return date.strftime("%Y%m%dT%H")
+
+
+def submit_missing_ecmwf_companions(date_f, dry_run=False):
+    if not date_f:
+        date_f = get_latest_ecmwf_available_date()
+        if not date_f:
+            logging.info("Will not check GenCast SST; no ECMWF date was found.")
+            return False
+
+    hour = date_f.split("T")[-1]
+    if hour not in PIPELINES["aifs"]["pipeline"].allowed_hours:
+        logging.info(
+            "Will not check GenCast SST for %s; hour %s is not in allowed hours: %s",
+            date_f,
+            hour,
+            PIPELINES["aifs"]["pipeline"].allowed_hours,
+        )
+        return False
+
+    missing_gribs = [
+        path for path in expected_ecmwf_grib_paths(date_f) if not path.exists()
+    ]
+    if missing_gribs:
+        logging.info(
+            "Will not run GenCast companion recovery for %s; missing ECMWF GRIBs: %s",
+            date_f,
+            ", ".join(str(path) for path in missing_gribs),
+        )
+        return False
+
+    missing_companions = [
+        companion
+        for companion in PIPELINES["ecmwf"].get("companions", [])
+        if companion.job.label == "GenCast" and not gencast_sst_path(date_f).exists()
+    ]
+    if not missing_companions:
+        logging.info("No missing ECMWF companion inputs found for %s.", date_f)
+        return False
+
+    logging.info(
+        "ECMWF GRIBs are complete for %s, but GenCast SST is missing at %s.",
+        date_f,
+        gencast_sst_path(date_f),
+    )
+    cluster_config = get_cluster()
+    for companion in missing_companions:
+        submit_companion_job(companion, cluster_config, date_f, dry_run=dry_run)
+    return True
+
+
 def run_imd_companion(date_f, dry_run=False):
     if dry_run:
         logging.info(
@@ -309,6 +382,10 @@ def run_one(pipeline, date_f=None, dry_run=False):
 
     if should_submit(spec, resolved_date, explicit_date):
         submit_pipeline_jobs(pipeline, resolved_date, dry_run=dry_run)
+        return
+
+    if pipeline == "ecmwf":
+        submit_missing_ecmwf_companions(resolved_date, dry_run=dry_run)
 
 
 def parse_args():

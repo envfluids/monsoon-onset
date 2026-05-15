@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 AIFS_UTILS    = Path("/app/AIFS/utils")
 NGCM_UTILS    = Path("/app/NeuralGCM/utils")
 GENCAST_UTILS = Path("/app/gencast/utils")
+ECMWF_OPEN_DATA_BUCKET = "ecmwf-open-data"
 
 # Sparse transform matrix filename used by download_ic.py
 SPARSE_FILENAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
@@ -46,6 +47,16 @@ SPARSE_FILENAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1f
 
 def _client():
     return storage.Client()
+
+
+_PUBLIC_CLIENT = None
+
+
+def _public_client():
+    global _PUBLIC_CLIENT
+    if _PUBLIC_CLIENT is None:
+        _PUBLIC_CLIENT = storage.Client.create_anonymous_client()
+    return _PUBLIC_CLIENT
 
 
 def blob_exists(bucket_name: str, gcs_path: str) -> bool:
@@ -65,6 +76,20 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
     _client().bucket(bucket_name).blob(gcs_path).download_to_filename(str(local_path))
+    logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
+
+
+def download_public_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = local_path.with_name(local_path.name + ".tmp")
+    blob = _public_client().bucket(bucket_name).blob(gcs_path)
+    try:
+        blob.download_to_filename(str(tmp_path))
+        tmp_path.replace(local_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
     logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
 
 
@@ -191,15 +216,22 @@ def _download_ecmwf(date: str, bucket: str) -> None:
         sparse_local,
     )
 
-    sys.path.insert(0, str(AIFS_UTILS))
-    os.chdir(AIFS_UTILS)
-    import download_ic
-
-    date_str = download_ic.get_data(date)
-
-    if not date_str:
+    if _download_ecmwf_gribs_from_public_gcs(date):
         date_str = date
-        logger.warning("ECMWF download_ic.get_data() returned None; checking local GRIB cache for %s", date_str)
+    else:
+        logger.warning(
+            "Falling back to AIFS download_ic.get_data() for ECMWF GRIBs for %s",
+            date,
+        )
+        sys.path.insert(0, str(AIFS_UTILS))
+        os.chdir(AIFS_UTILS)
+        import download_ic
+
+        date_str = download_ic.get_data(date)
+
+        if not date_str:
+            date_str = date
+            logger.warning("ECMWF download_ic.get_data() returned None; checking local GRIB cache for %s", date_str)
 
     _upload_ecmwf_gribs(bucket, date_str)
     _upload_ecmwf_pickle_if_present(bucket, date_str)
@@ -212,6 +244,47 @@ def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
     date = datetime.strptime(date_str, "%Y%m%dT%H")
     dates = [date - timedelta(hours=12), date - timedelta(hours=6), date]
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+
+
+def _ecmwf_open_data_path(filename: str) -> str:
+    ymd = filename[:8]
+    hh = filename[8:10]
+    return f"{ymd}/{hh}z/ifs/0p25/oper/{filename}"
+
+
+def _local_ecmwf_gribs_exist(date_str: str) -> bool:
+    grib_dir = AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib"
+    return all((grib_dir / filename).exists() for filename in _expected_ecmwf_grib_names(date_str))
+
+
+def _download_ecmwf_gribs_from_public_gcs(date_str: str) -> bool:
+    grib_dir = AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib"
+    grib_dir.mkdir(parents=True, exist_ok=True)
+
+    if _local_ecmwf_gribs_exist(date_str):
+        logger.info("All expected ECMWF GRIBs already exist locally for %s.", date_str)
+        return True
+
+    try:
+        for filename in _expected_ecmwf_grib_names(date_str):
+            local_path = grib_dir / filename
+            if local_path.exists():
+                logger.info("ECMWF GRIB %s already exists locally; skipping.", local_path)
+                continue
+            download_public_gcs_file(
+                ECMWF_OPEN_DATA_BUCKET,
+                _ecmwf_open_data_path(filename),
+                local_path,
+            )
+    except Exception as exc:
+        logger.warning(
+            "Could not download ECMWF GRIBs for %s directly from gs://%s: %s",
+            date_str,
+            ECMWF_OPEN_DATA_BUCKET,
+            exc,
+        )
+
+    return _local_ecmwf_gribs_exist(date_str)
 
 
 def _ecmwf_gribs_exist(bucket: str, grib_prefix: str, date_str: str) -> bool:

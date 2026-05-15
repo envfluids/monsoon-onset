@@ -184,12 +184,26 @@ def read_gcs_text(bucket: str, path: str) -> str:
 def ic_ecmwf_paths(date: str) -> list[str]:
     base = datetime.strptime(date, "%Y%m%dT%H")
     dates = [base - timedelta(hours=12), base - timedelta(hours=6), base]
-    filenames = [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
-    return [f"ic/ecmwf/{date}/grib/{f}" for f in filenames]
+    return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def ic_ncep_paths(date: str) -> list[str]:
-    return [f"ic/ncep/{date}/gdas_{date}.pgrb2"]
+def region_bucket(region: str) -> str:
+    if region in REGION_BUCKETS:
+        return REGION_BUCKETS[region]
+    if REGION_BUCKET_TEMPLATE:
+        return REGION_BUCKET_TEMPLATE.format(region=region)
+    return os.environ.get("GCS_BUCKET", "")
+
+
+def ic_paths(source: str, date: str) -> list[str]:
+    if source == "ecmwf":
+        paths = [
+            f"raw/ecmwf/{date}/grib/{filename}"
+            for filename in ecmwf_grib_names(date)
+        ]
+        paths.append(f"raw/gencast/sst/{date}/sst_{date}.nc")
+        return paths
+    return [f"raw/ncep/{date}/gdas_{date}.pgrb2"]
 
 
 def ic_present(source: str, date: str) -> bool:
