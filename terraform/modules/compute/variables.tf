@@ -110,6 +110,11 @@ variable "neuralgcm_image" {
   type        = string
 }
 
+variable "gencast_image" {
+  description = "Container image for GenCast inference"
+  type        = string
+}
+
 # -----------------------------------------------------------------------------
 # GPU Configuration
 # -----------------------------------------------------------------------------
