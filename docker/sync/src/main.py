@@ -7,7 +7,7 @@ Drive, and updates the latest.txt marker.
 Environment Variables:
     DATE            : Forecast date YYYYMMDDTHH
     FORECAST_REGION : e.g. 'india'
-    GCS_BUCKET      : Main data bucket
+    GCS_BUCKET      : Region data bucket
     ENABLE_DRIVE    : 'true' to sync to Google Drive (requires credentials)
 """
 
@@ -56,7 +56,7 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 @click.option("--cluster",      envvar="MONSOON_CLUSTER", default="gcp")
 @click.option("--drive-root",   envvar="MONSOON_DRIVE_ROOT", default=None)
 def main(date, region, bucket, enable_drive, config, cluster, drive_root):
-    blend_prefix = f"{region}/output/blend/{date}/"
+    blend_prefix = f"output/blend/{date}/"
 
     with tempfile.TemporaryDirectory() as tmp:
         sync_root = Path(tmp) / "sync-root"
@@ -71,7 +71,7 @@ def main(date, region, bucket, enable_drive, config, cluster, drive_root):
             _sync_to_drive(sync_root, date, region, config, cluster, drive_root)
 
     # Update the latest.txt marker
-    write_gcs_text(bucket, f"{region}/latest.txt", date)
+    write_gcs_text(bucket, "latest.txt", date)
     logger.info(f"Sync complete for {date}")
 
 

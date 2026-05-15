@@ -4,12 +4,12 @@
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# Main Data Bucket
-# Structure: gs://monsoon-{env}/{region}/config|weights|support|output/
+# Common Data Bucket
+# Structure: gs://monsoon-{env}-common-data-{project}/raw|raw_forecast|intermediate/
 # -----------------------------------------------------------------------------
 
 resource "google_storage_bucket" "main" {
-  name     = "${var.name_prefix}-${var.environment}-data-${var.project_id}"
+  name     = "${var.name_prefix}-${var.environment}-common-data-${var.project_id}"
   project  = var.project_id
   location = var.region
 
@@ -29,7 +29,7 @@ resource "google_storage_bucket" "main" {
       condition {
         age                   = var.archive_after_days
         matches_storage_class = ["STANDARD"]
-        matches_prefix        = ["output/"]
+        matches_prefix        = ["raw_forecast/"]
       }
       action {
         type          = "SetStorageClass"
@@ -63,23 +63,76 @@ resource "google_storage_bucket" "main" {
 }
 
 # -----------------------------------------------------------------------------
-# Create folder structure for each forecast region
+# Region Data Buckets
+# Structure: gs://monsoon-{env}-{region}-data-{project}/output/
+# -----------------------------------------------------------------------------
+
+resource "google_storage_bucket" "regional" {
+  for_each = toset(var.forecast_regions)
+
+  name     = "${var.name_prefix}-${var.environment}-${each.key}-data-${var.project_id}"
+  project  = var.project_id
+  location = var.region
+
+  force_destroy = var.environment == "dev"
+
+  uniform_bucket_level_access = true
+
+  versioning {
+    enabled = var.enable_versioning
+  }
+
+  dynamic "lifecycle_rule" {
+    for_each = var.archive_after_days != null ? [1] : []
+    content {
+      condition {
+        age                   = var.archive_after_days
+        matches_storage_class = ["STANDARD"]
+        matches_prefix        = ["output/"]
+      }
+      action {
+        type          = "SetStorageClass"
+        storage_class = "NEARLINE"
+      }
+    }
+  }
+
+  cors {
+    origin          = ["*"]
+    method          = ["GET", "HEAD"]
+    response_header = ["Content-Type"]
+    max_age_seconds = 3600
+  }
+
+  labels = {
+    environment     = var.environment
+    managed_by      = "terraform"
+    forecast_region = each.key
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Create folder structure
 # Using empty objects as folder markers
 # -----------------------------------------------------------------------------
 
-resource "google_storage_bucket_object" "region_folders" {
-  for_each = toset(flatten([
-    for region in var.forecast_regions : [
-      "${region}/config/.keep",
-      "${region}/support/.keep",
-      "${region}/output/.keep",
-      "${region}/raw/.keep",
-      "${region}/intermediate/.keep",
-    ]
-  ]))
+resource "google_storage_bucket_object" "common_folders" {
+  for_each = toset([
+    "raw/.keep",
+    "raw_forecast/.keep",
+    "intermediate/.keep",
+  ])
 
   bucket  = google_storage_bucket.main.name
   name    = each.key
+  content = "# Placeholder for folder structure"
+}
+
+resource "google_storage_bucket_object" "region_folders" {
+  for_each = google_storage_bucket.regional
+
+  bucket  = each.value.name
+  name    = "output/.keep"
   content = "# Placeholder for folder structure"
 }
 
@@ -146,9 +199,18 @@ resource "google_service_account" "pipeline" {
   display_name = "Monsoon Pipeline Service Account (${var.environment})"
 }
 
-# Pipeline SA can read/write main bucket
+# Pipeline SA can read/write common bucket
 resource "google_storage_bucket_iam_member" "pipeline_main_bucket" {
   bucket = google_storage_bucket.main.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
+# Pipeline SA can read/write each region bucket
+resource "google_storage_bucket_iam_member" "pipeline_region_buckets" {
+  for_each = google_storage_bucket.regional
+
+  bucket = each.value.name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.pipeline.email}"
 }

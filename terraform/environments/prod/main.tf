@@ -89,7 +89,9 @@ module "compute" {
   vpc_id         = module.networking.vpc_id
   vpc_subnetwork = module.networking.subnetwork_id
 
-  gcs_bucket            = module.storage.bucket_name
+  gcs_bucket            = module.storage.common_bucket_name
+  common_gcs_bucket     = module.storage.common_bucket_name
+  region_buckets        = module.storage.region_bucket_names
   weights_bucket        = module.storage.weights_bucket_name
   service_account_email = module.storage.pipeline_service_account_email
 
@@ -127,6 +129,8 @@ module "orchestration" {
   cloud_run_services     = module.compute.cloud_run_services
   pipeline_state_service = module.compute.pipeline_state_service
   batch_job_template     = module.compute.batch_job_template
+  common_bucket          = module.storage.common_bucket_name
+  region_buckets         = module.storage.region_bucket_names
   weights_bucket         = module.storage.weights_bucket_name
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name

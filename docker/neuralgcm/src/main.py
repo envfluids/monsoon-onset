@@ -13,7 +13,8 @@ required files must be in place before the subprocess is invoked.
 Environment Variables:
     DATE               : Forecast date YYYYMMDDTHH
     FORECAST_REGION    : e.g. 'india'
-    GCS_BUCKET         : Main data bucket
+    GCS_BUCKET         : Region data bucket for post-processed outputs
+    GCS_COMMON_BUCKET  : Common data bucket for ICs and full-field raw forecasts
     GCS_WEIGHTS_BUCKET : Weights/static-files bucket
 """
 
@@ -63,6 +64,11 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
             logger.info(f"Uploaded {local_file} → gs://{bucket_name}/{gcs_path}")
 
 
+def upload_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
+    _client().bucket(bucket_name).blob(gcs_path).upload_from_filename(str(local_path))
+    logger.info(f"Uploaded {local_path} → gs://{bucket_name}/{gcs_path}")
+
+
 def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
     _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
     logger.info(f"Wrote to gs://{bucket_name}/{gcs_path}")
@@ -78,10 +84,11 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 @click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
 @click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
 def main(date, region, bucket, weights_bucket):
+    common_bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
     _setup_directories(date)
-    _download_inputs(date, region, bucket, weights_bucket)
+    _download_inputs(date, common_bucket, weights_bucket)
     _run_science_scripts(date)
-    _upload_outputs(date, region, bucket)
+    _upload_outputs(date, region, bucket, common_bucket)
 
 
 def _setup_directories(date: str) -> None:
@@ -99,11 +106,11 @@ def _setup_directories(date: str) -> None:
         (NGCM_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
 
 
-def _download_inputs(date: str, region: str, bucket: str, weights_bucket: str) -> None:
+def _download_inputs(date: str, bucket: str, weights_bucket: str) -> None:
     # 1. NCEP GDAS GRIB2 initial conditions
     download_gcs_file(
         bucket,
-        f"{region}/raw/ncep/{date}/gdas_{date}.pgrb2",
+        f"raw/ncep/{date}/gdas_{date}.pgrb2",
         NGCM_UTILS.parent / "raw" / "ncep_ic" / "download" / f"gdas_{date}.pgrb2",
     )
 
@@ -187,14 +194,40 @@ def _log_gpu_runtime(env: dict[str, str]) -> None:
             logger.warning("%s stderr:\n%s", command[0], result.stderr)
 
 
-def _upload_outputs(date: str, region: str, bucket: str) -> None:
+def _upload_outputs(date: str, region: str, bucket: str, common_bucket: str) -> None:
+    raw_dir = NGCM_UTILS.parent / "raw" / "output" / date
+    upload_directory(common_bucket, raw_dir, f"raw_forecast/neuralgcm/{date}")
+    logger.info(f"NeuralGCM raw forecasts uploaded to gs://{common_bucket}/raw_forecast/neuralgcm/{date}/")
+
+    if region != "india":
+        logger.info("No NeuralGCM post-processed outputs are configured for region=%s", region)
+        return
+
     output_dir = NGCM_UTILS.parent / "output"
-    gcs_prefix = f"{region}/output/neuralgcm/{date}"
+    gcs_prefix = f"output/neuralgcm/{date}"
     upload_directory(bucket, output_dir, gcs_prefix)
+    _upload_blend_ready_aliases(date, bucket)
     logger.info(f"NeuralGCM outputs uploaded to gs://{bucket}/{gcs_prefix}/")
 
     # Write completion marker so the workflow polling loop knows we're done
-    write_gcs_text(bucket, f"{region}/intermediate/neuralgcm_{date}_done", "done")
+    write_gcs_text(common_bucket, f"intermediate/neuralgcm_{date}_done", "done")
+
+
+def _upload_blend_ready_aliases(date: str, bucket: str) -> None:
+    alias_prefix = f"output/neuralgcm/{date}"
+    aliases = {
+        NGCM_UTILS.parent / "output" / "india" / "sji" / f"sji_{date}.nc":
+            f"{alias_prefix}/sji/sji_{date}.nc",
+        NGCM_UTILS.parent / "output" / "india" / "tcw" / f"tcw_{date}.nc":
+            f"{alias_prefix}/tcw/tcw_{date}.nc",
+        NGCM_UTILS.parent / "output" / "india" / "tp" / f"tp_2p0_{date}.nc":
+            f"{alias_prefix}/tp/tp_{date}.nc",
+    }
+    for local_path, gcs_path in aliases.items():
+        if local_path.exists():
+            upload_file(bucket, local_path, gcs_path)
+        else:
+            logger.warning("Blend-ready alias source is missing: %s", local_path)
 
 
 if __name__ == "__main__":

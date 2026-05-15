@@ -41,35 +41,46 @@ terraform/
 
 ### Buckets
 
-Two GCS buckets are created per environment:
+One common data bucket, one bucket per forecast region, and one weights bucket are created per environment.
 
-**`monsoon-{env}-data-{project_id}`** (main data bucket)
+**`monsoon-{env}-common-data-{project_id}`** (common data bucket)
 
-The pipeline's working storage. Organized by region:
+Shared working storage for initial conditions, intermediate markers, and full-field raw model forecasts. These paths are not region-prefixed:
 
 ```
-{region}/
-  raw/
-    ecmwf/{date}/grib/*.grib2                 <- ECMWF IFS GRIB initial conditions
-    gencast/sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
-    ncep/{date}/gdas_{date}.pgrb2             <- NCEP GDAS initial conditions
-  intermediate/
-    latest_date.txt                           <- latest ECMWF date from opendata API
-    latest_ecmwf_date.txt                     <- actual ECMWF date written by downloader
-    neuralgcm_{date}_done                     <- NeuralGCM completion marker
-  output/
-    aifs/{date}/tp/tp_{date}.nc               <- AIFS precipitation
-    aifs/{date}/sji/sji_{date}.nc             <- AIFS Somali Jet Index
-    aifs/{date}/tcw/tcw_{date}.nc             <- AIFS total column water vapor
-    neuralgcm/{date}/tp/tp_{date}.nc          <- NeuralGCM precipitation (30-member merged)
-    neuralgcm/{date}/sji/sji_{date}.nc        <- NeuralGCM SJI
-    neuralgcm/{date}/tcw/tcw_{date}.nc        <- NeuralGCM total column water vapor
-    blend/{date}/blend_output_summary.csv     <- final probabilistic onset forecast
-    blend/{date}/maps/                        <- forecast maps
-  latest.txt                                  <- date of last successfully completed run
+raw/
+  ecmwf/{date}/grib/*.grib2                 <- ECMWF IFS GRIB initial conditions
+  gencast/sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
+  ncep/{date}/gdas_{date}.pgrb2             <- NCEP GDAS initial conditions
+raw_forecast/
+  aifs/{date}/init_{date}.nc                <- AIFS full-field forecast
+  aifs_ens/{date}/init_{date}.zarr/         <- AIFS-ENS full-field forecast
+  neuralgcm/{date}/member_*.zarr/           <- NeuralGCM full-field member forecasts
+  gencast/{date}/init_{date}.nc             <- GenCast full-field forecast
+intermediate/
+  latest_date.txt                           <- latest date marker written by downloader
+  latest_ecmwf_date.txt                     <- actual ECMWF date written by downloader
+  neuralgcm_{date}_done                     <- NeuralGCM completion marker
 ```
 
-`raw/` and `intermediate/` objects expire after 30 days (dev) per lifecycle rules. `output/` is retained.
+`raw/` and `intermediate/` objects expire after 30 days (dev) per lifecycle rules. `raw_forecast/` is retained and may transition to Nearline.
+
+**`monsoon-{env}-{region}-data-{project_id}`** (regional output buckets)
+
+Each forecast region gets its own output bucket. Only post-processed model products, blended outputs, and that region's final sync marker live here:
+
+```
+output/
+  aifs/{date}/...                           <- AIFS post-processed products for this region
+  aifs_ens/{date}/...                       <- AIFS-ENS post-processed products where configured
+  neuralgcm/{date}/...                      <- NeuralGCM post-processed products where configured
+  ncum/{date}/...                           <- NCUM products if provided for this region
+  blend/{date}/blend_output_summary.csv     <- final probabilistic onset forecast
+  blend/{date}/maps/                        <- forecast maps
+latest.txt                                  <- date of last successfully completed run
+```
+
+`output/` is retained and may transition to Nearline.
 
 **`monsoon-{env}-weights-{project_id}`** (weights bucket)
 
@@ -108,7 +119,7 @@ The identity used by Cloud Workflows and Cloud Scheduler to invoke jobs and writ
 | `roles/batch.jobsEditor` | Project | Submit and poll Cloud Batch model jobs |
 | `roles/workflows.invoker` | Project | Allow Cloud Scheduler to trigger workflow executions |
 | `roles/logging.logWriter` | Project | Write `sys.log` entries from the workflow |
-| `roles/storage.objectAdmin` | Main data bucket | Read and write lightweight workflow marker objects |
+| `roles/storage.objectAdmin` | Common and regional data buckets | Read and write lightweight workflow marker objects |
 | `roles/iam.serviceAccountUser` | Pipeline SA | Attach the pipeline SA to Cloud Run and Batch jobs |
 
 **`monsoon-{env}-pipeline`** (storage module)
@@ -116,7 +127,7 @@ The identity used by all Cloud Run Job containers at runtime.
 
 | Role | Scope | Purpose |
 |------|-------|---------|
-| `roles/storage.objectAdmin` | Main data bucket | Read and write all pipeline data |
+| `roles/storage.objectAdmin` | Common and regional data buckets | Read and write all pipeline data |
 | `roles/storage.objectViewer` | Weights bucket | Download model checkpoints and static files |
 | `roles/artifactregistry.reader` | Container repository | Pull images |
 
@@ -161,144 +172,96 @@ Body:
 Initializes variables from the `args` map:
 
 - `region` - read directly from `args.region` (always present)
-- `date` - `default(map.get(args, "date"), "")` - empty string if not provided by scheduler
+- `requested_date` - `default(map.get(args, "date"), "")` - empty string if not provided by scheduler
 - `action` - `default(map.get(args, "action"), "run")` - defaults to `"run"`
 - `project_id` - hardcoded from Terraform template substitution at deploy time
-- `gcs_bucket` - `monsoon-{env}-data-{project_id}`, also substituted at deploy time
+- `common_bucket` - `monsoon-{env}-common-data-{project_id}`, substituted at deploy time
+- `region_bucket` - looked up from Terraform's `region_buckets` map for the requested forecast region
 
 `map.get` safely handles missing keys (returns null); `default` converts null to the fallback. This avoids the `KeyError: key not found` that `args.date` would throw for absent keys.
 
-### 3. get_date
+### 3. call_pipeline_state_initial
 
-**Service: Cloud Workflows (switch step)**
+**Service: Cloud Run Service** (`monsoon-{env}-pipeline-state`)
 
-If `date == ""` (scheduler-triggered path): go to `run_date_check`.
-If `date` was explicitly provided (manual invocation): skip directly to `log_start`.
+The workflow calls the pipeline-state service once at the start. If no date was supplied, the service probes external IC sources for the latest 00z ECMWF and NCEP cycles, then checks GCS for cached ICs, completed forecasts, blendable outputs, and pending sync work.
 
-### 4. run_date_check
+The state response drives the rest of the workflow:
 
-**Service: Cloud Run Jobs** (via `googleapis.run.v2.projects.locations.jobs.run`)
+- `models.aifs` and `models.aifs_ens`: ECMWF IC date, IC presence in the common bucket, and forecast completeness in the regional bucket
+- `models.neuralgcm`: NCEP IC date, IC presence in the common bucket, and forecast completeness in the regional bucket
+- `blend`: latest date where required regional model outputs exist and blend output is missing
+- `sync`: latest blended date that has not been marked complete in the regional bucket
 
-Invokes the **downloader** Cloud Run Job (`monsoon-{env}-downloader`) with environment variable overrides:
-
-```
-ACTION=get_latest_date
-SOURCE=ecmwf
-FORECAST_REGION={region}
-```
-
-The container (`docker/downloader/src/main.py`) calls `ecmwf.opendata.Client().latest()` to ping the ECMWF opendata API and get the most recent available forecast date. It writes the result to:
-
-```
-gs://monsoon-{env}-data-{project_id}/{region}/intermediate/latest_date.txt
-```
-
-The Cloud Workflows call blocks until the Cloud Run Job execution completes (Cloud Run Jobs are synchronous from the Workflows perspective - the API call returns only when the job finishes).
-
-### 5. read_date_from_gcs
-
-**Service: Cloud Workflows (http.get step)**
-
-The workflow reads `latest_date.txt` directly via the Cloud Storage JSON API:
-
-```
-GET https://storage.googleapis.com/download/storage/v1/b/{bucket}/o/{region}%2Fintermediate%2Flatest_date.txt?alt=media
-```
-
-Authentication uses the workflow SA's OAuth2 token. The workflow SA has `roles/storage.objectViewer` on the main bucket for exactly this purpose.
-
-If the file doesn't exist (the download returned no data), the `except` block logs "No new data available" and exits via `return_no_data`.
-
-### 6. set_date_from_gcs
-
-**Service: Cloud Workflows (assign step)**
-
-Sets `date = date_file.body` - the string content of `latest_date.txt`, e.g. `20260421T00`.
-
-### 7. check_empty_date
-
-**Service: Cloud Workflows (switch step)**
-
-If the downloader wrote an empty string to `latest_date.txt` (meaning no ECMWF data was available), go to `return_no_data`.
-
-### 8. read_last_processed
-
-**Service: Cloud Workflows (http.get step)**
-
-Reads `{region}/latest.txt` from GCS - the file written by the sync container at the end of every successful pipeline run:
-
-```
-GET https://storage.googleapis.com/download/storage/v1/b/{bucket}/o/{region}%2Flatest.txt?alt=media
-```
-
-If the file does not exist (first ever run for this region), the `except` block jumps directly to `check_action`, skipping the duplicate check.
-
-### 9. check_already_processed
-
-**Service: Cloud Workflows (switch step)**
-
-Compares `last_processed_file.body == date`. If they match, the pipeline has already been run successfully for this date and the workflow exits via `return_no_data`. This prevents re-running the full pipeline on every scheduler tick when ECMWF data hasn't changed.
-
-### 10. check_action
+### 4. check_action
 
 **Service: Cloud Workflows (switch step)**
 
 If `action == "check"` (manual invocation for dry-run): exit without running the pipeline. Under normal scheduler-triggered operation `action == "run"`, so execution continues.
 
-### 11. log_start
+### 5. maybe_run_models
 
-**Service: Cloud Logging** (via `sys.log`)
+**Service: Cloud Workflows (switch step)**
 
-Writes `Starting pipeline for region={region} date={date}` at INFO severity to Cloud Logging. Visible in the Logs Explorer under the workflow execution resource.
+If all forecasts that can run are already complete, the workflow skips directly to the post-model state check. Otherwise it runs the model branches.
 
-### 12. download_data (parallel)
+### 6. run_models (parallel)
 
-**Service: Cloud Run Jobs** - two branches run concurrently via a `parallel` block.
-
-**Branch A - download_ecmwf:**
-Invokes the downloader job with:
-```
-SOURCE=ecmwf
-DATE={date}
-FORECAST_REGION={region}
-```
-The container fetches the latest ECMWF IFS analysis (0.25-degree global) via `download_ic.get_data()`, saves GRIB files, downloads the matching GenCast SST IC, and uploads to:
-```
-gs://{bucket}/{region}/raw/ecmwf/{ecmwf_date}/grib/
-gs://{bucket}/{region}/raw/gencast/sst/{ecmwf_date}/sst_{ecmwf_date}.nc
-```
-It also writes the actual ECMWF date (which may differ slightly from `DATE`) to:
-```
-gs://{bucket}/{region}/intermediate/latest_ecmwf_date.txt
-```
-
-**Branch B - download_ncep:**
-Invokes the downloader job with:
-```
-SOURCE=ncep
-DATE={date}
-FORECAST_REGION={region}
-```
-The container fetches the latest NCEP GDAS GRIB2 file via `download_ncep.get_data()` and uploads to:
-```
-gs://{bucket}/{region}/raw/ncep/{date}/gdas_{date}.pgrb2
-```
-
-Both branches block until their respective Cloud Run Job executions complete. Cloud Workflows parallelism means both downloads run simultaneously - the workflow does not proceed until both finish.
-
-### 13. run_models (parallel)
-
-**Service: Cloud Batch** - two branches run concurrently, each creating a GPU Batch job.
-
-Cloud Batch is used instead of Cloud Run for AIFS and NeuralGCM because they require GPU accelerators and multi-hour runtimes beyond Cloud Run's limits.
+**Service: Cloud Batch and Cloud Run Jobs** - AIFS and NeuralGCM branches run concurrently. Each branch downloads missing ICs before launching its model job.
 
 **Branch A - run_aifs:**
 
-Creates a Cloud Batch job with ID `aifs-{region}-{date}` (e.g. `aifs-india-20260421T00`). The job ID is unique per date - if the pipeline somehow runs twice for the same date, the second `create` call will fail with a conflict error.
+If ECMWF ICs are missing from the common bucket, the branch invokes the downloader job with:
+```
+SOURCE=ecmwf
+DATE={aifs_ic_date}
+FORECAST_REGION={region}
+```
 
-Batch job spec:
-- 1 task, 1 retry, max 3600s (1 hour)
+The container fetches ECMWF IFS GRIBs, downloads the matching GenCast SST IC, and uploads shared inputs to the common bucket:
+```
+gs://{common_bucket}/raw/ecmwf/{ecmwf_date}/grib/
+gs://{common_bucket}/raw/gencast/sst/{ecmwf_date}/sst_{ecmwf_date}.nc
+```
+
+It also writes the actual ECMWF date to:
+```
+gs://{common_bucket}/intermediate/latest_ecmwf_date.txt
+```
+
+After ICs are present, the branch creates separate Cloud Batch jobs for deterministic AIFS and, where that region requires it, AIFS-ENS.
+
+**Branch B - run_neuralgcm:**
+
+If NCEP ICs are missing from the common bucket, the branch invokes the downloader job with:
+```
+SOURCE=ncep
+DATE={neuralgcm_ic_date}
+FORECAST_REGION={region}
+```
+
+The container fetches the NCEP GDAS GRIB2 file and uploads it to:
+```
+gs://{common_bucket}/raw/ncep/{neuralgcm_ic_date}/gdas_{neuralgcm_ic_date}.pgrb2
+```
+
+Cloud Batch is used instead of Cloud Run for AIFS and NeuralGCM because they require GPU accelerators and multi-hour runtimes beyond Cloud Run's limits.
+
+**AIFS Batch jobs:**
+
+Creates separate Cloud Batch jobs with IDs `aifs-{region}-{date}-{timestamp}` and `aifs-ens-{region}-{date}-{timestamp}`. Each job uses the same AIFS container image but passes a different `AIFS_MODEL` value. Pipeline-state skips region/model pairs that do not produce post-processed outputs for the requested region.
+
+Deterministic AIFS job spec:
+- 1 task, 1 retry, max 1800s (30 minutes)
 - 8 vCPU, 32 GiB RAM
+- `AIFS_MODEL=AIFS`
+
+AIFS-ENS job spec:
+- 1 task, 1 retry, max 7200s (2 hours)
+- 8 vCPU, 64 GiB RAM
+- `AIFS_MODEL=AIFS_ENS`
+
+Common job settings:
 - GPU accelerator: type and count from `batch_config` (e.g. `nvidia-tesla-a100`)
 - Machine type from `batch_config` (e.g. `a2-highgpu-1g`)
 - SPOT provisioning in dev, STANDARD in prod
@@ -307,16 +270,16 @@ Batch job spec:
 - Logs to Cloud Logging via `logsPolicy.destination: CLOUD_LOGGING`
 
 The AIFS container (`docker/aifs/src/main.py`) does:
-1. Downloads ECMWF GRIB files from GCS (reads `latest_ecmwf_date.txt` to find the right filename)
+1. Downloads ECMWF GRIB files from the common bucket (reads `latest_ecmwf_date.txt` to find the right filename)
 2. Downloads the requested AIFS checkpoint (`aifs-single-mse-1.1.ckpt` or `aifs-ens-crps-1.0.ckpt`) from the weights bucket
 3. Downloads the sparse transform matrices (`.npz`) from the weights bucket
 4. Runs `run_model.py` or `run_model_ENS.py`, depending on `AIFS_MODEL`
 5. Runs `post_process.py --model AIFS|AIFS_ENS`
-6. Uploads outputs to `gs://{bucket}/{region}/output/aifs/{ecmwf_date}/`
+6. Uploads full-field forecasts to `raw_forecast/` in the common bucket and post-processed products to `output/` in the regional bucket
 
-`AIFS_MODEL` defaults to `AIFS`; set it to `AIFS_ENS` or `both` to run the ensemble path.
+`AIFS_MODEL` defaults to `AIFS`; the cloud workflow sets it explicitly per Batch job.
 
-After creating the job, the workflow polls `googleapis.batch.v1.projects.locations.jobs.get` every 60 seconds until `status.state == "SUCCEEDED"` or `"FAILED"`.
+After creating each job, the workflow polls `googleapis.batch.v1.projects.locations.jobs.get` every 60 seconds until `status.state == "SUCCEEDED"` or `"FAILED"`.
 
 **Branch B - run_neuralgcm:**
 
@@ -326,73 +289,71 @@ Creates a Cloud Batch job with ID `neuralgcm-{region}-{date}`. Spec:
 - Same GPU and network configuration as AIFS
 
 The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
-1. Downloads `gdas_{date}.pgrb2` from GCS
+1. Downloads `gdas_{date}.pgrb2` from the common bucket
 2. Downloads the NeuralGCM checkpoint (`.pkl`) and SST/sea ice forcing file from the weights bucket
 3. Runs `preprocess.py` - NCL interpolation of GRIB2 to NetCDF in the format NeuralGCM expects
 4. Runs `run_model.py` - 30-member stochastic ensemble, 45-day forecast using JAX on GPU
 5. Runs `post_process.py` - per-member SJI, TP, TCW computation
 6. Runs `post_process_merge.py` - merges all 30 members into ensemble statistics
-7. Uploads outputs to `gs://{bucket}/{region}/output/neuralgcm/{date}/`
-8. Writes a completion marker: `gs://{bucket}/{region}/intermediate/neuralgcm_{date}_done`
+7. Uploads full-field forecasts to `gs://{common_bucket}/raw_forecast/neuralgcm/{date}/`
+8. Uploads post-processed products to `gs://{region_bucket}/output/neuralgcm/{date}/`
+9. Writes a completion marker: `gs://{common_bucket}/intermediate/neuralgcm_{date}_done`
 
 The workflow polls every 120 seconds (longer than AIFS because NeuralGCM takes more time).
 
-### 14. postprocess
+### 7. postprocess
 
 **Service: Cloud Run Jobs** (`monsoon-{env}-postprocess`)
 
 16 GiB RAM, 4 vCPU, 30-minute timeout.
 
-This is a verification gate, not a processing step. The actual post-processing (SJI, regridding, TP/TCW computation) happens inside the AIFS and NeuralGCM containers. This step checks that all required output files exist in GCS before allowing the blend to proceed:
+This is a verification gate, not a processing step. The actual post-processing happens inside the model containers. This step checks that the configured blend inputs exist in GCS before allowing the blend to proceed:
 
-```
-{region}/output/aifs/{ecmwf_date}/tp_0p25/tp_{ecmwf_date}.nc
-{region}/output/aifs/{ecmwf_date}/tp/tp_{ecmwf_date}.nc
-{region}/output/aifs/{ecmwf_date}/sji/sji_{ecmwf_date}.nc
-{region}/output/aifs/{ecmwf_date}/tcw/tcw_{ecmwf_date}.nc
-{region}/output/neuralgcm/{date}/tp/tp_{date}.nc
-{region}/output/neuralgcm/{date}/sji/sji_{date}.nc
-{region}/output/neuralgcm/{date}/tcw/tcw_{date}.nc
-```
+The ECMWF date is read from `latest_ecmwf_date.txt`. The verification gate checks the configured blend inputs for the requested region, such as AIFS+AIFS-ENS for Ethiopia or AIFS+NCUM for India. If any required blend input is missing, the container raises a `RuntimeError` and the Cloud Run Job fails, which fails the workflow.
 
-The ECMWF date is read from `latest_ecmwf_date.txt`. If any file is missing, the container raises a `RuntimeError` and the Cloud Run Job fails, which fails the workflow.
-
-### 15. blend
+### 8. blend
 
 **Service: Cloud Run Jobs** (`monsoon-{env}-blend`)
 
 8 GiB RAM, 4 vCPU, 30-minute timeout.
 
 The blend container (`docker/blend/src/main.py`) does:
-1. Reads `latest_ecmwf_date.txt` to resolve the AIFS date
-2. Downloads AIFS `tp/tp_{aifs_date}.nc` and NeuralGCM `tp/tp_{date}.nc` from GCS
+1. Downloads available model output prefixes from GCS into the repo-shaped paths expected by `blend/utils/main.py`
+2. Checks the configured blend inputs for the requested region
 3. Downloads climatology CSVs from the weights bucket (`blend/support/large/`)
-4. Runs `blend/utils/main.py --date {date} --source google` - this is the original science script unmodified:
+4. Runs `blend/utils/main.py --date {date} --region {region}` - this is the original science script unmodified:
    - Reads multinomial logistic regression coefficients from `blend/data/support/multinom_coefs_full.csv`
    - Computes onset probability for each 2-degree grid cell across bins: week1, week2, week3, week4, later
    - Generates `blend_output_summary.csv` and forecast maps
-5. Uploads all outputs to `gs://{bucket}/{region}/output/blend/{date}/`
+5. Uploads all outputs to `gs://{region_bucket}/output/blend/{date}/`
 
-### 16. sync
+### 9. sync
 
 **Service: Cloud Run Jobs** (`monsoon-{env}-sync`)
 
 1 GiB RAM, 1 vCPU, 10-minute timeout.
 
 The sync container (`docker/sync/src/main.py`) does:
-1. Downloads blend outputs from `gs://{bucket}/{region}/output/blend/{date}/`
+1. Downloads blend outputs from `gs://{region_bucket}/output/blend/{date}/`
 2. Optionally syncs to Google Drive (controlled by `ENABLE_DRIVE` env var)
-3. Writes the current date to `gs://{bucket}/{region}/latest.txt`
+3. Writes the current date to `gs://{region_bucket}/latest.txt`
 
-Writing `latest.txt` is the critical final step - it is the dedup signal that `read_last_processed` checks at the top of the next scheduler invocation. If the pipeline fails at any earlier stage, `latest.txt` is not updated, so the next scheduler tick will retry the full pipeline for the same date.
+Writing `latest.txt` is the critical final step - it is the regional dedup signal that pipeline-state checks at the top of the next scheduler invocation. If the pipeline fails at any earlier stage, `latest.txt` is not updated, so the next scheduler tick will retry the unfinished work for the same date.
 
-### 17. log_complete / return_result
+### 10. log_complete / return_result
 
 **Service: Cloud Logging + Cloud Workflows**
 
-Logs `Pipeline completed for region={region} date={date}` and returns:
+Returns the dates used or skipped by each stage:
 ```json
-{"status": "completed", "region": "india", "date": "20260421T00"}
+{
+  "status": "completed",
+  "region": "india",
+  "aifs_ic_date": "20260421T00",
+  "neuralgcm_ic_date": "20260421T00",
+  "blend_date": "20260421T00",
+  "sync_date": "20260421T00"
+}
 ```
 
 ---
@@ -408,52 +369,40 @@ Cloud Workflows: monsoon-{env}-pipeline
         |
         +-- init (assign vars)
         |
-        +-- get_date: date=="" ?
-        |       |
-        |       +-- run_date_check
-        |       |     Cloud Run Job: downloader
-        |       |     ACTION=get_latest_date, SOURCE=ecmwf
-        |       |     writes: intermediate/latest_date.txt
-        |       |
-        |       +-- read_date_from_gcs (http.get -> GCS)
-        |       +-- set_date_from_gcs
-        |       +-- check_empty_date --------> return_no_data
-        |       +-- read_last_processed (http.get -> GCS)
-        |       +-- check_already_processed -> return_no_data
-        |       +-- check_action ("check") --> return_no_data
+        +-- pipeline-state
+        |     probes latest ICs, common bucket ICs, regional outputs,
+        |     blend readiness, and sync status
         |
-        +-- log_start
-        |
-        +-- download_data [parallel]
-        |       |
-        |       +-- Cloud Run Job: downloader (SOURCE=ecmwf)
-        |       |     fetches IFS -> uploads raw/ecmwf/{date}/
-        |       |     writes: intermediate/latest_ecmwf_date.txt
-        |       |
-        |       +-- Cloud Run Job: downloader (SOURCE=ncep)
-        |             fetches GDAS -> uploads raw/ncep/{date}/
+        +-- check_action ("check") --> return_checked
         |
         +-- run_models [parallel]
         |       |
-        |       +-- Cloud Batch Job: aifs-india-{date}
-        |       |     GPU inference -> uploads output/aifs/{date}/
+        |       +-- AIFS branch
+        |       |     downloads missing ECMWF ICs to common bucket
+        |       |     Cloud Batch Jobs: aifs-{region}-{date}, aifs-ens-{region}-{date}
+        |       |     raw forecasts -> common bucket; post-processed outputs -> regional bucket
         |       |     polls every 60s
         |       |
-        |       +-- Cloud Batch Job: neuralgcm-india-{date}
-        |             GPU inference -> uploads output/neuralgcm/{date}/
+        |       +-- NeuralGCM branch
+        |             downloads missing NCEP ICs to common bucket
+        |             Cloud Batch Job: neuralgcm-{region}-{date}
+        |             raw forecasts -> common bucket; post-processed outputs -> regional bucket
         |             polls every 120s
+        |
+        +-- pipeline-state
+        |     finds latest blendable date
         |
         +-- postprocess
         |     Cloud Run Job: postprocess
-        |     verifies all 4 required NC files exist in GCS
+        |     verifies configured blend inputs exist in the regional bucket
         |
         +-- blend
         |     Cloud Run Job: blend
-        |     downloads AIFS+NeuralGCM TP, runs regression, uploads blend/{date}/
+        |     downloads regional model outputs, runs eligible blends, uploads output/blend/{date}/
         |
         +-- sync
         |     Cloud Run Job: sync
-        |     writes latest.txt -> marks run complete for dedup
+        |     writes latest.txt in the regional bucket -> marks run complete for dedup
         |
         +-- log_complete -> return_result
 ```
@@ -471,7 +420,7 @@ Cloud Workflows: monsoon-{env}-pipeline
 | GCS retention | 30 days (raw/intermediate) | Configurable with NEARLINE archival |
 | GCS versioning | Disabled | Enabled |
 | Monitoring alerts | Disabled | Enabled |
-| Force-destroy main bucket | Yes | No |
+| Force-destroy data buckets | Yes | No |
 
 ---
 

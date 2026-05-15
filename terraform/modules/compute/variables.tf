@@ -42,9 +42,21 @@ variable "vpc_subnetwork" {
 # -----------------------------------------------------------------------------
 
 variable "gcs_bucket" {
-  description = "Main GCS bucket name"
+  description = "Default/common GCS bucket name"
   type        = string
   default     = ""
+}
+
+variable "common_gcs_bucket" {
+  description = "Common GCS bucket for ICs, intermediate markers, and raw forecasts"
+  type        = string
+  default     = ""
+}
+
+variable "region_buckets" {
+  description = "Map of forecast region to region-specific GCS bucket for post-processed and blended outputs"
+  type        = map(string)
+  default     = {}
 }
 
 variable "weights_bucket" {

@@ -12,7 +12,8 @@ Environment Variables:
     ACTION          : 'download' | 'get_latest_date'  (default: download)
     DATE            : Forecast date YYYYMMDDTHH (NeuralGCM date; ECMWF date is DATE-12h)
     FORECAST_REGION : e.g. 'india'
-    GCS_BUCKET      : Main data bucket
+    GCS_BUCKET      : Common data bucket (legacy fallback)
+    GCS_COMMON_BUCKET : Common data bucket for ICs, SST ICs, and raw model inputs
     GCS_WEIGHTS_BUCKET : Weights/static-files bucket
 """
 
@@ -88,6 +89,7 @@ def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None
 @click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
 @click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
 def main(source, action, date, region, bucket, weights_bucket):
+    bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
     if action == "get_latest_date":
         _get_latest_date(source, region, bucket)
     else:
@@ -105,14 +107,14 @@ def _get_latest_date(source: str, region: str, bucket: str) -> None:
         date_str = _latest_ncep_00z()
         if not date_str:
             logger.warning("No NCEP 00z data available — writing empty latest_date.txt")
-            write_gcs_text(bucket, f"{region}/intermediate/latest_date.txt", "")
+            write_gcs_text(bucket, "intermediate/latest_date.txt", "")
             return
     else:
         ecmwf_date = _latest_ecmwf_00z()
         ncep_date = _latest_ncep_00z()
         if not ncep_date:
             logger.warning("No NCEP 00z data available — writing empty latest_date.txt")
-            write_gcs_text(bucket, f"{region}/intermediate/latest_date.txt", "")
+            write_gcs_text(bucket, "intermediate/latest_date.txt", "")
             return
         date_str = min(ecmwf_date, ncep_date)
         logger.info(
@@ -122,7 +124,7 @@ def _get_latest_date(source: str, region: str, bucket: str) -> None:
             ncep_date,
         )
 
-    write_gcs_text(bucket, f"{region}/intermediate/latest_date.txt", date_str)
+    write_gcs_text(bucket, "intermediate/latest_date.txt", date_str)
     logger.info(f"Latest {source} date: {date_str}")
 
 
@@ -188,11 +190,11 @@ def _download_ecmwf(date: str, region: str, bucket: str, weights_bucket: str) ->
     The science downloader saves GRIB files under ../raw/ifs_ic/grib relative
     to cwd. Older versions also saved a pickle, so upload it when present.
     """
-    grib_prefix = f"{region}/raw/ecmwf/{date}/grib"
-    expected_sst = f"{region}/raw/gencast/sst/{date}/sst_{date}.nc"
+    grib_prefix = f"raw/ecmwf/{date}/grib"
+    expected_sst = f"raw/gencast/sst/{date}/sst_{date}.nc"
     if _ecmwf_gribs_exist(bucket, grib_prefix, date) and blob_exists(bucket, expected_sst):
         logger.info("ECMWF GRIB and GenCast SST artifacts already exist for %s; skipping download.", date)
-        write_gcs_text(bucket, f"{region}/intermediate/latest_ecmwf_date.txt", date)
+        write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date)
         return
 
     # Create expected directory tree
@@ -222,7 +224,7 @@ def _download_ecmwf(date: str, region: str, bucket: str, weights_bucket: str) ->
     _download_and_upload_gencast_sst(bucket, region, date_str)
 
     # Record the actual ECMWF date so the AIFS container can look it up
-    write_gcs_text(bucket, f"{region}/intermediate/latest_ecmwf_date.txt", date_str)
+    write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date_str)
 
 
 def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
@@ -249,7 +251,7 @@ def _upload_ecmwf_gribs(bucket: str, region: str, date_str: str) -> None:
         upload_file(
             bucket,
             local_path,
-            f"{region}/raw/ecmwf/{date_str}/grib/{filename}",
+            f"raw/ecmwf/{date_str}/grib/{filename}",
         )
     if missing:
         raise RuntimeError("Missing expected ECMWF GRIB files: " + ", ".join(missing))
@@ -260,7 +262,7 @@ def _upload_ecmwf_pickle_if_present(bucket: str, region: str, date_str: str) -> 
     if not local_pkl.exists():
         logger.info("No ECMWF pickle found at %s; skipping pickle upload.", local_pkl)
         return
-    upload_file(bucket, local_pkl, f"{region}/raw/ecmwf/{date_str}/input_state_{date_str}.pkl")
+    upload_file(bucket, local_pkl, f"raw/ecmwf/{date_str}/input_state_{date_str}.pkl")
 
 
 def _download_and_upload_gencast_sst(bucket: str, region: str, date_str: str) -> None:
@@ -273,7 +275,7 @@ def _download_and_upload_gencast_sst(bucket: str, region: str, date_str: str) ->
     local_sst = GENCAST_UTILS.parent / "raw" / "sst_ic" / f"sst_{date_str}.nc"
     if not local_sst.exists():
         raise RuntimeError(f"GenCast SST download did not create {local_sst}")
-    upload_file(bucket, local_sst, f"{region}/raw/gencast/sst/{date_str}/sst_{date_str}.nc")
+    upload_file(bucket, local_sst, f"raw/gencast/sst/{date_str}/sst_{date_str}.nc")
 
 
 def _download_ncep(date: str, region: str, bucket: str) -> None:
@@ -282,7 +284,7 @@ def _download_ncep(date: str, region: str, bucket: str) -> None:
     The science script saves the file as ../raw/ncep_ic/download/gdas_{date}.pgrb2
     relative to cwd.
     """
-    gcs_path = f"{region}/raw/ncep/{date}/gdas_{date}.pgrb2"
+    gcs_path = f"raw/ncep/{date}/gdas_{date}.pgrb2"
     if blob_exists(bucket, gcs_path):
         logger.info("NCEP IC already exists at gs://%s/%s; skipping download.", bucket, gcs_path)
         return
@@ -300,7 +302,7 @@ def _download_ncep(date: str, region: str, bucket: str) -> None:
 
     # filename: gdas_{YYYYMMDD}T{HH}.pgrb2  →  date_str = {YYYYMMDD}T{HH}
     local_pgrb2 = NGCM_UTILS.parent / "raw" / "ncep_ic" / "download" / f"gdas_{date_str}.pgrb2"
-    upload_file(bucket, local_pgrb2, f"{region}/raw/ncep/{date_str}/gdas_{date_str}.pgrb2")
+    upload_file(bucket, local_pgrb2, f"raw/ncep/{date_str}/gdas_{date_str}.pgrb2")
 
 
 if __name__ == "__main__":

@@ -81,7 +81,15 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
         }
         env {
           name  = "GCS_BUCKET"
-          value = var.gcs_bucket
+          value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+        }
+        env {
+          name  = "GCS_COMMON_BUCKET"
+          value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+        }
+        env {
+          name  = "GCS_REGION_BUCKETS"
+          value = jsonencode(var.region_buckets)
         }
         env {
           name  = "GCS_WEIGHTS_BUCKET"
@@ -157,7 +165,15 @@ resource "google_cloud_run_v2_service" "pipeline_state" {
       }
       env {
         name  = "GCS_BUCKET"
-        value = var.gcs_bucket
+        value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+      }
+      env {
+        name  = "GCS_COMMON_BUCKET"
+        value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+      }
+      env {
+        name  = "GCS_REGION_BUCKETS"
+        value = jsonencode(var.region_buckets)
       }
     }
 

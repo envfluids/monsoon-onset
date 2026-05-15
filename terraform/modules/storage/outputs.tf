@@ -3,13 +3,28 @@
 # -----------------------------------------------------------------------------
 
 output "bucket_name" {
-  description = "Main data bucket name"
+  description = "Common data bucket name"
   value       = google_storage_bucket.main.name
 }
 
 output "bucket_url" {
-  description = "Main data bucket URL"
+  description = "Common data bucket URL"
   value       = google_storage_bucket.main.url
+}
+
+output "common_bucket_name" {
+  description = "Common data bucket name"
+  value       = google_storage_bucket.main.name
+}
+
+output "common_bucket_url" {
+  description = "Common data bucket URL"
+  value       = google_storage_bucket.main.url
+}
+
+output "region_bucket_names" {
+  description = "Map of forecast region to region-specific data bucket name"
+  value       = { for region, bucket in google_storage_bucket.regional : region => bucket.name }
 }
 
 output "weights_bucket_name" {

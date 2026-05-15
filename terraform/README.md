@@ -326,18 +326,21 @@ Cloud Workflows (main pipeline)
   health check ranges
 ### Storage (`modules/storage`)
 
-- **Main data bucket** (`monsoon-{env}-data-{project_id}`): stores raw downloads, intermediate
-  files, and pipeline outputs per forecast region. Lifecycle rules delete `raw/` and
-  `intermediate/` objects after `retention_days`; `output/` objects optionally transition to
-  Nearline after `archive_after_days`.
+- **Common data bucket** (`monsoon-{env}-common-data-{project_id}`): stores shared initial
+  conditions, intermediate markers, and full-field raw model forecasts. Lifecycle rules delete
+  `raw/` and `intermediate/` objects after `retention_days`; `raw_forecast/` objects optionally
+  transition to Nearline after `archive_after_days`.
+- **Regional output buckets** (`monsoon-{env}-{region}-data-{project_id}`): one bucket per
+  `forecast_regions` entry. These buckets store only post-processed model products, blend
+  outputs, and each region's `latest.txt` marker.
 - **Weights bucket** (`monsoon-{env}-weights-{project_id}`): stores model weights. Versioning is
   always enabled; `force_destroy = false` even in dev.
 - **Artifact Registry** (`monsoon-{env}-containers`): Docker image registry for all pipeline
   images. Dev environments apply a 30-day cleanup policy.
-- **Pipeline service account** with `storage.objectAdmin` on the data bucket,
+- **Pipeline service account** with `storage.objectAdmin` on the common and regional data buckets,
   `storage.objectViewer` on the weights bucket, and `artifactregistry.reader` on the registry.
-- **GCS folder structure** per forecast region: `{region}/config/`, `support/`, `output/`,
-  `raw/`, `intermediate/`.
+- **GCS folder structure**: common bucket paths are `raw/`, `raw_forecast/`, and `intermediate/`;
+  regional bucket paths are `output/` and `latest.txt`.
 
 ### Compute (`modules/compute`)
 
@@ -363,10 +366,9 @@ execution requires accelerators.
 - **Cloud Workflows** (`monsoon-{env}-pipeline`): a YAML workflow that drives the full pipeline.
   See `modules/orchestration/workflow.yaml.tpl` for the full step definition.
   - Accepts `region` and optionally `date` as inputs
-  - If no date is provided, runs the `downloader` in `get_latest_date` mode and reads the result
-    from GCS (`{region}/intermediate/latest_date.txt`)
-  - Downloads ECMWF and NCEP data in parallel
-  - Runs AIFS and NeuralGCM as Cloud Batch jobs in parallel, polling every 60–120 seconds
+  - Calls the pipeline-state service to discover latest ICs and check common/regional bucket state
+  - Downloads missing ECMWF and NCEP ICs inside the relevant model branches
+  - Runs deterministic AIFS, AIFS-ENS, and NeuralGCM as separate Cloud Batch jobs, polling every 60-120 seconds
   - Runs postprocess → blend → sync sequentially
 - **Cloud Scheduler jobs** (one per `forecast_regions` entry): trigger the Workflow on
   `pipeline_schedule` (default every 6 hours in dev, configurable in prod)

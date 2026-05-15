@@ -1,7 +1,9 @@
+
+import jax
+import jax.numpy as jnp
 import logging
 
 import haiku as hk
-import jax
 import numpy as np
 from preprocess_ic import get_ic
 
@@ -19,7 +21,7 @@ import pandas as pd
 from pathlib import Path
 import argparse
 import datetime
-    
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,8 +32,17 @@ logging.basicConfig(
 
 BASE = Path(__file__).parent.parent
 
+REPO_ROOT = BASE.parent
+
+JAX_CACHE_DIR = REPO_ROOT.parent / "jax_cache"
+JAX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+jax.config.update("jax_compilation_cache_dir", str(JAX_CACHE_DIR))
+jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
+
 N_MEMBERS = 4
-N_DAYS = 5
+N_DAYS = 50
 N_STEPS = N_DAYS * 2 # 2 steps per day (12h interval)
 
 MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"

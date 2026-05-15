@@ -15,6 +15,7 @@ Response shape:
     "region": "india",
     "models": {
       "aifs":      { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] },
+      "aifs_ens":  { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] },
       "neuralgcm": { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] }
     },
     "blend": { "date": "...", "needs_run": bool },
@@ -22,11 +23,15 @@ Response shape:
   }
 
 GCS layout assumed:
-  <region>/raw/ecmwf/<date>/grib/<ecmwf-grib-files>
-  <region>/raw/ncep/<date>/gdas_<date>.pgrb2
-  <region>/output/<aifs|neuralgcm>/<date>/<sji|tcw|tp>/<sji|tcw|tp>_<date>.nc
-  <region>/output/blend/<date>/blend_output_summary.csv
-  <region>/latest.txt                 (last successfully synced date)
+  common bucket:
+    raw/ecmwf/<date>/grib/<ecmwf-grib-files>
+    raw/ncep/<date>/gdas_<date>.pgrb2
+    raw_forecast/<model>/<date>/...
+    intermediate/latest_ecmwf_date.txt
+  region bucket:
+    output/<model>/<date>/... post-processed forecast products
+    output/blend/<date>/blend_output_summary.csv
+    latest.txt                 (last successfully synced date)
 """
 
 import json
@@ -62,7 +67,9 @@ DEFAULT_LOOKBACK_DAYS = 7
 REQUEST_TIMEOUT_SECONDS = 20
 FORECAST_FILES = ("sji", "tcw", "tp")
 
-GCS_BUCKET = os.environ.get("GCS_BUCKET", "")
+GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET") or os.environ.get("GCS_BUCKET", "")
+REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
+REGION_BUCKET_TEMPLATE = os.environ.get("GCS_REGION_BUCKET_TEMPLATE", "")
 
 
 # ---------------------------------------------------------------------------
@@ -145,21 +152,61 @@ def ecmwf_grib_names(date: str) -> list[str]:
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def ic_paths(source: str, region: str, date: str) -> list[str]:
+def region_bucket(region: str) -> str:
+    if region in REGION_BUCKETS:
+        return REGION_BUCKETS[region]
+    if REGION_BUCKET_TEMPLATE:
+        return REGION_BUCKET_TEMPLATE.format(region=region)
+    return os.environ.get("GCS_BUCKET", "")
+
+
+def ic_paths(source: str, date: str) -> list[str]:
     if source == "ecmwf":
         return [
-            f"{region}/raw/ecmwf/{date}/grib/{filename}"
+            f"raw/ecmwf/{date}/grib/{filename}"
             for filename in ecmwf_grib_names(date)
         ]
-    return [f"{region}/raw/ncep/{date}/gdas_{date}.pgrb2"]
+    return [f"raw/ncep/{date}/gdas_{date}.pgrb2"]
 
 
 def forecast_paths(model: str, region: str, date: str) -> list[str]:
-    return [f"{region}/output/{model}/{date}/{kind}/{kind}_{date}.nc" for kind in FORECAST_FILES]
+    if model == "aifs_ens":
+        if region == "ethiopia":
+            return [f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc"]
+        return []
+    if model == "aifs":
+        if region == "ethiopia":
+            return [f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc"]
+        if region == "india":
+            return [
+                f"output/aifs/{date}/india/sji/sji_{date}.nc",
+                f"output/aifs/{date}/india/tcw/tcw_{date}.nc",
+                f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
+            ]
+        return []
+    if model == "neuralgcm":
+        if region == "india":
+            return [f"output/neuralgcm/{date}/{kind}/{kind}_{date}.nc" for kind in FORECAST_FILES]
+        return []
+    return []
+
+
+def blend_input_paths(region: str, date: str) -> list[str]:
+    if region == "ethiopia":
+        return [
+            f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc",
+            f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc",
+        ]
+    if region == "india":
+        return [
+            f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
+            f"output/ncum/{date}/precipitation_amount/precipitation_amount_{date}.nc",
+        ]
+    return []
 
 
 def blend_prefix(region: str, date: str) -> str:
-    return f"{region}/output/blend/{date}/"
+    return f"output/blend/{date}/"
 
 
 def blend_complete(bucket: str, region: str, date: str) -> bool:
@@ -167,18 +214,22 @@ def blend_complete(bucket: str, region: str, date: str) -> bool:
     return next(iter(blobs), None) is not None
 
 
-def model_state(bucket: str, region: str, source: str, model: str, date: str) -> dict:
+def model_state(common_bucket: str, output_bucket: str, region: str, source: str, model: str, date: str) -> dict:
     if not date:
         return {"ic_date": "", "ic_in_gcs": False, "forecast_complete": False, "missing": []}
 
+    forecast_required = forecast_paths(model, region, date)
+    if not forecast_required:
+        return {"ic_date": date, "ic_in_gcs": False, "forecast_complete": True, "missing": []}
+
     ic_in_gcs = all(
-        gcs_object_exists(bucket, path)
-        for path in ic_paths(source, region, date)
+        gcs_object_exists(common_bucket, path)
+        for path in ic_paths(source, date)
     )
 
     missing: list[str] = []
-    for path in forecast_paths(model, region, date):
-        if not gcs_object_exists(bucket, path):
+    for path in forecast_required:
+        if not gcs_object_exists(output_bucket, path):
             missing.append(path)
 
     return {
@@ -190,14 +241,15 @@ def model_state(bucket: str, region: str, source: str, model: str, date: str) ->
 
 
 def latest_blendable_date(bucket: str, region: str, lookback_days: int, today: datetime) -> str:
-    """Find the latest date where both forecasts are complete in GCS and the blend output is absent."""
+    """Find the latest date where configured blend inputs exist and blend output is absent."""
     cursor = today.replace(hour=0, minute=0, second=0, microsecond=0)
     for days_back in range(lookback_days):
         candidate = cursor - timedelta(days=days_back)
         date_str = candidate.strftime("%Y%m%dT%H")
-        aifs_complete = all(gcs_object_exists(bucket, p) for p in forecast_paths("aifs", region, date_str))
-        ncep_complete = all(gcs_object_exists(bucket, p) for p in forecast_paths("neuralgcm", region, date_str))
-        if not (aifs_complete and ncep_complete):
+        inputs = blend_input_paths(region, date_str)
+        if not inputs:
+            continue
+        if not all(gcs_object_exists(bucket, p) for p in inputs):
             continue
         if blend_complete(bucket, region, date_str):
             continue
@@ -206,7 +258,7 @@ def latest_blendable_date(bucket: str, region: str, lookback_days: int, today: d
 
 
 def latest_synced_date(bucket: str, region: str) -> str:
-    return read_gcs_text(bucket, f"{region}/latest.txt")
+    return read_gcs_text(bucket, "latest.txt")
 
 
 def latest_blended_date(bucket: str, region: str, lookback_days: int, today: datetime) -> str:
@@ -224,8 +276,11 @@ def latest_blended_date(bucket: str, region: str, lookback_days: int, today: dat
 # ---------------------------------------------------------------------------
 
 def compute_state(region: str, date: str, lookback_days: int, today: datetime) -> dict:
-    if not GCS_BUCKET:
-        raise RuntimeError("GCS_BUCKET environment variable is not set")
+    if not GCS_COMMON_BUCKET:
+        raise RuntimeError("GCS_COMMON_BUCKET/GCS_BUCKET environment variable is not set")
+    output_bucket = region_bucket(region)
+    if not output_bucket:
+        raise RuntimeError(f"No region bucket configured for region={region!r}")
 
     if date:
         ecmwf_date = date
@@ -234,17 +289,18 @@ def compute_state(region: str, date: str, lookback_days: int, today: datetime) -
         ecmwf_date = latest_external_00z("ecmwf", lookback_days, today)
         ncep_date = latest_external_00z("ncep", lookback_days, today)
 
-    aifs = model_state(GCS_BUCKET, region, "ecmwf", "aifs", ecmwf_date)
-    neuralgcm = model_state(GCS_BUCKET, region, "ncep", "neuralgcm", ncep_date)
+    aifs = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ecmwf", "aifs", ecmwf_date)
+    aifs_ens = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ecmwf", "aifs_ens", ecmwf_date)
+    neuralgcm = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ncep", "neuralgcm", ncep_date)
 
-    blend_date = latest_blendable_date(GCS_BUCKET, region, lookback_days, today)
+    blend_date = latest_blendable_date(output_bucket, region, lookback_days, today)
     if blend_date:
         blend = {"date": blend_date, "needs_run": True}
     else:
         blend = {"date": "", "needs_run": False}
 
-    blended = latest_blended_date(GCS_BUCKET, region, lookback_days, today)
-    synced = latest_synced_date(GCS_BUCKET, region)
+    blended = latest_blended_date(output_bucket, region, lookback_days, today)
+    synced = latest_synced_date(output_bucket, region)
     if blended and blended != synced:
         sync = {"date": blended, "needs_run": True}
     else:
@@ -252,7 +308,7 @@ def compute_state(region: str, date: str, lookback_days: int, today: datetime) -
 
     return {
         "region": region,
-        "models": {"aifs": aifs, "neuralgcm": neuralgcm},
+        "models": {"aifs": aifs, "aifs_ens": aifs_ens, "neuralgcm": neuralgcm},
         "blend": blend,
         "sync": sync,
     }

@@ -14,7 +14,9 @@ main:
           - requested_date: $${default(map.get(args, "date"), "")}
           - action: $${default(map.get(args, "action"), "run")}
           - project_id: "${project_id}"
-          - gcs_bucket: "monsoon-${environment}-data-${project_id}"
+          - common_bucket: "${common_bucket}"
+          - region_buckets: ${jsonencode(region_buckets)}
+          - region_bucket: $${default(map.get(region_buckets, region), common_bucket)}
           - pipeline_state_url: "${pipeline_state_url}"
 
     - call_pipeline_state_initial:
@@ -30,6 +32,7 @@ main:
           - aifs_ic_date: $${state.models.aifs.ic_date}
           - aifs_ic_in_gcs: $${state.models.aifs.ic_in_gcs}
           - aifs_complete: $${state.models.aifs.forecast_complete}
+          - aifs_ens_complete: $${state.models.aifs_ens.forecast_complete}
           - neuralgcm_ic_date: $${state.models.neuralgcm.ic_date}
           - neuralgcm_ic_in_gcs: $${state.models.neuralgcm.ic_in_gcs}
           - neuralgcm_complete: $${state.models.neuralgcm.forecast_complete}
@@ -44,6 +47,7 @@ main:
           severity: INFO
           text: $${"Pipeline-state initial region=" + region
                   + " aifs_ic=" + aifs_ic_date + " aifs_complete=" + string(aifs_complete)
+                  + " aifs_ens_complete=" + string(aifs_ens_complete)
                   + " neuralgcm_ic=" + neuralgcm_ic_date + " neuralgcm_complete=" + string(neuralgcm_complete)
                   + " blend_needs_run=" + string(blend_needs_run) + " blend_date=" + blend_date
                   + " sync_needs_run=" + string(sync_needs_run) + " sync_date=" + sync_date}
@@ -57,7 +61,7 @@ main:
 
     - maybe_run_models:
         switch:
-          - condition: $${(aifs_ic_date == "" or aifs_complete) and (neuralgcm_ic_date == "" or neuralgcm_complete)}
+          - condition: $${(aifs_ic_date == "" or (aifs_complete and aifs_ens_complete)) and (neuralgcm_ic_date == "" or neuralgcm_complete)}
             next: post_models_state
           - condition: true
             next: run_models
@@ -69,7 +73,7 @@ main:
                 steps:
                   - maybe_skip_aifs:
                       switch:
-                        - condition: $${aifs_ic_date == "" or aifs_complete}
+                        - condition: $${aifs_ic_date == "" or (aifs_complete and aifs_ens_complete)}
                           next: aifs_done
                         - condition: true
                           next: maybe_download_aifs_ic
@@ -97,77 +101,175 @@ main:
                   - write_aifs_date_marker:
                       call: write_text_object
                       args:
-                        bucket: $${gcs_bucket}
-                        path: $${region + "/intermediate/latest_ecmwf_date.txt"}
+                        bucket: $${common_bucket}
+                        path: "intermediate/latest_ecmwf_date.txt"
                         content: $${aifs_ic_date}
-                  - create_aifs_job:
-                      call: googleapis.batch.v1.projects.locations.jobs.create
-                      args:
-                        parent: $${"projects/" + project_id + "/locations/${region}"}
-                        jobId: $${"aifs-" + region + "-" + text.replace_all(aifs_ic_date, "T", "-") + "-" + string(int(sys.now()))}
-                        body:
-                          taskGroups:
-                            - taskCount: 1
-                              taskSpec:
-                                computeResource:
-                                  cpuMilli: 8000
-                                  memoryMib: 32768
-                                maxRetryCount: 1
-                                maxRunDuration: "1800s"
-                                runnables:
-                                  - container:
-                                      imageUri: "${batch_config.image}"
-                                      enableImageStreaming: ${batch_config.image_streaming}
-                                    environment:
-                                      variables:
-                                        DATE: $${aifs_ic_date}
-                                        FORECAST_REGION: $${region}
-                                        GCS_BUCKET: $${gcs_bucket}
-                                        GCS_WEIGHTS_BUCKET: "${weights_bucket}"
-                          allocationPolicy:
-                            serviceAccount:
-                              email: "${pipeline_sa}"
-                            instances:
-                              - installGpuDrivers: true
-                                policy:
-                                  machineType: "${batch_config.machine_type}"
-                                  bootDisk:
-                                    image: "${batch_config.os_image}"
-                                    sizeGb: ${batch_config.boot_disk_gb}
-                                  provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
-                                  accelerators:
-                                    - type: "${batch_config.gpu_type}"
-                                      count: ${batch_config.gpu_count}
-                            location:
-                              allowedLocations: ["regions/${region}"]
-                            network:
-                              networkInterfaces:
-                                - network: "${batch_config.vpc_network}"
-                                  subnetwork: "${batch_config.vpc_subnet}"
-                                  noExternalIpAddress: true
-                          logsPolicy:
-                            destination: CLOUD_LOGGING
-                        connector_params:
-                          skip_polling: true
-                      result: aifs_job
-                  - poll_aifs:
-                      steps:
-                        - get_aifs_status:
-                            call: googleapis.batch.v1.projects.locations.jobs.get
-                            args:
-                              name: $${aifs_job.name}
-                            result: aifs_status
-                        - check_aifs_state:
-                            switch:
-                              - condition: $${aifs_status.status.state == "SUCCEEDED"}
-                                next: aifs_done
-                              - condition: $${aifs_status.status.state == "FAILED"}
-                                raise: '$${"AIFS job failed " + aifs_job.name}'
-                        - sleep_aifs:
-                            call: sys.sleep
-                            args:
-                              seconds: 60
-                            next: get_aifs_status
+                  - run_aifs_batch_jobs:
+                      parallel:
+                        branches:
+                          - run_aifs_deterministic:
+                              steps:
+                                - maybe_skip_aifs_deterministic:
+                                    switch:
+                                      - condition: $${aifs_complete}
+                                        next: aifs_deterministic_done
+                                      - condition: true
+                                        next: create_aifs_job
+                                - create_aifs_job:
+                                    call: googleapis.batch.v1.projects.locations.jobs.create
+                                    args:
+                                      parent: $${"projects/" + project_id + "/locations/${region}"}
+                                      jobId: $${"aifs-" + region + "-" + text.replace_all(aifs_ic_date, "T", "-") + "-" + string(int(sys.now()))}
+                                      body:
+                                        taskGroups:
+                                          - taskCount: 1
+                                            taskSpec:
+                                              computeResource:
+                                                cpuMilli: 8000
+                                                memoryMib: 32768
+                                              maxRetryCount: 1
+                                              maxRunDuration: "1800s"
+                                              runnables:
+                                                - container:
+                                                    imageUri: "${batch_config.image}"
+                                                    enableImageStreaming: ${batch_config.image_streaming}
+                                                  environment:
+                                                    variables:
+                                                      DATE: $${aifs_ic_date}
+                                                      AIFS_MODEL: AIFS
+                                                      FORECAST_REGION: $${region}
+                                                      GCS_BUCKET: $${region_bucket}
+                                                      GCS_COMMON_BUCKET: $${common_bucket}
+                                                      GCS_WEIGHTS_BUCKET: "${weights_bucket}"
+                                        allocationPolicy:
+                                          serviceAccount:
+                                            email: "${pipeline_sa}"
+                                          instances:
+                                            - installGpuDrivers: true
+                                              policy:
+                                                machineType: "${batch_config.machine_type}"
+                                                bootDisk:
+                                                  image: "${batch_config.os_image}"
+                                                  sizeGb: ${batch_config.boot_disk_gb}
+                                                provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
+                                                accelerators:
+                                                  - type: "${batch_config.gpu_type}"
+                                                    count: ${batch_config.gpu_count}
+                                          location:
+                                            allowedLocations: ["regions/${region}"]
+                                          network:
+                                            networkInterfaces:
+                                              - network: "${batch_config.vpc_network}"
+                                                subnetwork: "${batch_config.vpc_subnet}"
+                                                noExternalIpAddress: true
+                                        logsPolicy:
+                                          destination: CLOUD_LOGGING
+                                      connector_params:
+                                        skip_polling: true
+                                    result: aifs_job
+                                - poll_aifs:
+                                    steps:
+                                      - get_aifs_status:
+                                          call: googleapis.batch.v1.projects.locations.jobs.get
+                                          args:
+                                            name: $${aifs_job.name}
+                                          result: aifs_status
+                                      - check_aifs_state:
+                                          switch:
+                                            - condition: $${aifs_status.status.state == "SUCCEEDED"}
+                                              next: aifs_deterministic_done
+                                            - condition: $${aifs_status.status.state == "FAILED"}
+                                              raise: '$${"AIFS job failed " + aifs_job.name}'
+                                      - sleep_aifs:
+                                          call: sys.sleep
+                                          args:
+                                            seconds: 60
+                                          next: get_aifs_status
+                                - aifs_deterministic_done:
+                                    assign:
+                                      - aifs_deterministic_branch_done: true
+
+                          - run_aifs_ensemble:
+                              steps:
+                                - maybe_skip_aifs_ensemble:
+                                    switch:
+                                      - condition: $${aifs_ens_complete}
+                                        next: aifs_ensemble_done
+                                      - condition: true
+                                        next: create_aifs_ens_job
+                                - create_aifs_ens_job:
+                                    call: googleapis.batch.v1.projects.locations.jobs.create
+                                    args:
+                                      parent: $${"projects/" + project_id + "/locations/${region}"}
+                                      jobId: $${"aifs-ens-" + region + "-" + text.replace_all(aifs_ic_date, "T", "-") + "-" + string(int(sys.now()))}
+                                      body:
+                                        taskGroups:
+                                          - taskCount: 1
+                                            taskSpec:
+                                              computeResource:
+                                                cpuMilli: 8000
+                                                memoryMib: 65536
+                                              maxRetryCount: 1
+                                              maxRunDuration: "7200s"
+                                              runnables:
+                                                - container:
+                                                    imageUri: "${batch_config.image}"
+                                                    enableImageStreaming: ${batch_config.image_streaming}
+                                                  environment:
+                                                    variables:
+                                                      DATE: $${aifs_ic_date}
+                                                      AIFS_MODEL: AIFS_ENS
+                                                      FORECAST_REGION: $${region}
+                                                      GCS_BUCKET: $${region_bucket}
+                                                      GCS_COMMON_BUCKET: $${common_bucket}
+                                                      GCS_WEIGHTS_BUCKET: "${weights_bucket}"
+                                        allocationPolicy:
+                                          serviceAccount:
+                                            email: "${pipeline_sa}"
+                                          instances:
+                                            - installGpuDrivers: true
+                                              policy:
+                                                machineType: "${batch_config.machine_type}"
+                                                bootDisk:
+                                                  image: "${batch_config.os_image}"
+                                                  sizeGb: ${batch_config.boot_disk_gb}
+                                                provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
+                                                accelerators:
+                                                  - type: "${batch_config.gpu_type}"
+                                                    count: ${batch_config.gpu_count}
+                                          location:
+                                            allowedLocations: ["regions/${region}"]
+                                          network:
+                                            networkInterfaces:
+                                              - network: "${batch_config.vpc_network}"
+                                                subnetwork: "${batch_config.vpc_subnet}"
+                                                noExternalIpAddress: true
+                                        logsPolicy:
+                                          destination: CLOUD_LOGGING
+                                      connector_params:
+                                        skip_polling: true
+                                    result: aifs_ens_job
+                                - poll_aifs_ens:
+                                    steps:
+                                      - get_aifs_ens_status:
+                                          call: googleapis.batch.v1.projects.locations.jobs.get
+                                          args:
+                                            name: $${aifs_ens_job.name}
+                                          result: aifs_ens_status
+                                      - check_aifs_ens_state:
+                                          switch:
+                                            - condition: $${aifs_ens_status.status.state == "SUCCEEDED"}
+                                              next: aifs_ensemble_done
+                                            - condition: $${aifs_ens_status.status.state == "FAILED"}
+                                              raise: '$${"AIFS-ENS job failed " + aifs_ens_job.name}'
+                                      - sleep_aifs_ens:
+                                          call: sys.sleep
+                                          args:
+                                            seconds: 60
+                                          next: get_aifs_ens_status
+                                - aifs_ensemble_done:
+                                    assign:
+                                      - aifs_ensemble_branch_done: true
                   - aifs_done:
                       assign:
                         - aifs_branch_done: true
@@ -223,7 +325,8 @@ main:
                                       variables:
                                         DATE: $${neuralgcm_ic_date}
                                         FORECAST_REGION: $${region}
-                                        GCS_BUCKET: $${gcs_bucket}
+                                        GCS_BUCKET: $${region_bucket}
+                                        GCS_COMMON_BUCKET: $${common_bucket}
                                         GCS_WEIGHTS_BUCKET: "${weights_bucket}"
                           allocationPolicy:
                             serviceAccount:
@@ -296,8 +399,8 @@ main:
     - write_blend_aifs_marker:
         call: write_text_object
         args:
-          bucket: $${gcs_bucket}
-          path: $${region + "/intermediate/latest_ecmwf_date.txt"}
+          bucket: $${common_bucket}
+          path: "intermediate/latest_ecmwf_date.txt"
           content: $${blend_date}
 
     - postprocess:
@@ -312,6 +415,10 @@ main:
                       value: $${blend_date}
                     - name: FORECAST_REGION
                       value: $${region}
+                    - name: GCS_BUCKET
+                      value: $${region_bucket}
+                    - name: GCS_COMMON_BUCKET
+                      value: $${common_bucket}
         result: postprocess_result
 
     - blend:
@@ -326,6 +433,10 @@ main:
                       value: $${blend_date}
                     - name: FORECAST_REGION
                       value: $${region}
+                    - name: GCS_BUCKET
+                      value: $${region_bucket}
+                    - name: GCS_COMMON_BUCKET
+                      value: $${common_bucket}
         result: blend_result
 
     - post_blend_state:
@@ -360,6 +471,10 @@ main:
                       value: $${sync_date}
                     - name: FORECAST_REGION
                       value: $${region}
+                    - name: GCS_BUCKET
+                      value: $${region_bucket}
+                    - name: GCS_COMMON_BUCKET
+                      value: $${common_bucket}
         result: sync_result
 
     - return_result:
@@ -371,6 +486,7 @@ main:
           blend_date: $${blend_date}
           sync_date: $${sync_date}
           aifs_ran: $${aifs_ic_date != "" and not aifs_complete}
+          aifs_ens_ran: $${aifs_ic_date != "" and not aifs_ens_complete}
           neuralgcm_ran: $${neuralgcm_ic_date != "" and not neuralgcm_complete}
           blend_ran: $${blend_needs_run}
           sync_ran: $${sync_needs_run}

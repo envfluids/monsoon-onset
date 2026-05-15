@@ -53,6 +53,18 @@ variable "weights_bucket" {
   default     = ""
 }
 
+variable "common_bucket" {
+  description = "Common GCS bucket for ICs, intermediate markers, and raw forecasts"
+  type        = string
+  default     = ""
+}
+
+variable "region_buckets" {
+  description = "Map of forecast region to region-specific GCS bucket for post-processed and blended outputs"
+  type        = map(string)
+  default     = {}
+}
+
 variable "pipeline_service_account_id" {
   description = "Full resource ID of the pipeline service account for impersonation binding"
   type        = string

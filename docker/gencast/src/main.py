@@ -8,7 +8,8 @@ inference, then uploads outputs back to GCS.
 Environment Variables:
     DATE                 : Forecast date YYYYMMDDTHH
     FORECAST_REGION      : e.g. 'india'
-    GCS_BUCKET           : Main data bucket
+    GCS_BUCKET           : Common data bucket (legacy fallback)
+    GCS_COMMON_BUCKET    : Common data bucket for ICs and full-field forecasts
     GRAPHCAST_BUCKET     : Bucket containing DeepMind GenCast assets
                            (default: dm_graphcast)
 """
@@ -77,6 +78,7 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 @click.option("--bucket", envvar="GCS_BUCKET", required=True)
 @click.option("--graphcast-bucket", envvar="GRAPHCAST_BUCKET", default=GRAPHCAST_BUCKET)
 def main(date, region, bucket, graphcast_bucket):
+    bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
     _setup_directories()
     _download_static_assets(graphcast_bucket)
     _download_inputs(date, region, bucket)
@@ -113,8 +115,8 @@ def _download_static_assets(graphcast_bucket: str) -> None:
 def _download_inputs(date_f: str, region: str, bucket: str) -> None:
     _download_grib_inputs(date_f, region, bucket)
     download_gcs_file(
-        bucket,
-        f"{region}/raw/gencast/sst/{date_f}/sst_{date_f}.nc",
+            bucket,
+            f"raw/gencast/sst/{date_f}/sst_{date_f}.nc",
         GENCAST_UTILS.parent / "raw" / "sst_ic" / f"sst_{date_f}.nc",
     )
 
@@ -123,7 +125,7 @@ def _download_grib_inputs(date_f: str, region: str, bucket: str) -> None:
     for filename in _expected_ecmwf_grib_names(date_f):
         download_gcs_file(
             bucket,
-            f"{region}/raw/ecmwf/{date_f}/grib/{filename}",
+            f"raw/ecmwf/{date_f}/grib/{filename}",
             AIFS_GRIB_DIR / filename,
         )
 
@@ -179,10 +181,10 @@ def _log_gpu_runtime(env: dict[str, str]) -> None:
 
 def _upload_outputs(date: str, region: str, bucket: str) -> None:
     output_dir = GENCAST_UTILS.parent / "raw" / "output"
-    gcs_prefix = f"{region}/output/gencast/{date}"
+    gcs_prefix = f"raw_forecast/gencast/{date}"
     upload_directory(bucket, output_dir, gcs_prefix)
-    logger.info("GenCast outputs uploaded to gs://%s/%s/", bucket, gcs_prefix)
-    write_gcs_text(bucket, f"{region}/intermediate/gencast_{date}_done", "done")
+    logger.info("GenCast raw forecasts uploaded to gs://%s/%s/", bucket, gcs_prefix)
+    write_gcs_text(bucket, f"intermediate/gencast_{date}_done", "done")
 
 
 if __name__ == "__main__":

@@ -44,8 +44,16 @@ resource "google_project_iam_member" "workflow_invoker" {
 }
 
 # Workflow SA reads markers and writes lightweight intermediate state files.
-resource "google_storage_bucket_iam_member" "workflow_gcs_object_admin" {
-  bucket = "monsoon-${var.environment}-data-${var.project_id}"
+resource "google_storage_bucket_iam_member" "workflow_common_gcs_object_admin" {
+  bucket = var.common_bucket
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.workflow.email}"
+}
+
+resource "google_storage_bucket_iam_member" "workflow_region_gcs_object_admin" {
+  for_each = var.region_buckets
+
+  bucket = each.value
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.workflow.email}"
 }
@@ -120,6 +128,8 @@ resource "google_workflows_workflow" "main_pipeline" {
     pipeline_state_url = var.pipeline_state_service.uri
     batch_config       = var.batch_job_template
     weights_bucket     = var.weights_bucket
+    common_bucket      = var.common_bucket
+    region_buckets     = var.region_buckets
     pipeline_sa        = var.pipeline_service_account_email
   })
 
