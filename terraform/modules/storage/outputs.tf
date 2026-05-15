@@ -2,39 +2,19 @@
 # Storage Module Outputs
 # -----------------------------------------------------------------------------
 
-output "bucket_name" {
-  description = "Common data bucket name"
-  value       = google_storage_bucket.main.name
-}
-
-output "bucket_url" {
-  description = "Common data bucket URL"
-  value       = google_storage_bucket.main.url
-}
-
 output "common_bucket_name" {
-  description = "Common data bucket name"
-  value       = google_storage_bucket.main.name
+  description = "Common bucket name (ICs, weights, full-field, intermediate)"
+  value       = google_storage_bucket.common.name
 }
 
 output "common_bucket_url" {
-  description = "Common data bucket URL"
-  value       = google_storage_bucket.main.url
+  description = "Common bucket URL"
+  value       = google_storage_bucket.common.url
 }
 
 output "region_bucket_names" {
   description = "Map of forecast region to region-specific data bucket name"
-  value       = { for region, bucket in google_storage_bucket.regional : region => bucket.name }
-}
-
-output "weights_bucket_name" {
-  description = "Model weights bucket name"
-  value       = google_storage_bucket.weights.name
-}
-
-output "weights_bucket_url" {
-  description = "Model weights bucket URL"
-  value       = google_storage_bucket.weights.url
+  value       = { for r, b in google_storage_bucket.region : r => b.name }
 }
 
 output "artifact_registry_url" {

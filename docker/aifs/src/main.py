@@ -1,26 +1,31 @@
 """
 Monsoon AIFS — GCS Shim Wrapper
 
-Downloads ECMWF GRIB initial conditions and model weights from GCS, runs AIFS
-or AIFS-ENS inference and post-processing using the original unmodified science
-scripts, then uploads outputs back to GCS.
+Runs AIFS (deterministic) or AIFS-ENS inference and per-region post-processing
+using the original unmodified science scripts.
 
-The science scripts (run_model.py, post_process.py) use relative paths from
-their utils/ directory, so we set cwd=/app/AIFS/utils/ before invoking them.
+Multi-region behavior:
+  1. Download IC + weights from the COMMON bucket (shared across regions).
+  2. Run inference once (the expensive step).
+  3. Upload the full-field raw forecast to the COMMON bucket.
+  4. For each region in FORECAST_REGIONS, run post_process.py --region {region}
+     and upload the per-region products to that region's bucket.
+  5. Write per-(model, region) completion markers to the COMMON bucket.
 
 Environment Variables:
-    DATE               : Forecast date YYYYMMDDTHH
-    AIFS_MODEL         : AIFS, AIFS_ENS, or both (default: AIFS)
-    FORECAST_REGION    : e.g. 'india'
-    GCS_BUCKET         : Region data bucket for post-processed outputs
-    GCS_COMMON_BUCKET  : Common data bucket for ICs and full-field raw forecasts
-    GCS_WEIGHTS_BUCKET : Weights/static-files bucket
+    DATE              : ECMWF 00z cycle date YYYYMMDDTHH (the AIFS init date)
+    MODEL             : 'aifs' or 'aifs_ens'
+    FORECAST_REGIONS  : JSON list of regions to post-process for, e.g. '["india","ethiopia"]'
+    GCS_COMMON_BUCKET : Common bucket for ICs, weights, full-field, markers
+    GCS_REGION_BUCKETS: JSON map {region: bucket} for post-processed outputs
+    UPLOAD_FULL_FIELD : 'true' to upload raw forecast to common bucket (default true)
 """
 
-import os
-import sys
+import json
 import logging
+import os
 import subprocess
+import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -37,11 +42,27 @@ logger = logging.getLogger(__name__)
 
 AIFS_UTILS = Path("/app/AIFS/utils")
 SPARSE_DOWNLOAD_NAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
-SPARSE_RUN_NAME = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
+SPARSE_RUN_NAME      = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
 
 MODEL_WEIGHT_PATHS = {
-    "AIFS": ("aifs/aifs-single-mse-1.1.ckpt", "aifs-single-mse-1.1.ckpt"),
-    "AIFS_ENS": ("aifs/aifs-ens-crps-1.0.ckpt", "aifs-ens-crps-1.0.ckpt"),
+    "aifs":     ("weights/aifs/aifs-single-mse-1.1.ckpt", "aifs-single-mse-1.1.ckpt"),
+    "aifs_ens": ("weights/aifs/aifs-ens-crps-1.0.ckpt",   "aifs-ens-crps-1.0.ckpt"),
+}
+
+RUN_SCRIPT = {
+    "aifs":     "run_model.py",
+    "aifs_ens": "run_model_ENS.py",
+}
+
+# Model name passed to post_process.py (matches its `--model` choice)
+POST_PROCESS_MODEL = {
+    "aifs":     "AIFS",
+    "aifs_ens": "AIFS_ENS",
+}
+
+RAW_OUTPUT_SUBDIR = {
+    "aifs":     "AIFS",
+    "aifs_ens": "AIFS_ENS",
 }
 
 
@@ -55,19 +76,17 @@ def _client():
 
 def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    blob = _client().bucket(bucket_name).blob(gcs_path)
-    blob.download_to_filename(str(local_path))
+    _client().bucket(bucket_name).blob(gcs_path).download_to_filename(str(local_path))
     logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
 
 
-def read_gcs_text(bucket_name: str, gcs_path: str) -> str:
-    blob = _client().bucket(bucket_name).blob(gcs_path)
-    return blob.download_as_text().strip()
+def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
+    _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
+    logger.info(f"Wrote to gs://{bucket_name}/{gcs_path}: {content!r}")
 
 
 def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None:
-    client = _client()
-    bucket = client.bucket(bucket_name)
+    bucket = _client().bucket(bucket_name)
     for local_file in local_dir.rglob("*"):
         if local_file.is_file():
             relative = local_file.relative_to(local_dir)
@@ -86,95 +105,82 @@ def upload_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
 # ---------------------------------------------------------------------------
 
 @click.command()
-@click.option("--date",           envvar="DATE",              required=True)
-@click.option("--model",          envvar="AIFS_MODEL",        default="AIFS",
-              type=click.Choice(["AIFS", "AIFS_ENS", "both"], case_sensitive=False))
-@click.option("--region",         envvar="FORECAST_REGION",   default="india")
-@click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
-@click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
-def main(date, model, region, bucket, weights_bucket):
-    common_bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
-    model = model.upper()
-    if model == "BOTH":
-        model = "both"
-    logger.info(f"IC date: {date}")
-    logger.info(f"AIFS model selection: {model}")
+@click.option("--date",   envvar="DATE",  required=True,
+              help="ECMWF 00z cycle date YYYYMMDDTHH (the AIFS init date)")
+@click.option("--model",  envvar="MODEL", default="aifs",
+              type=click.Choice(["aifs", "aifs_ens"], case_sensitive=False))
+@click.option("--regions", envvar="FORECAST_REGIONS", required=True,
+              help="JSON list of regions to post-process for")
+@click.option("--common-bucket", envvar="GCS_COMMON_BUCKET", required=True)
+@click.option("--region-buckets", envvar="GCS_REGION_BUCKETS", required=True,
+              help="JSON map {region: bucket}")
+@click.option("--upload-full-field", envvar="UPLOAD_FULL_FIELD",
+              type=lambda v: str(v).lower() == "true", default=True)
+def main(date, model, regions, common_bucket, region_buckets, upload_full_field):
+    model = model.lower()
+    regions = json.loads(regions)
+    region_buckets = json.loads(region_buckets)
 
-    _setup_directories()
-    aifs_date = _download_inputs(date, region, common_bucket, weights_bucket, _models_to_run(model))
-    for model_name in _models_to_run(model):
-        _run_science_scripts(aifs_date, model_name)
-        _upload_outputs(aifs_date, model_name, region, bucket, common_bucket)
+    logger.info(f"AIFS shim: model={model} date={date} regions={regions} upload_full_field={upload_full_field}")
+
+    _setup_directories(regions)
+    _download_inputs(date, model, common_bucket)
+    _run_inference(date, model)
+    if upload_full_field:
+        _upload_full_field(date, model, common_bucket)
+    else:
+        logger.info("UPLOAD_FULL_FIELD=false — skipping AIFS full-field upload")
+    for region in regions:
+        if region not in region_buckets:
+            raise click.ClickException(f"No bucket configured for region {region!r}")
+        _run_post_process(date, model, region)
+        _upload_region_outputs(date, model, region, region_buckets[region])
+        _write_completion_marker(date, model, region, common_bucket)
 
 
-def _setup_directories() -> None:
-    for subdir in [
+def _setup_directories(regions: list[str]) -> None:
+    base = [
         "raw/ifs_ic/grib",
         "raw/output/AIFS",
         "raw/output/AIFS_ENS",
-        "output/india/sji",
-        "output/india/tcw",
-        "output/india/tp",
-        "output/ethiopia/AIFS/tp",
-        "output/ethiopia/AIFS_ENS/tp",
         "weights",
         "EKR/mir_16_linear",
         "data",
         "grids",
-    ]:
+    ]
+    region_dirs = []
+    for region in regions:
+        if region == "india":
+            region_dirs += ["output/india/sji", "output/india/tcw", "output/india/tp"]
+        elif region == "ethiopia":
+            region_dirs += ["output/ethiopia/AIFS/tp", "output/ethiopia/AIFS_ENS/tp"]
+    for subdir in base + region_dirs:
         (AIFS_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
 
 
-def _models_to_run(model: str) -> list[str]:
-    if model == "both":
-        return ["AIFS", "AIFS_ENS"]
-    return [model]
-
-
-def _download_inputs(
-    aifs_date: str,
-    region: str,
-    bucket: str,
-    weights_bucket: str,
-    models: list[str],
-) -> str:
+def _download_inputs(aifs_date: str, model: str, common_bucket: str) -> None:
     # 1. ECMWF GRIB initial conditions
-    # The downloader wrote the actual ECMWF date to GCS; read it to find the right file.
-    try:
-        ecmwf_date = read_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt")
-        logger.info(f"Recorded ECMWF date: {ecmwf_date}")
-    except Exception:
-        ecmwf_date = aifs_date
-        logger.warning(f"Could not read latest_ecmwf_date.txt; assuming ecmwf_date={ecmwf_date}")
-
-    _download_ecmwf_gribs(ecmwf_date, region, bucket)
-
-    # 2. Model weights
-    for model in models:
-        gcs_path, filename = MODEL_WEIGHT_PATHS[model]
+    for filename in _expected_ecmwf_grib_names(aifs_date):
         download_gcs_file(
-            weights_bucket,
-            gcs_path,
-            AIFS_UTILS.parent / "weights" / filename,
+            common_bucket,
+            f"ic/ecmwf/{aifs_date}/grib/{filename}",
+            AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib" / filename,
         )
+
+    # 2. Model weights for the selected variant
+    gcs_path, filename = MODEL_WEIGHT_PATHS[model]
+    download_gcs_file(
+        common_bucket,
+        gcs_path,
+        AIFS_UTILS.parent / "weights" / filename,
+    )
 
     # 3. Sparse transform matrices used by preprocess_ic.py and run_model*.py
-    for sparse in [SPARSE_DOWNLOAD_NAME, SPARSE_RUN_NAME]:
+    for sparse in (SPARSE_DOWNLOAD_NAME, SPARSE_RUN_NAME):
         download_gcs_file(
-            weights_bucket,
-            f"aifs/EKR/mir_16_linear/{sparse}",
+            common_bucket,
+            f"weights/aifs/EKR/mir_16_linear/{sparse}",
             AIFS_UTILS.parent / "EKR" / "mir_16_linear" / sparse,
-        )
-
-    return ecmwf_date
-
-
-def _download_ecmwf_gribs(date_str: str, region: str, bucket: str) -> None:
-    for filename in _expected_ecmwf_grib_names(date_str):
-        download_gcs_file(
-            bucket,
-            f"raw/ecmwf/{date_str}/grib/{filename}",
-            AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib" / filename,
         )
 
 
@@ -184,104 +190,55 @@ def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def _run_science_scripts(aifs_date: str, model: str) -> None:
+def _run_inference(aifs_date: str, model: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(AIFS_UTILS)}
-    run_script = "run_model.py" if model == "AIFS" else "run_model_ENS.py"
-
-    logger.info(f"Running {model} {run_script} for {aifs_date}")
+    script = RUN_SCRIPT[model]
+    logger.info(f"Running {model} {script} for {aifs_date}")
     subprocess.run(
-        [sys.executable, run_script, "--date", aifs_date],
-        cwd=AIFS_UTILS, check=True, env=env,
-    )
-
-    logger.info(f"Running AIFS post_process.py for {model} {aifs_date}")
-    subprocess.run(
-        [sys.executable, "post_process.py", "--date", aifs_date, "--model", model],
+        [sys.executable, script, "--date", aifs_date],
         cwd=AIFS_UTILS, check=True, env=env,
     )
 
 
-def _upload_outputs(
-    aifs_date: str,
-    model: str,
-    region: str,
-    bucket: str,
-    common_bucket: str,
-) -> None:
-    _upload_raw_forecast(aifs_date, model, common_bucket)
-    _upload_postprocessed_outputs(aifs_date, model, region, bucket)
+def _run_post_process(aifs_date: str, model: str, region: str) -> None:
+    env = {**os.environ, "PYTHONPATH": str(AIFS_UTILS)}
+    logger.info(f"Running post_process.py for {model} {region} {aifs_date}")
+    subprocess.run(
+        [
+            sys.executable, "post_process.py",
+            "--date", aifs_date,
+            "--model", POST_PROCESS_MODEL[model],
+            "--region", region,
+        ],
+        cwd=AIFS_UTILS, check=True, env=env,
+    )
 
 
-def _upload_raw_forecast(aifs_date: str, model: str, bucket: str) -> None:
-    model_prefix = "aifs" if model == "AIFS" else "aifs_ens"
-    raw_dir = AIFS_UTILS.parent / "raw" / "output" / model
-    raw_name = f"init_{aifs_date}.nc" if model == "AIFS" else f"init_{aifs_date}.zarr"
+def _upload_full_field(aifs_date: str, model: str, common_bucket: str) -> None:
+    raw_dir = AIFS_UTILS.parent / "raw" / "output" / RAW_OUTPUT_SUBDIR[model]
+    raw_name = f"init_{aifs_date}.nc" if model == "aifs" else f"init_{aifs_date}.zarr"
     raw_path = raw_dir / raw_name
+    target_prefix = f"full_field/{model}/{aifs_date}/{raw_name}"
+
     if raw_path.is_dir():
-        upload_directory(
-            bucket,
-            raw_path,
-            f"raw_forecast/{model_prefix}/{aifs_date}/{raw_name}",
-        )
+        upload_directory(common_bucket, raw_path, target_prefix)
     elif raw_path.is_file():
-        upload_file(
-            bucket,
-            raw_path,
-            f"raw_forecast/{model_prefix}/{aifs_date}/{raw_name}",
-        )
+        upload_file(common_bucket, raw_path, target_prefix)
     else:
         raise RuntimeError(f"Expected raw forecast output is missing: {raw_path}")
 
 
-def _upload_postprocessed_outputs(aifs_date: str, model: str, region: str, bucket: str) -> None:
-    model_prefix = "aifs" if model == "AIFS" else "aifs_ens"
-    for local_dir, gcs_prefix in _region_output_prefixes(aifs_date, model, region):
-        if local_dir.exists():
-            upload_directory(bucket, local_dir, gcs_prefix)
-        else:
-            logger.warning("Region output directory is missing: %s", local_dir)
-    _upload_blend_ready_aliases(aifs_date, model, region, bucket)
-    logger.info("%s post-processed outputs uploaded for region=%s", model, region)
+def _upload_region_outputs(aifs_date: str, model: str, region: str, region_bucket: str) -> None:
+    local_dir = AIFS_UTILS.parent / "output" / region
+    if not local_dir.exists():
+        logger.warning("Region output directory is missing: %s", local_dir)
+        return
+    upload_directory(region_bucket, local_dir, f"output/{model}/{aifs_date}")
 
 
-def _region_output_prefixes(aifs_date: str, model: str, region: str) -> list[tuple[Path, str]]:
-    output_dir = AIFS_UTILS.parent / "output"
-    model_prefix = "aifs" if model == "AIFS" else "aifs_ens"
-    if model == "AIFS" and region == "india":
-        return [(output_dir / "india", f"output/{model_prefix}/{aifs_date}/india")]
-    if model == "AIFS" and region == "ethiopia":
-        return [(output_dir / "ethiopia" / "AIFS", f"output/{model_prefix}/{aifs_date}/ethiopia/AIFS")]
-    if model == "AIFS_ENS" and region == "ethiopia":
-        return [(output_dir / "ethiopia" / "AIFS_ENS", f"output/{model_prefix}/{aifs_date}/ethiopia/AIFS_ENS")]
-    logger.info("No %s post-processed outputs are configured for region=%s", model, region)
-    return []
-
-
-def _upload_blend_ready_aliases(aifs_date: str, model: str, region: str, bucket: str) -> None:
-    model_prefix = "aifs" if model == "AIFS" else "aifs_ens"
-    alias_prefix = f"output/{model_prefix}/{aifs_date}"
-    if model == "AIFS" and region == "india":
-        aliases = {
-            AIFS_UTILS.parent / "output" / "india" / "sji" / f"sji_{aifs_date}.nc":
-                f"{alias_prefix}/sji/sji_{aifs_date}.nc",
-            AIFS_UTILS.parent / "output" / "india" / "tcw" / f"tcw_{aifs_date}.nc":
-                f"{alias_prefix}/tcw/tcw_{aifs_date}.nc",
-            AIFS_UTILS.parent / "output" / "india" / "tp" / f"tp_0p25_{aifs_date}.nc":
-                f"{alias_prefix}/tp/tp_{aifs_date}.nc",
-        }
-    elif model == "AIFS_ENS" and region == "ethiopia":
-        aliases = {
-            AIFS_UTILS.parent / "output" / "ethiopia" / "AIFS_ENS" / "tp" / f"tp_0p25_{aifs_date}.nc":
-                f"{alias_prefix}/tp/tp_{aifs_date}.nc",
-        }
-    else:
-        aliases = {}
-
-    for local_path, gcs_path in aliases.items():
-        if local_path.exists():
-            upload_file(bucket, local_path, gcs_path)
-        else:
-            logger.warning("Blend-ready alias source is missing: %s", local_path)
+def _write_completion_marker(aifs_date: str, model: str, region: str, common_bucket: str) -> None:
+    marker_path = f"intermediate/{model}_{region}_{aifs_date}_done"
+    write_gcs_text(common_bucket, marker_path, "done")
 
 
 if __name__ == "__main__":

@@ -1,27 +1,31 @@
 """
 Monsoon NeuralGCM — GCS Shim Wrapper
 
-Downloads NCEP initial conditions and model weights from GCS, runs the full
-NeuralGCM pipeline (preprocess → inference → post-process → merge) using
-the original unmodified science scripts, then uploads outputs to GCS.
+Runs the full NeuralGCM pipeline (preprocess → inference → post-process → merge)
+using the original unmodified science scripts and uploads the per-region outputs
+to the region buckets.
 
-The science scripts use relative paths from their utils/ directory, so we
-set cwd=/app/NeuralGCM/utils/ before each subprocess call. Model weights and
-the ERA5 reference file are loaded at module level in run_model.py, so all
-required files must be in place before the subprocess is invoked.
+Multi-region behavior:
+  1. Download IC + weights/forcings from the COMMON bucket (shared).
+  2. Run inference + post-processing once.
+  3. (Optional) Upload full-field raw forecast to the COMMON bucket.
+  4. For each region in FORECAST_REGIONS, upload that region's post-processed
+     outputs to its region bucket and write a per-(model, region) completion
+     marker to the COMMON bucket.
 
 Environment Variables:
-    DATE               : Forecast date YYYYMMDDTHH
-    FORECAST_REGION    : e.g. 'india'
-    GCS_BUCKET         : Region data bucket for post-processed outputs
-    GCS_COMMON_BUCKET  : Common data bucket for ICs and full-field raw forecasts
-    GCS_WEIGHTS_BUCKET : Weights/static-files bucket
+    DATE              : Forecast date YYYYMMDDTHH
+    FORECAST_REGIONS  : JSON list of regions, e.g. '["india"]'
+    GCS_COMMON_BUCKET : Common bucket for ICs, weights, full-field, markers
+    GCS_REGION_BUCKETS: JSON map {region: bucket} for post-processed outputs
+    UPLOAD_FULL_FIELD : 'true' to upload raw forecast to common bucket (default false)
 """
 
-import os
-import sys
+import json
 import logging
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import click
@@ -37,6 +41,10 @@ logger = logging.getLogger(__name__)
 
 NGCM_UTILS = Path("/app/NeuralGCM/utils")
 
+# Regions where the science layer currently produces post-processed outputs.
+# Today only india; add more as post_process_merge.py gains region dispatch.
+NGCM_SUPPORTED_REGIONS = {"india"}
+
 
 # ---------------------------------------------------------------------------
 # GCS helpers
@@ -48,25 +56,18 @@ def _client():
 
 def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
-    blob = _client().bucket(bucket_name).blob(gcs_path)
-    blob.download_to_filename(str(local_path))
+    _client().bucket(bucket_name).blob(gcs_path).download_to_filename(str(local_path))
     logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
 
 
 def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None:
-    client = _client()
-    bucket = client.bucket(bucket_name)
+    bucket = _client().bucket(bucket_name)
     for local_file in local_dir.rglob("*"):
         if local_file.is_file():
             relative = local_file.relative_to(local_dir)
             gcs_path = f"{gcs_prefix}/{relative}"
             bucket.blob(gcs_path).upload_from_filename(str(local_file))
             logger.info(f"Uploaded {local_file} → gs://{bucket_name}/{gcs_path}")
-
-
-def upload_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
-    _client().bucket(bucket_name).blob(gcs_path).upload_from_filename(str(local_path))
-    logger.info(f"Uploaded {local_path} → gs://{bucket_name}/{gcs_path}")
 
 
 def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
@@ -79,16 +80,40 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 # ---------------------------------------------------------------------------
 
 @click.command()
-@click.option("--date",           envvar="DATE",              required=True)
-@click.option("--region",         envvar="FORECAST_REGION",   default="india")
-@click.option("--bucket",         envvar="GCS_BUCKET",        required=True)
-@click.option("--weights-bucket", envvar="GCS_WEIGHTS_BUCKET", required=True)
-def main(date, region, bucket, weights_bucket):
-    common_bucket = os.environ.get("GCS_COMMON_BUCKET", bucket)
+@click.option("--date",   envvar="DATE",  required=True)
+@click.option("--regions", envvar="FORECAST_REGIONS", required=True,
+              help="JSON list of regions to post-process for")
+@click.option("--common-bucket", envvar="GCS_COMMON_BUCKET", required=True)
+@click.option("--region-buckets", envvar="GCS_REGION_BUCKETS", required=True,
+              help="JSON map {region: bucket}")
+@click.option("--upload-full-field", envvar="UPLOAD_FULL_FIELD",
+              type=lambda v: str(v).lower() == "true", default=False)
+def main(date, regions, common_bucket, region_buckets, upload_full_field):
+    regions = json.loads(regions)
+    region_buckets = json.loads(region_buckets)
+
+    logger.info(f"NeuralGCM shim: date={date} regions={regions} upload_full_field={upload_full_field}")
+
     _setup_directories(date)
-    _download_inputs(date, common_bucket, weights_bucket)
+    _download_inputs(date, common_bucket)
     _run_science_scripts(date)
-    _upload_outputs(date, region, bucket, common_bucket)
+
+    if upload_full_field:
+        _upload_full_field(date, common_bucket)
+    else:
+        logger.info("UPLOAD_FULL_FIELD=false — skipping NeuralGCM full-field upload")
+
+    for region in regions:
+        if region not in NGCM_SUPPORTED_REGIONS:
+            logger.warning(
+                "Region %r is not supported by the NeuralGCM science layer; skipping upload + marker",
+                region,
+            )
+            continue
+        if region not in region_buckets:
+            raise click.ClickException(f"No bucket configured for region {region!r}")
+        _upload_region_outputs(date, region, region_buckets[region])
+        _write_completion_marker(date, region, common_bucket)
 
 
 def _setup_directories(date: str) -> None:
@@ -96,9 +121,9 @@ def _setup_directories(date: str) -> None:
         "raw/ncep_ic/download",
         "raw/ncep_ic/processed",
         f"raw/output/{date}",
-        "output/sji",
-        "output/tcw",
-        "output/tp",
+        "output/india/sji",
+        "output/india/tcw",
+        "output/india/tp",
         "weights",
         "data/forcings",
         "data/model_ds",
@@ -106,26 +131,26 @@ def _setup_directories(date: str) -> None:
         (NGCM_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
 
 
-def _download_inputs(date: str, bucket: str, weights_bucket: str) -> None:
+def _download_inputs(date: str, common_bucket: str) -> None:
     # 1. NCEP GDAS GRIB2 initial conditions
     download_gcs_file(
-        bucket,
-        f"raw/ncep/{date}/gdas_{date}.pgrb2",
+        common_bucket,
+        f"ic/ncep/{date}/gdas_{date}.pgrb2",
         NGCM_UTILS.parent / "raw" / "ncep_ic" / "download" / f"gdas_{date}.pgrb2",
     )
 
     # 2. NeuralGCM model checkpoint (loaded at run_model.py module level)
     model_name = "models_v1_precip_stochastic_precip_2_8_deg.pkl"
     download_gcs_file(
-        weights_bucket,
-        f"neuralgcm/{model_name}",
+        common_bucket,
+        f"weights/neuralgcm/{model_name}",
         NGCM_UTILS.parent / "weights" / model_name,
     )
 
     # 3. SST / Sea Ice climatology forcing (loaded at run_model.py module level)
     download_gcs_file(
-        weights_bucket,
-        "neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc",
+        common_bucket,
+        "weights/neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc",
         NGCM_UTILS.parent / "data" / "forcings" / "SST-SeaIce_clim_1979_2017_no_leap.nc",
     )
 
@@ -133,15 +158,12 @@ def _download_inputs(date: str, bucket: str, weights_bucket: str) -> None:
 def _run_science_scripts(date: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(NGCM_UTILS)}
 
-    # Step 1: NCL interpolation of GRIB2 → NetCDF
     logger.info(f"Running preprocess.py for {date}")
     subprocess.run(
         [sys.executable, "preprocess.py", "--date", date],
         cwd=NGCM_UTILS, check=True, env=env,
     )
 
-    # Step 2: Ensemble inference (all 30 members; --mpi omitted → runs all on available devices)
-    # Note: run_model.py loads weights and ERA5 at module level, so all files must be present.
     logger.info(f"Running run_model.py for {date}")
     _log_gpu_runtime(env)
     subprocess.run(
@@ -149,14 +171,12 @@ def _run_science_scripts(date: str) -> None:
         cwd=NGCM_UTILS, check=True, env=env,
     )
 
-    # Step 3: Post-process individual ensemble members
     logger.info(f"Running post_process.py for {date}")
     subprocess.run(
         [sys.executable, "post_process.py", "--date", date],
         cwd=NGCM_UTILS, check=True, env=env,
     )
 
-    # Step 4: Merge ensemble members and compute SJI
     logger.info(f"Running post_process_merge.py for {date}")
     subprocess.run(
         [sys.executable, "post_process_merge.py", "--date", date],
@@ -194,40 +214,22 @@ def _log_gpu_runtime(env: dict[str, str]) -> None:
             logger.warning("%s stderr:\n%s", command[0], result.stderr)
 
 
-def _upload_outputs(date: str, region: str, bucket: str, common_bucket: str) -> None:
+def _upload_full_field(date: str, common_bucket: str) -> None:
     raw_dir = NGCM_UTILS.parent / "raw" / "output" / date
-    upload_directory(common_bucket, raw_dir, f"raw_forecast/neuralgcm/{date}")
-    logger.info(f"NeuralGCM raw forecasts uploaded to gs://{common_bucket}/raw_forecast/neuralgcm/{date}/")
+    upload_directory(common_bucket, raw_dir, f"full_field/neuralgcm/{date}")
 
-    if region != "india":
-        logger.info("No NeuralGCM post-processed outputs are configured for region=%s", region)
+
+def _upload_region_outputs(date: str, region: str, region_bucket: str) -> None:
+    local_dir = NGCM_UTILS.parent / "output" / region
+    if not local_dir.exists():
+        logger.warning("Region output directory is missing: %s", local_dir)
         return
-
-    output_dir = NGCM_UTILS.parent / "output"
-    gcs_prefix = f"output/neuralgcm/{date}"
-    upload_directory(bucket, output_dir, gcs_prefix)
-    _upload_blend_ready_aliases(date, bucket)
-    logger.info(f"NeuralGCM outputs uploaded to gs://{bucket}/{gcs_prefix}/")
-
-    # Write completion marker so the workflow polling loop knows we're done
-    write_gcs_text(common_bucket, f"intermediate/neuralgcm_{date}_done", "done")
+    upload_directory(region_bucket, local_dir, f"output/neuralgcm/{date}")
 
 
-def _upload_blend_ready_aliases(date: str, bucket: str) -> None:
-    alias_prefix = f"output/neuralgcm/{date}"
-    aliases = {
-        NGCM_UTILS.parent / "output" / "india" / "sji" / f"sji_{date}.nc":
-            f"{alias_prefix}/sji/sji_{date}.nc",
-        NGCM_UTILS.parent / "output" / "india" / "tcw" / f"tcw_{date}.nc":
-            f"{alias_prefix}/tcw/tcw_{date}.nc",
-        NGCM_UTILS.parent / "output" / "india" / "tp" / f"tp_2p0_{date}.nc":
-            f"{alias_prefix}/tp/tp_{date}.nc",
-    }
-    for local_path, gcs_path in aliases.items():
-        if local_path.exists():
-            upload_file(bucket, local_path, gcs_path)
-        else:
-            logger.warning("Blend-ready alias source is missing: %s", local_path)
+def _write_completion_marker(date: str, region: str, common_bucket: str) -> None:
+    marker_path = f"intermediate/neuralgcm_{region}_{date}_done"
+    write_gcs_text(common_bucket, marker_path, "done")
 
 
 if __name__ == "__main__":

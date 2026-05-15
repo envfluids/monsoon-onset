@@ -32,9 +32,10 @@ output "batch_job_template" {
     boot_disk_gb    = var.batch_boot_disk_size_gb
     image_streaming = var.batch_enable_image_streaming
     preemptible     = var.use_preemptible_gpu
-    image           = var.aifs_image
+    aifs_image      = var.aifs_image
+    neuralgcm_image = var.neuralgcm_image
+    gencast_image   = var.gencast_image
     vpc_network     = var.vpc_id
     vpc_subnet      = var.vpc_subnetwork
-    neuralgcm_image = var.neuralgcm_image
   }
 }

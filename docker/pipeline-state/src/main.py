@@ -1,43 +1,56 @@
 """
 Monsoon Pipeline-State Service
 
-Single-call HTTP endpoint that returns the full state of the pipeline for a
-given region and (optional) date:
+Single-call HTTP endpoint that returns the full multi-region pipeline state for
+a forecast date (or latest 00z if not supplied):
 
-  GET /state?region=india                       discover latest 00z IC per source
-  GET /state?region=india&date=20260430T00      use the supplied date directly
-  GET /state?region=india&lookback_days=7       widen the discovery window
-  GET /healthz                                  liveness probe
+  GET /state                                     discover latest 00z per IC source
+  GET /state?date=20260430T00                    use the supplied date directly
+  GET /state?lookback_days=7                     widen the discovery window
+  GET /healthz                                   liveness probe
 
-Response shape:
+Response shape (sketch — actual contents depend on the configured regions):
 
   {
-    "region": "india",
-    "models": {
-      "aifs":      { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] },
-      "aifs_ens":  { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] },
-      "neuralgcm": { "ic_date": "...", "ic_in_gcs": bool, "forecast_complete": bool, "missing": [...] }
+    "date": "20260513T00",
+    "ic": {
+      "ecmwf": {"date": "20260513T00", "present": true},
+      "ncep":  {"date": "20260513T00", "present": true}
     },
-    "blend": { "date": "...", "needs_run": bool },
-    "sync":  { "date": "...", "needs_run": bool }
+    "models": {
+      "aifs":     {"complete": true,  "regions": {"india":{"present":true},"ethiopia":{"present":true}}},
+      "aifs_ens": {"complete": false, "regions": {"ethiopia":{"present":false}}},
+      "neuralgcm":{"complete": true,  "regions": {"india":{"present":true}}}
+    },
+    "per_region": {
+      "india":    {"blend": {"present":true,"date":"20260513T00"},
+                   "sync":  {"present":true,"latest":"20260513T00","needs_run":false}},
+      "ethiopia": {"sync":  {"present":true,"latest":"20260513T00","needs_run":false}}
+    },
+    "actions": {
+      "models_to_run": [...],
+      "regions_to_blend": [...],
+      "regions_to_sync": [...]
+    }
   }
 
-GCS layout assumed:
+GCS layout assumed (matches docker shims):
   common bucket:
-    raw/ecmwf/<date>/grib/<ecmwf-grib-files>
-    raw/ncep/<date>/gdas_<date>.pgrb2
-    raw_forecast/<model>/<date>/...
-    intermediate/latest_ecmwf_date.txt
+    ic/ecmwf/<date>/grib/<filename>
+    ic/ncep/<date>/gdas_<date>.pgrb2
+    full_field/<model>/<date>/...           (optional, gated by upload flag for NGCM)
+    intermediate/{model}_{region}_{date}_done
   region bucket:
-    output/<model>/<date>/... post-processed forecast products
-    output/blend/<date>/blend_output_summary.csv
-    latest.txt                 (last successfully synced date)
+    output/<model>/<date>/...               post-processed forecast products
+    output/blend/<date>/...                 blend output
+    latest.txt                              last successfully synced date
 """
 
 import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -65,11 +78,19 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 7
 REQUEST_TIMEOUT_SECONDS = 20
-FORECAST_FILES = ("sji", "tcw", "tp")
 
-GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET") or os.environ.get("GCS_BUCKET", "")
+GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
-REGION_BUCKET_TEMPLATE = os.environ.get("GCS_REGION_BUCKET_TEMPLATE", "")
+REGIONS = json.loads(os.environ.get("REGIONS", "{}"))
+REGION_MODELS = json.loads(os.environ.get("REGION_MODELS", "{}"))
+
+# Which IC source each model consumes
+MODEL_IC_SOURCE = {
+    "aifs":      "ecmwf",
+    "aifs_ens":  "ecmwf",
+    "gencast":   "ecmwf",
+    "neuralgcm": "ncep",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -104,9 +125,10 @@ def head_status(url: str) -> int | str:
 
 
 def latest_external_00z(source: str, lookback_days: int, today: datetime) -> str:
-    """Walk back from `today` up to `lookback_days` and return the first available 00z date string, or ''."""
     url_for = ecmwf_url if source == "ecmwf" else ncep_url
     cursor = today.replace(hour=0, minute=0, second=0, microsecond=0)
+    n_retries = 6
+    backoff = 1
     for days_back in range(lookback_days):
         candidate = cursor - timedelta(days=days_back)
         date_str = candidate.strftime("%Y%m%dT%H")
@@ -114,6 +136,14 @@ def latest_external_00z(source: str, lookback_days: int, today: datetime) -> str
         logger.info("external_probe source=%s date=%s status=%s", source, date_str, status)
         if status == 200:
             return date_str
+        if status == 429 and n_retries > 0:
+            logger.warning(
+                "external_probe_rate_limited source=%s date=%s backoff=%ss retries_left=%s",
+                source, date_str, backoff, n_retries,
+            )
+            time.sleep(backoff)
+            n_retries -= 1
+            backoff *= 2
     return ""
 
 
@@ -135,6 +165,11 @@ def gcs_object_exists(bucket: str, path: str) -> bool:
     return gcs_client().bucket(bucket).blob(path).exists()
 
 
+def gcs_prefix_has_objects(bucket: str, prefix: str) -> bool:
+    blobs = gcs_client().list_blobs(bucket, prefix=prefix, max_results=1)
+    return next(iter(blobs), None) is not None
+
+
 def read_gcs_text(bucket: str, path: str) -> str:
     try:
         return gcs_client().bucket(bucket).blob(path).download_as_text().strip()
@@ -146,171 +181,230 @@ def read_gcs_text(bucket: str, path: str) -> str:
 # Per-stage state probes
 # ---------------------------------------------------------------------------
 
-def ecmwf_grib_names(date: str) -> list[str]:
+def ic_ecmwf_paths(date: str) -> list[str]:
     base = datetime.strptime(date, "%Y%m%dT%H")
     dates = [base - timedelta(hours=12), base - timedelta(hours=6), base]
-    return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+    filenames = [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+    return [f"ic/ecmwf/{date}/grib/{f}" for f in filenames]
 
 
-def region_bucket(region: str) -> str:
-    if region in REGION_BUCKETS:
-        return REGION_BUCKETS[region]
-    if REGION_BUCKET_TEMPLATE:
-        return REGION_BUCKET_TEMPLATE.format(region=region)
-    return os.environ.get("GCS_BUCKET", "")
+def ic_ncep_paths(date: str) -> list[str]:
+    return [f"ic/ncep/{date}/gdas_{date}.pgrb2"]
 
 
-def ic_paths(source: str, date: str) -> list[str]:
-    if source == "ecmwf":
-        return [
-            f"raw/ecmwf/{date}/grib/{filename}"
-            for filename in ecmwf_grib_names(date)
-        ]
-    return [f"raw/ncep/{date}/gdas_{date}.pgrb2"]
+def ic_present(source: str, date: str) -> bool:
+    paths = ic_ecmwf_paths(date) if source == "ecmwf" else ic_ncep_paths(date)
+    return all(gcs_object_exists(GCS_COMMON_BUCKET, p) for p in paths)
 
 
-def forecast_paths(model: str, region: str, date: str) -> list[str]:
-    if model == "aifs_ens":
-        if region == "ethiopia":
-            return [f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc"]
-        return []
-    if model == "aifs":
-        if region == "ethiopia":
-            return [f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc"]
-        if region == "india":
-            return [
-                f"output/aifs/{date}/india/sji/sji_{date}.nc",
-                f"output/aifs/{date}/india/tcw/tcw_{date}.nc",
-                f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
-            ]
-        return []
-    if model == "neuralgcm":
-        if region == "india":
-            return [f"output/neuralgcm/{date}/{kind}/{kind}_{date}.nc" for kind in FORECAST_FILES]
-        return []
-    return []
+def model_marker_path(model: str, region: str, date: str) -> str:
+    return f"intermediate/{model}_{region}_{date}_done"
 
 
-def blend_input_paths(region: str, date: str) -> list[str]:
-    if region == "ethiopia":
-        return [
-            f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc",
-            f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc",
-        ]
-    if region == "india":
-        return [
-            f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
-            f"output/ncum/{date}/precipitation_amount/precipitation_amount_{date}.nc",
-        ]
-    return []
+def model_region_done(model: str, region: str, date: str) -> bool:
+    return gcs_object_exists(GCS_COMMON_BUCKET, model_marker_path(model, region, date))
 
 
-def blend_prefix(region: str, date: str) -> str:
-    return f"output/blend/{date}/"
+def blend_present(region: str, date: str) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return False
+    return gcs_prefix_has_objects(bucket, f"output/blend/{date}/")
 
 
-def blend_complete(bucket: str, region: str, date: str) -> bool:
-    blobs = gcs_client().list_blobs(bucket, prefix=blend_prefix(region, date), max_results=1)
-    return next(iter(blobs), None) is not None
-
-
-def model_state(common_bucket: str, output_bucket: str, region: str, source: str, model: str, date: str) -> dict:
-    if not date:
-        return {"ic_date": "", "ic_in_gcs": False, "forecast_complete": False, "missing": []}
-
-    forecast_required = forecast_paths(model, region, date)
-    if not forecast_required:
-        return {"ic_date": date, "ic_in_gcs": False, "forecast_complete": True, "missing": []}
-
-    ic_in_gcs = all(
-        gcs_object_exists(common_bucket, path)
-        for path in ic_paths(source, date)
-    )
-
-    missing: list[str] = []
-    for path in forecast_required:
-        if not gcs_object_exists(output_bucket, path):
-            missing.append(path)
-
-    return {
-        "ic_date": date,
-        "ic_in_gcs": ic_in_gcs,
-        "forecast_complete": len(missing) == 0,
-        "missing": missing,
-    }
-
-
-def latest_blendable_date(bucket: str, region: str, lookback_days: int, today: datetime) -> str:
-    """Find the latest date where configured blend inputs exist and blend output is absent."""
-    cursor = today.replace(hour=0, minute=0, second=0, microsecond=0)
-    for days_back in range(lookback_days):
-        candidate = cursor - timedelta(days=days_back)
-        date_str = candidate.strftime("%Y%m%dT%H")
-        inputs = blend_input_paths(region, date_str)
-        if not inputs:
-            continue
-        if not all(gcs_object_exists(bucket, p) for p in inputs):
-            continue
-        if blend_complete(bucket, region, date_str):
-            continue
-        return date_str
-    return ""
-
-
-def latest_synced_date(bucket: str, region: str) -> str:
+def latest_synced(region: str) -> str:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return ""
     return read_gcs_text(bucket, "latest.txt")
-
-
-def latest_blended_date(bucket: str, region: str, lookback_days: int, today: datetime) -> str:
-    cursor = today.replace(hour=0, minute=0, second=0, microsecond=0)
-    for days_back in range(lookback_days):
-        candidate = cursor - timedelta(days=days_back)
-        date_str = candidate.strftime("%Y%m%dT%H")
-        if blend_complete(bucket, region, date_str):
-            return date_str
-    return ""
 
 
 # ---------------------------------------------------------------------------
 # Top-level state computation
 # ---------------------------------------------------------------------------
 
-def compute_state(region: str, date: str, lookback_days: int, today: datetime) -> dict:
+def _ic_date_for_source(source: str, requested_date: str, lookback_days: int, today: datetime) -> str:
+    if requested_date:
+        return requested_date
+    return latest_external_00z(source, lookback_days, today)
+
+
+def _ic_source_in_use() -> set[str]:
+    sources = set()
+    for region_cfg in REGIONS.values():
+        for model in region_cfg.get("models", []):
+            sources.add(MODEL_IC_SOURCE[model])
+    return sources
+
+
+def _models_in_use() -> set[str]:
+    models = set()
+    for region_cfg in REGIONS.values():
+        models.update(region_cfg.get("models", []))
+    return models
+
+
+def _regions_for_model(model: str) -> list[str]:
+    return [
+        r for r, cfg in REGIONS.items()
+        if model in cfg.get("models", [])
+    ]
+
+
+def _regions_with_stage(stage: str) -> list[str]:
+    return [
+        r for r, cfg in REGIONS.items()
+        if stage in cfg.get("stages", [])
+    ]
+
+
+def compute_state(requested_date: str, lookback_days: int, today: datetime) -> dict:
     if not GCS_COMMON_BUCKET:
-        raise RuntimeError("GCS_COMMON_BUCKET/GCS_BUCKET environment variable is not set")
-    output_bucket = region_bucket(region)
-    if not output_bucket:
-        raise RuntimeError(f"No region bucket configured for region={region!r}")
+        raise RuntimeError("GCS_COMMON_BUCKET environment variable is not set")
+    if not REGIONS:
+        raise RuntimeError("REGIONS environment variable is not set or is empty")
 
-    if date:
-        ecmwf_date = date
-        ncep_date = date
-    else:
-        ecmwf_date = latest_external_00z("ecmwf", lookback_days, today)
-        ncep_date = latest_external_00z("ncep", lookback_days, today)
+    sources = _ic_source_in_use()
+    ic_state = {}
+    ic_dates: dict[str, str] = {}
+    for source in ("ecmwf", "ncep"):
+        if source not in sources:
+            continue
+        date_for_source = _ic_date_for_source(source, requested_date, lookback_days, today)
+        ic_dates[source] = date_for_source
+        ic_state[source] = {
+            "date": date_for_source,
+            "present": bool(date_for_source) and ic_present(source, date_for_source),
+        }
 
-    aifs = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ecmwf", "aifs", ecmwf_date)
-    aifs_ens = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ecmwf", "aifs_ens", ecmwf_date)
-    neuralgcm = model_state(GCS_COMMON_BUCKET, output_bucket, region, "ncep", "neuralgcm", ncep_date)
+    primary_date = requested_date or _primary_date(ic_dates)
 
-    blend_date = latest_blendable_date(output_bucket, region, lookback_days, today)
-    if blend_date:
-        blend = {"date": blend_date, "needs_run": True}
-    else:
-        blend = {"date": "", "needs_run": False}
+    models_state = {}
+    for model in _models_in_use():
+        source = MODEL_IC_SOURCE[model]
+        model_date = ic_dates.get(source, "")
+        region_results = {}
+        for region in _regions_for_model(model):
+            present = bool(model_date) and model_region_done(model, region, model_date)
+            region_results[region] = {"present": present, "date": model_date}
+        complete = bool(model_date) and all(r["present"] for r in region_results.values())
+        models_state[model] = {
+            "date": model_date,
+            "complete": complete,
+            "regions": region_results,
+        }
 
-    blended = latest_blended_date(output_bucket, region, lookback_days, today)
-    synced = latest_synced_date(output_bucket, region)
-    if blended and blended != synced:
-        sync = {"date": blended, "needs_run": True}
-    else:
-        sync = {"date": "", "needs_run": False}
+    per_region = {}
+    for region, cfg in REGIONS.items():
+        block: dict = {}
+        stages = cfg.get("stages", [])
+        if "blend" in stages:
+            blend_date_for_region = _blend_date_for_region(region, models_state)
+            block["blend"] = {
+                "date": blend_date_for_region,
+                "present": bool(blend_date_for_region) and blend_present(region, blend_date_for_region),
+            }
+        if "sync" in stages:
+            sync_target = _sync_date_for_region(region, cfg, models_state, per_region_block=block)
+            latest = latest_synced(region)
+            block["sync"] = {
+                "date": sync_target,
+                "latest": latest,
+                "needs_run": bool(sync_target) and sync_target != latest,
+            }
+        per_region[region] = block
+
+    actions = _derive_actions(models_state, per_region)
 
     return {
-        "region": region,
-        "models": {"aifs": aifs, "aifs_ens": aifs_ens, "neuralgcm": neuralgcm},
-        "blend": blend,
-        "sync": sync,
+        "date": primary_date,
+        "ic": ic_state,
+        "models": models_state,
+        "per_region": per_region,
+        "actions": actions,
+    }
+
+
+def _primary_date(ic_dates: dict[str, str]) -> str:
+    """Most workflows treat a single date as 'the' forecast date.
+    Prefer NCEP (NeuralGCM-paced) when present; fall back to ECMWF."""
+    return ic_dates.get("ncep") or ic_dates.get("ecmwf") or ""
+
+
+def _blend_date_for_region(region: str, models_state: dict) -> str:
+    """Blend is ready when ALL of the region's models have a per-region marker
+    for the same date. Today only india uses blend with aifs + neuralgcm at the
+    same calendar date."""
+    region_models = REGIONS[region].get("models", [])
+    candidate_dates: list[str] = []
+    for model in region_models:
+        date_for_model = models_state.get(model, {}).get("date", "")
+        if not date_for_model:
+            return ""
+        candidate_dates.append(date_for_model)
+    # All models must align on the same date for the blend to be valid.
+    if len(set(candidate_dates)) != 1:
+        return ""
+    date = candidate_dates[0]
+    for model in region_models:
+        if not model_region_done(model, region, date):
+            return ""
+    return date
+
+
+def _sync_date_for_region(
+    region: str,
+    cfg: dict,
+    models_state: dict,
+    per_region_block: dict,
+) -> str:
+    """Date to sync for the region — depends on the region's date_kind:
+    - 'date': use the latest date where the region's blend output is present.
+              (Today: india.)
+    - 'aifs_date': use the AIFS date where AIFS markers for this region exist.
+              (Today: ethiopia.)
+    The region's own model set determines which marker(s) are required.
+    """
+    date_kind = cfg.get("sync", {}).get("date_kind", "date")
+    if "blend" in cfg.get("stages", []) and "blend" in per_region_block:
+        candidate = per_region_block["blend"].get("date", "")
+        if candidate and per_region_block["blend"].get("present"):
+            return candidate
+        return ""
+    # No blend stage — pick the latest date where every model for the region
+    # has its completion marker.
+    region_models = cfg.get("models", [])
+    dates = {models_state.get(m, {}).get("date", "") for m in region_models}
+    if "" in dates or len(dates) != 1:
+        return ""
+    date = next(iter(dates))
+    if all(model_region_done(m, region, date) for m in region_models):
+        return date
+    _ = date_kind  # retained for future use when dates diverge
+    return ""
+
+
+def _derive_actions(models_state: dict, per_region: dict) -> dict:
+    models_to_run = []
+    for model, m in models_state.items():
+        if not m["date"]:
+            continue
+        pending_regions = [r for r, info in m["regions"].items() if not info["present"]]
+        if pending_regions:
+            models_to_run.append({"model": model, "date": m["date"], "regions": pending_regions})
+
+    regions_to_blend = [
+        r for r, block in per_region.items()
+        if "blend" in block and block["blend"].get("date") and not block["blend"].get("present")
+    ]
+    regions_to_sync = [
+        r for r, block in per_region.items()
+        if "sync" in block and block["sync"].get("needs_run")
+    ]
+    return {
+        "models_to_run": models_to_run,
+        "regions_to_blend": regions_to_blend,
+        "regions_to_sync": regions_to_sync,
     }
 
 
@@ -335,10 +429,6 @@ def parse_date(query: dict[str, list[str]]) -> str:
     return raw
 
 
-def parse_region(query: dict[str, list[str]]) -> str:
-    return query.get("region", ["india"])[0]
-
-
 def parse_today(query: dict[str, list[str]]) -> datetime:
     raw = query.get("today", [""])[0]
     if not raw:
@@ -358,11 +448,10 @@ class Handler(BaseHTTPRequestHandler):
 
         query = parse_qs(parsed.query)
         try:
-            region = parse_region(query)
             lookback_days = parse_lookback(query)
             date = parse_date(query)
             today = parse_today(query)
-            state = compute_state(region, date, lookback_days, today)
+            state = compute_state(date, lookback_days, today)
         except ValueError as exc:
             self.respond(400, {"error": "bad_request", "detail": str(exc)})
             return

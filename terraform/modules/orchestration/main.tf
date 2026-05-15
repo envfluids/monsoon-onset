@@ -3,6 +3,23 @@
 # Cloud Scheduler, Cloud Workflows, Pub/Sub
 # -----------------------------------------------------------------------------
 
+locals {
+  models_in_use = distinct(flatten([for r, cfg in var.regions : cfg.models]))
+
+  regions_by_model = {
+    for m in distinct(flatten([for r, cfg in var.regions : cfg.models])) :
+    m => [for r, cfg in var.regions : r if contains(cfg.models, m)]
+  }
+
+  # Map model name → batch container image
+  model_images = {
+    aifs      = var.batch_job_template.aifs_image
+    aifs_ens  = var.batch_job_template.aifs_image
+    neuralgcm = var.batch_job_template.neuralgcm_image
+    gencast   = var.batch_job_template.gencast_image
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Service Account for Workflows
 # -----------------------------------------------------------------------------
@@ -13,14 +30,12 @@ resource "google_service_account" "workflow" {
   display_name = "Monsoon Workflow Service Account (${var.environment})"
 }
 
-# Workflow SA can invoke and run Cloud Run jobs (run.invoker + run.jobs.runWithOverrides)
 resource "google_project_iam_member" "workflow_run_invoker" {
   project = var.project_id
   role    = "roles/run.developer"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can invoke the private pipeline-state service
 resource "google_cloud_run_v2_service_iam_member" "workflow_pipeline_state_invoker" {
   project  = var.project_id
   location = var.region
@@ -29,21 +44,18 @@ resource "google_cloud_run_v2_service_iam_member" "workflow_pipeline_state_invok
   member   = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can submit and poll Cloud Batch jobs
 resource "google_project_iam_member" "workflow_batch_jobs_editor" {
   project = var.project_id
   role    = "roles/batch.jobsEditor"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can create Workflow executions (required for Cloud Scheduler -> Workflows)
 resource "google_project_iam_member" "workflow_invoker" {
   project = var.project_id
   role    = "roles/workflows.invoker"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA reads markers and writes lightweight intermediate state files.
 resource "google_storage_bucket_iam_member" "workflow_common_gcs_object_admin" {
   bucket = var.common_bucket
   role   = "roles/storage.objectAdmin"
@@ -58,14 +70,12 @@ resource "google_storage_bucket_iam_member" "workflow_region_gcs_object_admin" {
   member = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can write logs
 resource "google_project_iam_member" "workflow_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
-# Workflow SA can impersonate the pipeline SA (to submit Cloud Run jobs)
 resource "google_service_account_iam_member" "workflow_impersonate_pipeline" {
   service_account_id = var.pipeline_service_account_id
   role               = "roles/iam.serviceAccountUser"
@@ -96,7 +106,6 @@ resource "google_pubsub_topic" "pipeline_completions" {
   }
 }
 
-# Dead letter topic for failed messages
 resource "google_pubsub_topic" "dead_letter" {
   name    = "${var.name_prefix}-${var.environment}-dead-letter"
   project = var.project_id
@@ -108,7 +117,7 @@ resource "google_pubsub_topic" "dead_letter" {
 }
 
 # -----------------------------------------------------------------------------
-# Cloud Workflows - Main Pipeline
+# Cloud Workflows — Main Pipeline (region-agnostic)
 # -----------------------------------------------------------------------------
 
 resource "google_workflows_workflow" "main_pipeline" {
@@ -127,10 +136,14 @@ resource "google_workflows_workflow" "main_pipeline" {
     cloud_run_jobs     = var.cloud_run_services
     pipeline_state_url = var.pipeline_state_service.uri
     batch_config       = var.batch_job_template
-    weights_bucket     = var.weights_bucket
     common_bucket      = var.common_bucket
     region_buckets     = var.region_buckets
+    regions            = var.regions
+    models_in_use      = local.models_in_use
+    regions_by_model   = local.regions_by_model
+    model_images       = local.model_images
     pipeline_sa        = var.pipeline_service_account_email
+    full_field_models  = var.full_field_models
   })
 
   labels = {
@@ -140,16 +153,14 @@ resource "google_workflows_workflow" "main_pipeline" {
 }
 
 # -----------------------------------------------------------------------------
-# Cloud Scheduler - Trigger Pipeline
+# Cloud Scheduler — single trigger, no per-region argument
 # -----------------------------------------------------------------------------
 
 resource "google_cloud_scheduler_job" "pipeline_trigger" {
-  for_each = toset(var.forecast_regions)
-
-  name        = "${var.name_prefix}-${var.environment}-trigger-${each.key}"
+  name        = "${var.name_prefix}-${var.environment}-pipeline-trigger"
   project     = var.project_id
   region      = var.region
-  description = "Triggers monsoon pipeline for ${each.key} region"
+  description = "Triggers monsoon multi-region pipeline"
   schedule    = var.pipeline_schedule
   time_zone   = "UTC"
 
@@ -158,10 +169,7 @@ resource "google_cloud_scheduler_job" "pipeline_trigger" {
     http_method = "POST"
 
     body = base64encode(jsonencode({
-      argument = jsonencode({
-        region = each.key
-        # date intentionally omitted: workflow determines the latest available date
-      })
+      argument = jsonencode({})
     }))
 
     oauth_token {

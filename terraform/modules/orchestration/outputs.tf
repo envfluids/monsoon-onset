@@ -17,9 +17,9 @@ output "workflow_url" {
   value       = "https://console.cloud.google.com/workflows/workflow/${var.region}/${google_workflows_workflow.main_pipeline.name}?project=${var.project_id}"
 }
 
-output "scheduler_jobs" {
-  description = "Cloud Scheduler job names"
-  value       = { for k, v in google_cloud_scheduler_job.pipeline_trigger : k => v.name }
+output "scheduler_job" {
+  description = "Cloud Scheduler job name"
+  value       = google_cloud_scheduler_job.pipeline_trigger.name
 }
 
 output "workflow_service_account" {

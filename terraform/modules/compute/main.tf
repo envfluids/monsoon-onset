@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------------
 # Compute Module
-# Cloud Run services and Cloud Batch templates
+# Cloud Run jobs and Cloud Batch templates
 # -----------------------------------------------------------------------------
 
 locals {
@@ -17,41 +17,48 @@ locals {
     : lookup(local.gpu_machine_type_defaults, var.gpu_type, "n1-standard-8")
   )
 
+  # JSON-encoded summary of {region: models} consumed by postprocess and pipeline-state.
+  region_models = jsonencode({ for k, v in var.regions : k => v.models })
+
+  # Full regions map, JSON-encoded — pipeline-state needs the entire object.
+  regions_json = jsonencode(var.regions)
+
+  region_buckets_json = jsonencode(var.region_buckets)
+
   cloud_run_services = {
     downloader = {
       name    = "${var.name_prefix}-${var.environment}-downloader"
       image   = var.downloader_image
       memory  = "4Gi"
       cpu     = "2"
-      timeout = "900s" # 15 min for downloads
+      timeout = "900s"
     }
     postprocess = {
       name    = "${var.name_prefix}-${var.environment}-postprocess"
       image   = var.postprocess_image
-      memory  = "16Gi" # CDO/NCL can be memory intensive
+      memory  = "16Gi"
       cpu     = "4"
-      timeout = "1800s" # 30 min
+      timeout = "1800s"
     }
     blend = {
       name    = "${var.name_prefix}-${var.environment}-blend"
       image   = var.blend_image
       memory  = "8Gi"
       cpu     = "4"
-      timeout = "1800s" # 30 min
+      timeout = "1800s"
     }
     sync = {
       name    = "${var.name_prefix}-${var.environment}-sync"
       image   = var.sync_image
       memory  = "1Gi"
       cpu     = "1"
-      timeout = "600s" # 10 min
+      timeout = "600s"
     }
   }
 }
 
 # -----------------------------------------------------------------------------
-# Cloud Run Jobs (for lightweight pipeline stages)
-# Using Jobs (not Services) since these are batch workloads
+# Cloud Run Jobs (lightweight pipeline stages)
 # -----------------------------------------------------------------------------
 
 resource "google_cloud_run_v2_job" "pipeline_jobs" {
@@ -74,37 +81,33 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
           }
         }
 
-        # Common environment variables
         env {
           name  = "ENVIRONMENT"
           value = var.environment
         }
         env {
-          name  = "GCS_BUCKET"
-          value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
-        }
-        env {
           name  = "GCS_COMMON_BUCKET"
-          value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+          value = var.common_gcs_bucket
         }
         env {
           name  = "GCS_REGION_BUCKETS"
-          value = jsonencode(var.region_buckets)
+          value = local.region_buckets_json
         }
         env {
-          name  = "GCS_WEIGHTS_BUCKET"
-          value = var.weights_bucket
+          name  = "REGIONS"
+          value = local.regions_json
+        }
+        env {
+          name  = "REGION_MODELS"
+          value = local.region_models
         }
         env {
           name  = "PROJECT_ID"
           value = var.project_id
         }
 
-        # Region will be passed at execution time
-        env {
-          name  = "FORECAST_REGION"
-          value = "india" # Default, overridden at runtime
-        }
+        # FORECAST_REGION, FORECAST_REGIONS, SYNC_SPEC, DATE, etc. are set per-execution
+        # by the workflow via containerOverrides — no default here.
       }
 
       timeout     = each.value.timeout
@@ -124,15 +127,13 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
 
   lifecycle {
     ignore_changes = [
-      template[0].template[0].containers[0].image, # Allow image updates outside TF
+      template[0].template[0].containers[0].image,
     ]
   }
 }
 
 # -----------------------------------------------------------------------------
 # Cloud Run Service for full-pipeline state inspection
-# Probes external IC sources (when no date is supplied) and inspects GCS for
-# per-stage completion to drive workflow branching from a single response.
 # -----------------------------------------------------------------------------
 
 resource "google_cloud_run_v2_service" "pipeline_state" {
@@ -164,16 +165,20 @@ resource "google_cloud_run_v2_service" "pipeline_state" {
         value = var.environment
       }
       env {
-        name  = "GCS_BUCKET"
-        value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
-      }
-      env {
         name  = "GCS_COMMON_BUCKET"
-        value = var.common_gcs_bucket != "" ? var.common_gcs_bucket : var.gcs_bucket
+        value = var.common_gcs_bucket
       }
       env {
         name  = "GCS_REGION_BUCKETS"
-        value = jsonencode(var.region_buckets)
+        value = local.region_buckets_json
+      }
+      env {
+        name  = "REGIONS"
+        value = local.regions_json
+      }
+      env {
+        name  = "REGION_MODELS"
+        value = local.region_models
       }
     }
 
@@ -191,7 +196,7 @@ resource "google_cloud_run_v2_service" "pipeline_state" {
 
   lifecycle {
     ignore_changes = [
-      template[0].containers[0].image, # Allow image updates outside TF
+      template[0].containers[0].image,
     ]
   }
 }

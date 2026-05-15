@@ -38,37 +38,44 @@ variable "vpc_subnetwork" {
 }
 
 # -----------------------------------------------------------------------------
+# Forecast regions
+# -----------------------------------------------------------------------------
+
+variable "regions" {
+  description = "Per-region forecast configuration (models, stages, sync spec)"
+  type = map(object({
+    models = list(string)
+    stages = list(string)
+    sync = object({
+      rules = list(string)
+      sources = list(object({
+        gcs_prefix = string
+        local_dir  = string
+        date_kind  = string
+      }))
+      git_push  = bool
+      date_kind = string
+    })
+  }))
+}
+
+# -----------------------------------------------------------------------------
 # Storage Configuration
 # -----------------------------------------------------------------------------
 
-variable "gcs_bucket" {
-  description = "Default/common GCS bucket name"
-  type        = string
-  default     = ""
-}
-
 variable "common_gcs_bucket" {
-  description = "Common GCS bucket for ICs, intermediate markers, and raw forecasts"
+  description = "Common GCS bucket for ICs, weights, full-field forecasts, intermediate markers"
   type        = string
-  default     = ""
 }
 
 variable "region_buckets" {
   description = "Map of forecast region to region-specific GCS bucket for post-processed and blended outputs"
   type        = map(string)
-  default     = {}
-}
-
-variable "weights_bucket" {
-  description = "GCS bucket for model weights and large static files"
-  type        = string
-  default     = ""
 }
 
 variable "service_account_email" {
   description = "Service account email for pipeline jobs"
   type        = string
-  default     = ""
 }
 
 # -----------------------------------------------------------------------------
@@ -81,7 +88,7 @@ variable "downloader_image" {
 }
 
 variable "pipeline_state_image" {
-  description = "Container image for the pipeline-state service (IC discovery + GCS state probes)"
+  description = "Container image for the pipeline-state service"
   type        = string
 }
 
@@ -101,7 +108,7 @@ variable "sync_image" {
 }
 
 variable "aifs_image" {
-  description = "Container image for AIFS inference"
+  description = "Container image used for both AIFS and AIFS-ENS inference (selected by MODEL env)"
   type        = string
 }
 

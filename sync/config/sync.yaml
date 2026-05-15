@@ -91,6 +91,16 @@ regions:
         patterns:
           - "AIFS_ENS/tp/tp_0p25_{date}.nc"
 
+      - name: GenCast
+        kind: files
+        local_root: "gencast/output/ethiopia"
+        drive_path: "{drive_root}/{date}/GenCast"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "init_{date}.nc"
+
       - name: blend
         kind: dated_directory
         local_root: "blend/output/ethiopia2026"

@@ -35,8 +35,52 @@ variable "region" {
 }
 
 locals {
-  environment      = "dev"
-  forecast_regions = ["india"]
+  environment = "dev"
+
+  regions = {
+    india = {
+      models = ["aifs", "neuralgcm"]
+      stages = ["blend", "sync"]
+      sync = {
+        rules = ["blend_google"]
+        sources = [
+          {
+            gcs_prefix = "output/blend/{date}/"
+            local_dir  = "blend/output_google/india/{date}/"
+            date_kind  = "date"
+          },
+        ]
+        git_push  = true
+        date_kind = "date"
+      }
+    }
+    ethiopia = {
+      models = ["aifs", "aifs_ens", "gencast"]
+      stages = ["sync"]
+      sync = {
+        rules = ["AIFS", "AIFS_ENS", "GenCast"]
+        sources = [
+          {
+            gcs_prefix = "output/aifs/{aifs_date}/AIFS/"
+            local_dir  = "AIFS/output/ethiopia/AIFS/"
+            date_kind  = "aifs_date"
+          },
+          {
+            gcs_prefix = "output/aifs_ens/{aifs_date}/AIFS_ENS/"
+            local_dir  = "AIFS/output/ethiopia/AIFS_ENS/"
+            date_kind  = "aifs_date"
+          },
+          {
+            gcs_prefix = "output/gencast/{aifs_date}/"
+            local_dir  = "gencast/output/ethiopia/"
+            date_kind  = "aifs_date"
+          },
+        ]
+        git_push  = false
+        date_kind = "aifs_date"
+      }
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -58,10 +102,10 @@ module "networking" {
 module "storage" {
   source = "../../modules/storage"
 
-  project_id       = var.project_id
-  region           = var.region
-  environment      = local.environment
-  forecast_regions = local.forecast_regions
+  project_id  = var.project_id
+  region      = var.region
+  environment = local.environment
+  regions     = local.regions
 
   # Dev: shorter retention, no archival
   retention_days     = 30
@@ -83,10 +127,10 @@ module "compute" {
   vpc_id         = module.networking.vpc_id
   vpc_subnetwork = module.networking.subnetwork_id
 
-  gcs_bucket            = module.storage.common_bucket_name
+  regions = local.regions
+
   common_gcs_bucket     = module.storage.common_bucket_name
   region_buckets        = module.storage.region_bucket_names
-  weights_bucket        = module.storage.weights_bucket_name
   service_account_email = module.storage.pipeline_service_account_email
 
   # Dev: use spot GPUs for model Batch jobs
@@ -100,6 +144,7 @@ module "compute" {
   sync_image           = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
   aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
   neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
+  gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
 
   depends_on = [module.networking, module.storage]
 }
@@ -115,7 +160,8 @@ module "orchestration" {
   region      = var.region
   environment = local.environment
 
-  forecast_regions = local.forecast_regions
+  regions           = local.regions
+  full_field_models = ["aifs", "aifs_ens"]
 
   # Dev: less frequent runs
   pipeline_schedule       = "0 */6 * * *" # Every 6 hours
@@ -127,7 +173,6 @@ module "orchestration" {
   batch_job_template     = module.compute.batch_job_template
   common_bucket          = module.storage.common_bucket_name
   region_buckets         = module.storage.region_bucket_names
-  weights_bucket         = module.storage.weights_bucket_name
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email
@@ -157,9 +202,14 @@ module "monitoring" {
 # Outputs
 # -----------------------------------------------------------------------------
 
-output "storage_bucket" {
-  description = "Main storage bucket name"
-  value       = module.storage.bucket_name
+output "common_bucket" {
+  description = "Common data bucket name"
+  value       = module.storage.common_bucket_name
+}
+
+output "region_buckets" {
+  description = "Per-region data bucket names"
+  value       = module.storage.region_bucket_names
 }
 
 output "workflow_url" {

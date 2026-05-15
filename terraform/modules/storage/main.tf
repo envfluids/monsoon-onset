@@ -1,19 +1,26 @@
 # -----------------------------------------------------------------------------
 # Storage Module
 # Creates GCS buckets, Artifact Registry, and lifecycle policies
+#
+# Buckets:
+#   common: shared weights, ICs, full-field model outputs, intermediate markers
+#   region (one per region): post-processed and blended region-specific outputs
 # -----------------------------------------------------------------------------
 
 # -----------------------------------------------------------------------------
-# Common Data Bucket
-# Structure: gs://monsoon-{env}-common-data-{project}/raw|raw_forecast|intermediate/
+# Common Bucket
+# gs://${name_prefix}-${env}-common-${project_id}/
+#   weights/    — model checkpoints, sparse matrices, blend supports, mask files
+#   ic/         — initial conditions shared across regions
+#   full_field/ — raw model outputs shared across regions
+#   intermediate/ — markers, latest-date files, per-(model,region) done flags
 # -----------------------------------------------------------------------------
 
-resource "google_storage_bucket" "main" {
-  name     = "${var.name_prefix}-${var.environment}-common-data-${var.project_id}"
+resource "google_storage_bucket" "common" {
+  name     = "${var.name_prefix}-${var.environment}-common-${var.project_id}"
   project  = var.project_id
   location = var.region
 
-  # Prevent accidental deletion in prod
   force_destroy = var.environment == "dev"
 
   uniform_bucket_level_access = true
@@ -22,14 +29,14 @@ resource "google_storage_bucket" "main" {
     enabled = var.enable_versioning
   }
 
-  # Lifecycle rules
+  # Archive full-field raw forecasts to NEARLINE after archive_after_days
   dynamic "lifecycle_rule" {
     for_each = var.archive_after_days != null ? [1] : []
     content {
       condition {
         age                   = var.archive_after_days
         matches_storage_class = ["STANDARD"]
-        matches_prefix        = ["raw_forecast/"]
+        matches_prefix        = ["full_field/"]
       }
       action {
         type          = "SetStorageClass"
@@ -38,17 +45,17 @@ resource "google_storage_bucket" "main" {
     }
   }
 
+  # Delete ic/ and intermediate/ after retention_days
   lifecycle_rule {
     condition {
       age            = var.retention_days
-      matches_prefix = ["raw/", "intermediate/"]
+      matches_prefix = ["ic/", "intermediate/"]
     }
     action {
       type = "Delete"
     }
   }
 
-  # CORS for potential web access
   cors {
     origin          = ["*"]
     method          = ["GET", "HEAD"]
@@ -59,18 +66,21 @@ resource "google_storage_bucket" "main" {
   labels = {
     environment = var.environment
     managed_by  = "terraform"
+    purpose     = "common"
   }
 }
 
 # -----------------------------------------------------------------------------
-# Region Data Buckets
-# Structure: gs://monsoon-{env}-{region}-data-{project}/output/
+# Per-Region Buckets
+# gs://${name_prefix}-${env}-region-${region}-${project_id}/
+#   output/  — post-processed and blended outputs for this region
+#   latest.txt — last successfully synced date
 # -----------------------------------------------------------------------------
 
-resource "google_storage_bucket" "regional" {
-  for_each = toset(var.forecast_regions)
+resource "google_storage_bucket" "region" {
+  for_each = var.regions
 
-  name     = "${var.name_prefix}-${var.environment}-${each.key}-data-${var.project_id}"
+  name     = "${var.name_prefix}-${var.environment}-${each.key}-${var.project_id}"
   project  = var.project_id
   location = var.region
 
@@ -112,24 +122,24 @@ resource "google_storage_bucket" "regional" {
 }
 
 # -----------------------------------------------------------------------------
-# Create folder structure
-# Using empty objects as folder markers
+# Folder markers (placeholder objects to keep top-level prefixes visible)
 # -----------------------------------------------------------------------------
 
 resource "google_storage_bucket_object" "common_folders" {
   for_each = toset([
-    "raw/.keep",
-    "raw_forecast/.keep",
+    "weights/.keep",
+    "ic/.keep",
+    "full_field/.keep",
     "intermediate/.keep",
   ])
 
-  bucket  = google_storage_bucket.main.name
+  bucket  = google_storage_bucket.common.name
   name    = each.key
   content = "# Placeholder for folder structure"
 }
 
 resource "google_storage_bucket_object" "region_folders" {
-  for_each = google_storage_bucket.regional
+  for_each = google_storage_bucket.region
 
   bucket  = each.value.name
   name    = "output/.keep"
@@ -151,7 +161,6 @@ resource "google_artifact_registry_repository" "containers" {
     managed_by  = "terraform"
   }
 
-  # Cleanup policy for dev
   dynamic "cleanup_policies" {
     for_each = var.environment == "dev" ? [1] : []
     content {
@@ -165,64 +174,31 @@ resource "google_artifact_registry_repository" "containers" {
 }
 
 # -----------------------------------------------------------------------------
-# Model Weights Bucket (separate for versioning/security)
-# -----------------------------------------------------------------------------
-
-resource "google_storage_bucket" "weights" {
-  name     = "${var.name_prefix}-${var.environment}-weights-${var.project_id}"
-  project  = var.project_id
-  location = var.region
-
-  force_destroy = false # Never auto-delete model weights
-
-  uniform_bucket_level_access = true
-
-  versioning {
-    enabled = true # Always version model weights
-  }
-
-  labels = {
-    environment = var.environment
-    managed_by  = "terraform"
-    purpose     = "model-weights"
-  }
-}
-
-# -----------------------------------------------------------------------------
 # IAM Bindings
 # -----------------------------------------------------------------------------
 
-# Service account for pipeline operations
 resource "google_service_account" "pipeline" {
   project      = var.project_id
   account_id   = "${var.name_prefix}-${var.environment}-pipeline"
   display_name = "Monsoon Pipeline Service Account (${var.environment})"
 }
 
-# Pipeline SA can read/write common bucket
-resource "google_storage_bucket_iam_member" "pipeline_main_bucket" {
-  bucket = google_storage_bucket.main.name
+# Pipeline SA can read/write common bucket (ICs, weights, full-field, intermediate)
+resource "google_storage_bucket_iam_member" "pipeline_common_bucket" {
+  bucket = google_storage_bucket.common.name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
-# Pipeline SA can read/write each region bucket
+# Pipeline SA can read/write each region bucket (post-processed outputs, blend, sync)
 resource "google_storage_bucket_iam_member" "pipeline_region_buckets" {
-  for_each = google_storage_bucket.regional
+  for_each = google_storage_bucket.region
 
   bucket = each.value.name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
-# Pipeline SA can read weights bucket
-resource "google_storage_bucket_iam_member" "pipeline_weights_bucket" {
-  bucket = google_storage_bucket.weights.name
-  role   = "roles/storage.objectViewer"
-  member = "serviceAccount:${google_service_account.pipeline.email}"
-}
-
-# Pipeline SA can pull container images
 resource "google_artifact_registry_repository_iam_member" "pipeline_ar" {
   project    = var.project_id
   location   = var.region
@@ -231,14 +207,12 @@ resource "google_artifact_registry_repository_iam_member" "pipeline_ar" {
   member     = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
-# Batch VMs run as the pipeline SA and must report task state back to Batch.
 resource "google_project_iam_member" "pipeline_batch_agent_reporter" {
   project = var.project_id
   role    = "roles/batch.agentReporter"
   member  = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
-# Batch task stdout/stderr is written to Cloud Logging by the job service account.
 resource "google_project_iam_member" "pipeline_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"

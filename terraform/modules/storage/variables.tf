@@ -23,26 +23,26 @@ variable "name_prefix" {
   default     = "monsoon"
 }
 
-variable "forecast_regions" {
-  description = "List of forecast regions to create folder structure for"
-  type        = list(string)
-  default     = ["india"]
+variable "regions" {
+  description = "Per-region forecast configuration. Only the keys are used to create per-region buckets."
+  type        = map(any)
+  default     = {}
 }
 
 variable "retention_days" {
-  description = "Days to retain raw/intermediate data before deletion"
+  description = "Days to retain ic/intermediate data before deletion"
   type        = number
   default     = 30
 }
 
 variable "enable_versioning" {
-  description = "Enable versioning on main bucket"
+  description = "Enable versioning on common bucket"
   type        = bool
   default     = false
 }
 
 variable "archive_after_days" {
-  description = "Days after which to move output data to NEARLINE storage (null to disable)"
+  description = "Days after which to move full_field data to NEARLINE storage (null to disable)"
   type        = number
   default     = null
 }

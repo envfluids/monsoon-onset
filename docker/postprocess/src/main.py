@@ -1,17 +1,25 @@
 """
-Monsoon Post-process — GCS Verification Step
+Monsoon Post-process — GCS Verification Gate
 
-Verifies that all required model outputs exist in GCS before blending begins.
-AIFS and NeuralGCM each run their own post-processing as part of their containers,
-so this step is purely a gate check.
+Each model container writes a per-(model, region) completion marker to the
+COMMON bucket when it finishes uploading region outputs. This service verifies
+that all markers required for FORECAST_REGION exist before blend/sync proceed.
+
+Date convention per model:
+  aifs, aifs_ens : aifs_date = DATE - 12h
+  neuralgcm      : DATE (no shift)
 
 Environment Variables:
-    DATE            : Forecast init date YYYYMMDDTHH
-    FORECAST_REGION : e.g. 'india' or 'ethiopia'
-    GCS_BUCKET      : Region data bucket
+    DATE              : NeuralGCM-paced forecast date YYYYMMDDTHH
+    FORECAST_REGION   : Region whose markers to check
+    GCS_COMMON_BUCKET : Common bucket holding intermediate/{model}_{region}_{date}_done markers
+    REGION_MODELS     : JSON map {region: [models]} (the models required for each region)
 """
 
+import json
 import logging
+import os
+from datetime import datetime, timedelta
 
 import click
 from google.cloud import storage
@@ -24,48 +32,56 @@ LOG_FORMAT = (
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-def required_output_paths(region: str, date: str) -> list[str]:
-    if region == "ethiopia":
-        return [
-            f"output/aifs/{date}/ethiopia/AIFS/tp/tp_0p25_{date}.nc",
-            f"output/aifs_ens/{date}/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc",
-        ]
-    if region == "india":
-        return [
-            f"output/aifs/{date}/india/tp/tp_0p25_{date}.nc",
-            f"output/ncum/{date}/precipitation_amount/precipitation_amount_{date}.nc",
-        ]
-    return []
+AIFS_MODELS = {"aifs", "aifs_ens"}
 
 
-def _blob_exists(bucket_name: str, gcs_path: str) -> bool:
-    return storage.Client().bucket(bucket_name).blob(gcs_path).exists()
+def _blob_exists(bucket: str, gcs_path: str) -> bool:
+    return storage.Client().bucket(bucket).blob(gcs_path).exists()
+
+
+def _date_for_model(model: str, date: str) -> str:
+    if model in AIFS_MODELS:
+        return (datetime.strptime(date, "%Y%m%dT%H") - timedelta(hours=12)).strftime("%Y%m%dT%H")
+    return date
+
+
+def _marker_paths(region: str, date: str, models: list[str]) -> list[str]:
+    return [
+        f"intermediate/{model}_{region}_{_date_for_model(model, date)}_done"
+        for model in models
+    ]
 
 
 @click.command()
-@click.option("--date",   envvar="DATE",           required=True)
-@click.option("--region", envvar="FORECAST_REGION", default="india")
-@click.option("--bucket", envvar="GCS_BUCKET",      required=True)
-def main(date, region, bucket):
-    missing = []
-    required_paths = required_output_paths(region, date)
-    if not required_paths:
-        raise RuntimeError(f"No blend input requirements are configured for region={region!r}")
+@click.option("--date",   envvar="DATE",            required=True)
+@click.option("--region", envvar="FORECAST_REGION", required=True)
+@click.option("--common-bucket", envvar="GCS_COMMON_BUCKET", required=True)
+@click.option("--region-models", envvar="REGION_MODELS", required=True,
+              help="JSON map {region: [models]}")
+def main(date, region, common_bucket, region_models):
+    region_models = json.loads(region_models)
+    if region not in region_models:
+        raise click.ClickException(f"No models configured for region {region!r}")
+    models = region_models[region]
+    if not models:
+        raise click.ClickException(f"Region {region!r} has an empty model list")
 
-    for gcs_path in required_paths:
-        if _blob_exists(bucket, gcs_path):
-            logger.info(f"  ✓ gs://{bucket}/{gcs_path}")
+    required = _marker_paths(region, date, models)
+    missing = []
+    for path in required:
+        if _blob_exists(common_bucket, path):
+            logger.info(f"  ✓ gs://{common_bucket}/{path}")
         else:
-            logger.error(f"  ✗ MISSING: gs://{bucket}/{gcs_path}")
-            missing.append(gcs_path)
+            logger.error(f"  ✗ MISSING: gs://{common_bucket}/{path}")
+            missing.append(path)
 
     if missing:
         raise RuntimeError(
-            f"Post-process verification failed: {len(missing)} required output(s) missing in GCS.\n"
-            + "\n".join(f"  - {p}" for p in missing)
+            f"Post-process verification failed for region={region}: "
+            f"{len(missing)} marker(s) missing.\n" + "\n".join(f"  - {p}" for p in missing)
         )
 
-    logger.info("All required model outputs verified in GCS. Proceeding to blend.")
+    logger.info(f"All required markers verified for region={region}. Proceeding.")
 
 
 if __name__ == "__main__":

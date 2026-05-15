@@ -132,7 +132,10 @@ def process_tp_0p25(ds, mask_path):
     return ds
 
 
-def post_process_india(AIFS, date):
+def post_process_india(AIFS, date, model="AIFS"):
+    if model != "AIFS":
+        logging.info("post_process_india currently only configured for model=AIFS; got %s — skipping", model)
+        return
     if len(AIFS.step) > 164:
         logging.info("DS has more than 164 steps "
                      "reformatting to match previous forecast length")
@@ -267,6 +270,20 @@ def post_process_ethiopia(ds, date, model):
 
     
 
+REGION_HANDLERS = {
+    "india":    post_process_india,
+    "ethiopia": post_process_ethiopia,
+}
+
+
+def _load_model_dataset(model, date):
+    if model == "AIFS":
+        return xr.open_dataset(f"../raw/output/AIFS/init_{date}.nc")
+    if model == "AIFS_ENS":
+        return xr.open_zarr(f"../raw/output/AIFS_ENS/init_{date}.zarr", chunks={})
+    raise ValueError(f"Unknown model: {model!r}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
@@ -274,6 +291,7 @@ def main():
     parser.add_argument(
         "--date",
         type=str,
+        required=True,
         help="Date for the inference in YYYYMMDDTHH format",
     )
     parser.add_argument(
@@ -282,21 +300,24 @@ def main():
         default="AIFS",
         help="Model output to process",
     )
+    parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        choices=list(REGION_HANDLERS) + [None],
+        help="If given, only process this region. Default: process all regions configured for this model.",
+    )
     args = parser.parse_args()
     date = args.date
     model = args.model
 
-    logging.info(f"Processing {date}")
-    if model == "AIFS":
-        logging.info("Loading AIFS data")
-        AIFS = xr.open_dataset(f"../raw/output/AIFS/init_{date}.nc")
-        post_process_india(AIFS, date)
-        post_process_ethiopia(AIFS, date, model)
-    elif model == "AIFS_ENS":
-        logging.info("Loading AIFS-ENS data")
-        in_path = f"../raw/output/AIFS_ENS/init_{date}.zarr"
-        AIFS_ENS = xr.open_zarr(in_path, chunks={})
-        post_process_ethiopia(AIFS_ENS, date, model)
+    logging.info(f"Processing {date} (model={model}, region={args.region or 'all'})")
+    ds = _load_model_dataset(model, date)
+
+    targets = [args.region] if args.region else list(REGION_HANDLERS)
+    for region in targets:
+        logging.info(f"Running {region} post-processing for model={model}")
+        REGION_HANDLERS[region](ds, date, model)
 
 if __name__ == "__main__":
     main()

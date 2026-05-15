@@ -23,46 +23,56 @@ variable "name_prefix" {
   default     = "monsoon"
 }
 
-variable "forecast_regions" {
-  description = "List of forecast regions to schedule"
-  type        = list(string)
-  default     = ["india"]
+variable "regions" {
+  description = "Per-region forecast configuration (models, stages, sync spec)"
+  type = map(object({
+    models = list(string)
+    stages = list(string)
+    sync = object({
+      rules = list(string)
+      sources = list(object({
+        gcs_prefix = string
+        local_dir  = string
+        date_kind  = string
+      }))
+      git_push  = bool
+      date_kind = string
+    })
+  }))
+}
+
+variable "full_field_models" {
+  description = "Models whose full-field raw forecast should be uploaded to the common bucket"
+  type        = set(string)
+  default     = ["aifs", "aifs_ens"]
 }
 
 variable "pipeline_schedule" {
   description = "Cron schedule for pipeline trigger"
   type        = string
-  default     = "*/15 * * * *" # Every 15 minutes
+  default     = "*/15 * * * *"
 }
 
 variable "call_log_level" {
-  description = "Workflow call log level for execution history (LOG_ALL_CALLS, LOG_ERRORS_ONLY, LOG_NONE)"
+  description = "Workflow call log level (LOG_ALL_CALLS, LOG_ERRORS_ONLY, LOG_NONE)"
   type        = string
   default     = "LOG_NONE"
 }
 
 variable "execution_history_level" {
-  description = "Workflow execution history level (EXECUTION_HISTORY_LEVEL_UNSPECIFIED, EXECUTION_HISTORY_BASIC, EXECUTION_HISTORY_DETAILED)"
+  description = "Workflow execution history level"
   type        = string
   default     = "EXECUTION_HISTORY_LEVEL_UNSPECIFIED"
 }
 
-variable "weights_bucket" {
-  description = "GCS bucket name for model weights and large static files"
-  type        = string
-  default     = ""
-}
-
 variable "common_bucket" {
-  description = "Common GCS bucket for ICs, intermediate markers, and raw forecasts"
+  description = "Common GCS bucket for ICs, weights, full-field forecasts, intermediate markers"
   type        = string
-  default     = ""
 }
 
 variable "region_buckets" {
-  description = "Map of forecast region to region-specific GCS bucket for post-processed and blended outputs"
+  description = "Map of forecast region to region-specific GCS bucket"
   type        = map(string)
-  default     = {}
 }
 
 variable "pipeline_service_account_id" {
@@ -71,7 +81,7 @@ variable "pipeline_service_account_id" {
 }
 
 variable "pipeline_service_account_email" {
-  description = "Email address of the pipeline service account used by Batch jobs"
+  description = "Email of the pipeline service account used by Batch jobs"
   type        = string
 }
 
@@ -103,9 +113,10 @@ variable "batch_job_template" {
     boot_disk_gb    = number
     image_streaming = bool
     preemptible     = bool
-    image           = string
+    aifs_image      = string
+    neuralgcm_image = string
+    gencast_image   = string
     vpc_network     = string
     vpc_subnet      = string
-    neuralgcm_image = string
   })
 }

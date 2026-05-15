@@ -1,8 +1,16 @@
 # -----------------------------------------------------------------------------
-# Monsoon Pipeline Workflow
-# Drives every branching decision off a single pipeline-state HTTP response:
-# external IC discovery, GCS-cached IC presence, per-model forecast completeness,
-# blendable date, and sync-needed date are all returned in one call.
+# Monsoon Pipeline Workflow — Region-Agnostic, Multi-Region
+#
+# 1. Probe pipeline-state for the global multi-region view.
+# 2. Download external ICs (ECMWF, NCEP) in parallel — guarded by per-source
+#    presence flags (skipped when not needed by any configured region).
+# 3. Run each model once across all its regions (shared IC + full-field; the
+#    container itself loops over regions internally).
+# 4. Per-region downstream: postprocess gate → blend (if region uses it)
+#    → sync (if region uses it).
+#
+# Region names appear only in `for` iterators and template-time renderings of
+# var.regions — the workflow body itself is region-agnostic.
 # -----------------------------------------------------------------------------
 
 main:
@@ -10,80 +18,73 @@ main:
   steps:
     - init:
         assign:
-          - region: $${args.region}
           - requested_date: $${default(map.get(args, "date"), "")}
           - action: $${default(map.get(args, "action"), "run")}
           - project_id: "${project_id}"
           - common_bucket: "${common_bucket}"
           - region_buckets: ${jsonencode(region_buckets)}
-          - region_bucket: $${default(map.get(region_buckets, region), common_bucket)}
+          - regions: ${jsonencode(regions)}
+          - region_names: ${jsonencode([for r, _ in regions : r])}
+          - regions_by_model: ${jsonencode(regions_by_model)}
           - pipeline_state_url: "${pipeline_state_url}"
+          # Default fallbacks for pipeline-state response fields that may be
+          # omitted when a source/model/region isn't configured. The expression
+          # language doesn't accept inline map literals, so we pre-define them.
+          - default_ic:
+              present: true
+              date: ""
+          - default_model_info:
+              date: ""
+              complete: true
+          - default_region_block: {}
+          - default_blend_info:
+              date: ""
+              present: false
+          - default_sync_info:
+              date: ""
+              needs_run: false
 
-    - call_pipeline_state_initial:
+    - probe_state_initial:
         call: pipeline_state
         args:
           base_url: $${pipeline_state_url}
-          region: $${region}
           date: $${requested_date}
         result: state
 
-    - extract_initial_state:
+    - extract_initial:
         assign:
-          - aifs_ic_date: $${state.models.aifs.ic_date}
-          - aifs_ic_in_gcs: $${state.models.aifs.ic_in_gcs}
-          - aifs_complete: $${state.models.aifs.forecast_complete}
-          - aifs_ens_complete: $${state.models.aifs_ens.forecast_complete}
-          - neuralgcm_ic_date: $${state.models.neuralgcm.ic_date}
-          - neuralgcm_ic_in_gcs: $${state.models.neuralgcm.ic_in_gcs}
-          - neuralgcm_complete: $${state.models.neuralgcm.forecast_complete}
-          - blend_needs_run: $${state.blend.needs_run}
-          - blend_date: $${state.blend.date}
-          - sync_needs_run: $${state.sync.needs_run}
-          - sync_date: $${state.sync.date}
+          - ecmwf_state: $${default(map.get(state.ic, "ecmwf"), default_ic)}
+          - ncep_state: $${default(map.get(state.ic, "ncep"), default_ic)}
 
     - log_initial_plan:
         call: sys.log
         args:
           severity: INFO
-          text: $${"Pipeline-state initial region=" + region
-                  + " aifs_ic=" + aifs_ic_date + " aifs_complete=" + string(aifs_complete)
-                  + " aifs_ens_complete=" + string(aifs_ens_complete)
-                  + " neuralgcm_ic=" + neuralgcm_ic_date + " neuralgcm_complete=" + string(neuralgcm_complete)
-                  + " blend_needs_run=" + string(blend_needs_run) + " blend_date=" + blend_date
-                  + " sync_needs_run=" + string(sync_needs_run) + " sync_date=" + sync_date}
+          text: $${"PS date=" + state.date + " ecmwf_date=" + ecmwf_state.date + " ecmwf_present=" + string(ecmwf_state.present) + " ncep_date=" + ncep_state.date + " ncep_present=" + string(ncep_state.present)}
 
     - maybe_return_checked:
         switch:
           - condition: $${action == "check"}
             next: return_checked
           - condition: true
-            next: maybe_run_models
+            next: maybe_download_ics
 
-    - maybe_run_models:
-        switch:
-          - condition: $${(aifs_ic_date == "" or (aifs_complete and aifs_ens_complete)) and (neuralgcm_ic_date == "" or neuralgcm_complete)}
-            next: post_models_state
-          - condition: true
-            next: run_models
-
-    - run_models:
+    # -------------------------------------------------------------------------
+    # IC download (parallel; skipped per-branch when source not needed or
+    # already present in GCS)
+    # -------------------------------------------------------------------------
+    - maybe_download_ics:
         parallel:
           branches:
-            - run_aifs:
+            - download_ecmwf:
                 steps:
-                  - maybe_skip_aifs:
+                  - check_ecmwf:
                       switch:
-                        - condition: $${aifs_ic_date == "" or (aifs_complete and aifs_ens_complete)}
-                          next: aifs_done
+                        - condition: $${ecmwf_state.present or not(ecmwf_state.date)}
+                          next: ecmwf_done
                         - condition: true
-                          next: maybe_download_aifs_ic
-                  - maybe_download_aifs_ic:
-                      switch:
-                        - condition: $${aifs_ic_in_gcs}
-                          next: write_aifs_date_marker
-                        - condition: true
-                          next: download_aifs_ic
-                  - download_aifs_ic:
+                          next: run_download_ecmwf
+                  - run_download_ecmwf:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
                         name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
@@ -92,203 +93,21 @@ main:
                             containerOverrides:
                               - env:
                                   - name: SOURCE
-                                    value: ecmwf
+                                    value: "ecmwf"
                                   - name: DATE
-                                    value: $${aifs_ic_date}
-                                  - name: FORECAST_REGION
-                                    value: $${region}
-                      result: aifs_download_result
-                  - write_aifs_date_marker:
-                      call: write_text_object
-                      args:
-                        bucket: $${common_bucket}
-                        path: "intermediate/latest_ecmwf_date.txt"
-                        content: $${aifs_ic_date}
-                  - run_aifs_batch_jobs:
-                      parallel:
-                        branches:
-                          - run_aifs_deterministic:
-                              steps:
-                                - maybe_skip_aifs_deterministic:
-                                    switch:
-                                      - condition: $${aifs_complete}
-                                        next: aifs_deterministic_done
-                                      - condition: true
-                                        next: create_aifs_job
-                                - create_aifs_job:
-                                    call: googleapis.batch.v1.projects.locations.jobs.create
-                                    args:
-                                      parent: $${"projects/" + project_id + "/locations/${region}"}
-                                      jobId: $${"aifs-" + region + "-" + text.replace_all(aifs_ic_date, "T", "-") + "-" + string(int(sys.now()))}
-                                      body:
-                                        taskGroups:
-                                          - taskCount: 1
-                                            taskSpec:
-                                              computeResource:
-                                                cpuMilli: 8000
-                                                memoryMib: 32768
-                                              maxRetryCount: 1
-                                              maxRunDuration: "1800s"
-                                              runnables:
-                                                - container:
-                                                    imageUri: "${batch_config.image}"
-                                                    enableImageStreaming: ${batch_config.image_streaming}
-                                                  environment:
-                                                    variables:
-                                                      DATE: $${aifs_ic_date}
-                                                      AIFS_MODEL: AIFS
-                                                      FORECAST_REGION: $${region}
-                                                      GCS_BUCKET: $${region_bucket}
-                                                      GCS_COMMON_BUCKET: $${common_bucket}
-                                                      GCS_WEIGHTS_BUCKET: "${weights_bucket}"
-                                        allocationPolicy:
-                                          serviceAccount:
-                                            email: "${pipeline_sa}"
-                                          instances:
-                                            - installGpuDrivers: true
-                                              policy:
-                                                machineType: "${batch_config.machine_type}"
-                                                bootDisk:
-                                                  image: "${batch_config.os_image}"
-                                                  sizeGb: ${batch_config.boot_disk_gb}
-                                                provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
-                                                accelerators:
-                                                  - type: "${batch_config.gpu_type}"
-                                                    count: ${batch_config.gpu_count}
-                                          location:
-                                            allowedLocations: ["regions/${region}"]
-                                          network:
-                                            networkInterfaces:
-                                              - network: "${batch_config.vpc_network}"
-                                                subnetwork: "${batch_config.vpc_subnet}"
-                                                noExternalIpAddress: true
-                                        logsPolicy:
-                                          destination: CLOUD_LOGGING
-                                      connector_params:
-                                        skip_polling: true
-                                    result: aifs_job
-                                - poll_aifs:
-                                    steps:
-                                      - get_aifs_status:
-                                          call: googleapis.batch.v1.projects.locations.jobs.get
-                                          args:
-                                            name: $${aifs_job.name}
-                                          result: aifs_status
-                                      - check_aifs_state:
-                                          switch:
-                                            - condition: $${aifs_status.status.state == "SUCCEEDED"}
-                                              next: aifs_deterministic_done
-                                            - condition: $${aifs_status.status.state == "FAILED"}
-                                              raise: '$${"AIFS job failed " + aifs_job.name}'
-                                      - sleep_aifs:
-                                          call: sys.sleep
-                                          args:
-                                            seconds: 60
-                                          next: get_aifs_status
-                                - aifs_deterministic_done:
-                                    assign:
-                                      - aifs_deterministic_branch_done: true
-
-                          - run_aifs_ensemble:
-                              steps:
-                                - maybe_skip_aifs_ensemble:
-                                    switch:
-                                      - condition: $${aifs_ens_complete}
-                                        next: aifs_ensemble_done
-                                      - condition: true
-                                        next: create_aifs_ens_job
-                                - create_aifs_ens_job:
-                                    call: googleapis.batch.v1.projects.locations.jobs.create
-                                    args:
-                                      parent: $${"projects/" + project_id + "/locations/${region}"}
-                                      jobId: $${"aifs-ens-" + region + "-" + text.replace_all(aifs_ic_date, "T", "-") + "-" + string(int(sys.now()))}
-                                      body:
-                                        taskGroups:
-                                          - taskCount: 1
-                                            taskSpec:
-                                              computeResource:
-                                                cpuMilli: 8000
-                                                memoryMib: 65536
-                                              maxRetryCount: 1
-                                              maxRunDuration: "7200s"
-                                              runnables:
-                                                - container:
-                                                    imageUri: "${batch_config.image}"
-                                                    enableImageStreaming: ${batch_config.image_streaming}
-                                                  environment:
-                                                    variables:
-                                                      DATE: $${aifs_ic_date}
-                                                      AIFS_MODEL: AIFS_ENS
-                                                      FORECAST_REGION: $${region}
-                                                      GCS_BUCKET: $${region_bucket}
-                                                      GCS_COMMON_BUCKET: $${common_bucket}
-                                                      GCS_WEIGHTS_BUCKET: "${weights_bucket}"
-                                        allocationPolicy:
-                                          serviceAccount:
-                                            email: "${pipeline_sa}"
-                                          instances:
-                                            - installGpuDrivers: true
-                                              policy:
-                                                machineType: "${batch_config.machine_type}"
-                                                bootDisk:
-                                                  image: "${batch_config.os_image}"
-                                                  sizeGb: ${batch_config.boot_disk_gb}
-                                                provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
-                                                accelerators:
-                                                  - type: "${batch_config.gpu_type}"
-                                                    count: ${batch_config.gpu_count}
-                                          location:
-                                            allowedLocations: ["regions/${region}"]
-                                          network:
-                                            networkInterfaces:
-                                              - network: "${batch_config.vpc_network}"
-                                                subnetwork: "${batch_config.vpc_subnet}"
-                                                noExternalIpAddress: true
-                                        logsPolicy:
-                                          destination: CLOUD_LOGGING
-                                      connector_params:
-                                        skip_polling: true
-                                    result: aifs_ens_job
-                                - poll_aifs_ens:
-                                    steps:
-                                      - get_aifs_ens_status:
-                                          call: googleapis.batch.v1.projects.locations.jobs.get
-                                          args:
-                                            name: $${aifs_ens_job.name}
-                                          result: aifs_ens_status
-                                      - check_aifs_ens_state:
-                                          switch:
-                                            - condition: $${aifs_ens_status.status.state == "SUCCEEDED"}
-                                              next: aifs_ensemble_done
-                                            - condition: $${aifs_ens_status.status.state == "FAILED"}
-                                              raise: '$${"AIFS-ENS job failed " + aifs_ens_job.name}'
-                                      - sleep_aifs_ens:
-                                          call: sys.sleep
-                                          args:
-                                            seconds: 60
-                                          next: get_aifs_ens_status
-                                - aifs_ensemble_done:
-                                    assign:
-                                      - aifs_ensemble_branch_done: true
-                  - aifs_done:
+                                    value: $${ecmwf_state.date}
+                  - ecmwf_done:
                       assign:
-                        - aifs_branch_done: true
-
-            - run_neuralgcm:
+                        - ecmwf_branch_done: true
+            - download_ncep:
                 steps:
-                  - maybe_skip_neuralgcm:
+                  - check_ncep:
                       switch:
-                        - condition: $${neuralgcm_ic_date == "" or neuralgcm_complete}
-                          next: neuralgcm_done
+                        - condition: $${ncep_state.present or not(ncep_state.date)}
+                          next: ncep_done
                         - condition: true
-                          next: maybe_download_neuralgcm_ic
-                  - maybe_download_neuralgcm_ic:
-                      switch:
-                        - condition: $${neuralgcm_ic_in_gcs}
-                          next: create_neuralgcm_job
-                        - condition: true
-                          next: download_neuralgcm_ic
-                  - download_neuralgcm_ic:
+                          next: run_download_ncep
+                  - run_download_ncep:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
                         name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.downloader.name}"
@@ -297,37 +116,72 @@ main:
                             containerOverrides:
                               - env:
                                   - name: SOURCE
-                                    value: ncep
+                                    value: "ncep"
                                   - name: DATE
-                                    value: $${neuralgcm_ic_date}
-                                  - name: FORECAST_REGION
-                                    value: $${region}
-                      result: neuralgcm_download_result
-                  - create_neuralgcm_job:
+                                    value: $${ncep_state.date}
+                  - ncep_done:
+                      assign:
+                        - ncep_branch_done: true
+
+    # -------------------------------------------------------------------------
+    # Re-probe state so post-IC view drives model launch decisions
+    # -------------------------------------------------------------------------
+    - probe_state_post_ic:
+        call: pipeline_state
+        args:
+          base_url: $${pipeline_state_url}
+          date: $${requested_date}
+        result: state_post_ic
+
+    - extract_post_ic:
+        assign:
+          - models_state: $${state_post_ic.models}
+
+    # -------------------------------------------------------------------------
+    # Run models (parallel; one branch per model in use; per-branch skip when
+    # model already complete across all its regions)
+    # -------------------------------------------------------------------------
+    - maybe_run_models:
+        parallel:
+          branches:
+%{ for model in models_in_use ~}
+            - run_${model}:
+                steps:
+                  - load_${model}_info:
+                      assign:
+                        - ${model}_info: $${default(map.get(models_state, "${model}"), default_model_info)}
+                  - maybe_skip_${model}:
+                      switch:
+                        - condition: $${not(${model}_info.date) or ${model}_info.complete}
+                          next: ${model}_done
+                        - condition: true
+                          next: submit_${model}_batch
+                  - submit_${model}_batch:
                       call: googleapis.batch.v1.projects.locations.jobs.create
                       args:
                         parent: $${"projects/" + project_id + "/locations/${region}"}
-                        jobId: $${"neuralgcm-" + region + "-" + text.replace_all(neuralgcm_ic_date, "T", "-") + "-" + string(int(sys.now()))}
+                        jobId: $${"${model}-" + text.replace_all(${model}_info.date, "T", "-") + "-" + string(int(sys.now()))}
                         body:
                           taskGroups:
                             - taskCount: 1
                               taskSpec:
                                 computeResource:
                                   cpuMilli: 8000
-                                  memoryMib: 65536
+                                  memoryMib: ${model == "aifs_ens" || model == "neuralgcm" ? 65536 : 32768}
                                 maxRetryCount: 1
-                                maxRunDuration: "3600s"
+                                maxRunDuration: "${model == "aifs_ens" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
                                 runnables:
                                   - container:
-                                      imageUri: "${batch_config.neuralgcm_image}"
+                                      imageUri: "${model_images[model]}"
                                       enableImageStreaming: ${batch_config.image_streaming}
                                     environment:
                                       variables:
-                                        DATE: $${neuralgcm_ic_date}
-                                        FORECAST_REGION: $${region}
-                                        GCS_BUCKET: $${region_bucket}
+                                        DATE: $${${model}_info.date}
+                                        MODEL: "${model}"
+                                        FORECAST_REGIONS: ${jsonencode(jsonencode(regions_by_model[model]))}
                                         GCS_COMMON_BUCKET: $${common_bucket}
-                                        GCS_WEIGHTS_BUCKET: "${weights_bucket}"
+                                        GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
+                                        UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
                           allocationPolicy:
                             serviceAccount:
                               email: "${pipeline_sa}"
@@ -353,156 +207,149 @@ main:
                             destination: CLOUD_LOGGING
                         connector_params:
                           skip_polling: true
-                      result: neuralgcm_job
-                  - poll_neuralgcm:
+                      result: ${model}_job
+                  - poll_${model}:
                       steps:
-                        - get_neuralgcm_status:
+                        - get_${model}_status:
                             call: googleapis.batch.v1.projects.locations.jobs.get
                             args:
-                              name: $${neuralgcm_job.name}
-                            result: neuralgcm_status
-                        - check_neuralgcm_state:
+                              name: $${${model}_job.name}
+                            result: ${model}_status
+                        - check_${model}_state:
                             switch:
-                              - condition: $${neuralgcm_status.status.state == "SUCCEEDED"}
-                                next: neuralgcm_done
-                              - condition: $${neuralgcm_status.status.state == "FAILED"}
-                                raise: '$${"NeuralGCM job failed " + neuralgcm_job.name}'
-                        - sleep_neuralgcm:
+                              - condition: $${${model}_status.status.state == "SUCCEEDED"}
+                                next: ${model}_done
+                              - condition: $${${model}_status.status.state == "FAILED"}
+                                raise: '$${"${model} job failed " + ${model}_job.name}'
+                        - sleep_${model}:
                             call: sys.sleep
                             args:
-                              seconds: 120
-                            next: get_neuralgcm_status
-                  - neuralgcm_done:
+                              seconds: ${model == "neuralgcm" ? 120 : 60}
+                            next: get_${model}_status
+                  - ${model}_done:
                       assign:
-                        - neuralgcm_branch_done: true
+                        - ${model}_branch_done: true
+%{ endfor ~}
 
-    - post_models_state:
+    # -------------------------------------------------------------------------
+    # Re-probe state for per-region downstream decisions
+    # -------------------------------------------------------------------------
+    - probe_state_post_models:
         call: pipeline_state
         args:
           base_url: $${pipeline_state_url}
-          region: $${region}
           date: $${requested_date}
-        result: state_after_models
+        result: state_post_models
 
-    - extract_post_models_state:
+    - extract_post_models:
         assign:
-          - blend_needs_run: $${state_after_models.blend.needs_run}
-          - blend_date: $${state_after_models.blend.date}
+          - per_region: $${state_post_models.per_region}
+          - primary_date: $${state_post_models.date}
 
-    - maybe_blend:
-        switch:
-          - condition: $${blend_needs_run}
-            next: write_blend_aifs_marker
-          - condition: true
-            next: post_blend_state
-
-    - write_blend_aifs_marker:
-        call: write_text_object
-        args:
-          bucket: $${common_bucket}
-          path: "intermediate/latest_ecmwf_date.txt"
-          content: $${blend_date}
-
-    - postprocess:
-        call: googleapis.run.v2.projects.locations.jobs.run
-        args:
-          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.postprocess.name}"
-          body:
-            overrides:
-              containerOverrides:
-                - env:
-                    - name: DATE
-                      value: $${blend_date}
-                    - name: FORECAST_REGION
-                      value: $${region}
-                    - name: GCS_BUCKET
-                      value: $${region_bucket}
-                    - name: GCS_COMMON_BUCKET
-                      value: $${common_bucket}
-        result: postprocess_result
-
-    - blend:
-        call: googleapis.run.v2.projects.locations.jobs.run
-        args:
-          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.blend.name}"
-          body:
-            overrides:
-              containerOverrides:
-                - env:
-                    - name: DATE
-                      value: $${blend_date}
-                    - name: FORECAST_REGION
-                      value: $${region}
-                    - name: GCS_BUCKET
-                      value: $${region_bucket}
-                    - name: GCS_COMMON_BUCKET
-                      value: $${common_bucket}
-        result: blend_result
-
-    - post_blend_state:
-        call: pipeline_state
-        args:
-          base_url: $${pipeline_state_url}
-          region: $${region}
-          date: $${requested_date}
-        result: state_after_blend
-
-    - extract_post_blend_state:
-        assign:
-          - sync_needs_run: $${state_after_blend.sync.needs_run}
-          - sync_date: $${state_after_blend.sync.date}
-
-    - maybe_sync:
-        switch:
-          - condition: $${sync_needs_run}
-            next: sync
-          - condition: true
-            next: return_result
-
-    - sync:
-        call: googleapis.run.v2.projects.locations.jobs.run
-        args:
-          name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.sync.name}"
-          body:
-            overrides:
-              containerOverrides:
-                - env:
-                    - name: DATE
-                      value: $${sync_date}
-                    - name: FORECAST_REGION
-                      value: $${region}
-                    - name: GCS_BUCKET
-                      value: $${region_bucket}
-                    - name: GCS_COMMON_BUCKET
-                      value: $${common_bucket}
-        result: sync_result
+    # -------------------------------------------------------------------------
+    # Per-region downstream stages (sequential; cheap enough that we don't
+    # need to parallelize across regions)
+    # -------------------------------------------------------------------------
+    - per_region_loop:
+        for:
+          value: region_name
+          in: $${region_names}
+          steps:
+            - load_region_block:
+                assign:
+                  - region_cfg: $${map.get(regions, region_name)}
+                  - region_block: $${default(map.get(per_region, region_name), default_region_block)}
+                  - blend_info: $${default(map.get(region_block, "blend"), default_blend_info)}
+                  - sync_info: $${default(map.get(region_block, "sync"), default_sync_info)}
+            - maybe_postprocess:
+                switch:
+                  - condition: $${"blend" in region_cfg.stages or "sync" in region_cfg.stages}
+                    next: postprocess
+                  - condition: true
+                    next: end_region_iteration
+            - postprocess:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.postprocess.name}"
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: DATE
+                              value: $${primary_date}
+                            - name: FORECAST_REGION
+                              value: $${region_name}
+                            - name: GCS_COMMON_BUCKET
+                              value: $${common_bucket}
+                result: postprocess_result
+            - maybe_blend:
+                switch:
+                  - condition: $${"blend" in region_cfg.stages and blend_info.date != "" and not(blend_info.present)}
+                    next: run_blend
+                  - condition: true
+                    next: maybe_sync
+            - run_blend:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.blend.name}"
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: DATE
+                              value: $${blend_info.date}
+                            - name: FORECAST_REGION
+                              value: $${region_name}
+                            - name: GCS_COMMON_BUCKET
+                              value: $${common_bucket}
+                            - name: GCS_REGION_BUCKETS
+                              value: $${json.encode_to_string(region_buckets)}
+                result: blend_result
+            - maybe_sync:
+                switch:
+                  - condition: $${"sync" in region_cfg.stages and default(map.get(sync_info, "needs_run"), false)}
+                    next: run_sync
+                  - condition: true
+                    next: end_region_iteration
+            - run_sync:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.sync.name}"
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: DATE
+                              value: $${sync_info.date}
+                            - name: FORECAST_REGION
+                              value: $${region_name}
+                            - name: GCS_REGION_BUCKETS
+                              value: $${json.encode_to_string(region_buckets)}
+                            - name: SYNC_SPEC
+                              value: $${json.encode_to_string(region_cfg.sync)}
+                result: sync_result
+            - end_region_iteration:
+                assign:
+                  - last_region_processed: $${region_name}
 
     - return_result:
         return:
           status: "completed"
-          region: $${region}
-          aifs_ic_date: $${aifs_ic_date}
-          neuralgcm_ic_date: $${neuralgcm_ic_date}
-          blend_date: $${blend_date}
-          sync_date: $${sync_date}
-          aifs_ran: $${aifs_ic_date != "" and not aifs_complete}
-          aifs_ens_ran: $${aifs_ic_date != "" and not aifs_ens_complete}
-          neuralgcm_ran: $${neuralgcm_ic_date != "" and not neuralgcm_complete}
-          blend_ran: $${blend_needs_run}
-          sync_ran: $${sync_needs_run}
+          date: $${primary_date}
+          regions: $${region_names}
 
     - return_checked:
         return:
           status: "checked"
-          region: $${region}
           state: $${state}
+
 
 # -----------------------------------------------------------------------------
 # Subroutines
 # -----------------------------------------------------------------------------
 
 pipeline_state:
-  params: [base_url, region, date]
+  params: [base_url, date]
   steps:
     - build_url:
         switch:
@@ -512,11 +359,11 @@ pipeline_state:
             next: set_url_with_date
     - set_url_no_date:
         assign:
-          - url: $${base_url + "/state?region=" + region}
+          - url: $${base_url + "/state"}
         next: fetch
     - set_url_with_date:
         assign:
-          - url: $${base_url + "/state?region=" + region + "&date=" + date}
+          - url: $${base_url + "/state?date=" + date}
     - fetch:
         call: http.get
         args:
@@ -527,19 +374,3 @@ pipeline_state:
         result: response
     - return_body:
         return: $${response.body}
-
-write_text_object:
-  params: [bucket, path, content]
-  steps:
-    - write_object:
-        call: http.post
-        args:
-          url: $${"https://storage.googleapis.com/upload/storage/v1/b/" + bucket + "/o?uploadType=media&name=" + text.replace_all(path, "/", "%2F")}
-          auth:
-            type: OAuth2
-          headers:
-            Content-Type: text/plain
-          body: $${content}
-        result: write_result
-    - return_result:
-        return: $${write_result}

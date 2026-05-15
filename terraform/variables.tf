@@ -23,10 +23,34 @@ variable "environment" {
   }
 }
 
-variable "forecast_regions" {
-  description = "List of forecast regions to support (e.g., india, west_africa)"
-  type        = list(string)
-  default     = ["india"]
+# -----------------------------------------------------------------------------
+# Forecast regions — single source of truth for which regions run which models
+# and stages, plus per-region sync configuration.
+# -----------------------------------------------------------------------------
+
+variable "regions" {
+  description = "Per-region forecast configuration (models, downstream stages, sync spec)"
+  type = map(object({
+    models = list(string) # which models produce output for this region
+    stages = list(string) # which post-model stages run: "blend", "sync"
+    sync = object({
+      rules = list(string) # sync.yaml rule names to invoke
+      sources = list(object({
+        gcs_prefix = string # may contain {date} or {aifs_date}
+        local_dir  = string # may contain {date} or {aifs_date}
+        date_kind  = string # "date" or "aifs_date"
+      }))
+      git_push  = bool   # push to monsoon-operational repo
+      date_kind = string # "date" (NeuralGCM-paced) or "aifs_date" (AIFS-only)
+    })
+  }))
+  default = {}
+}
+
+variable "full_field_models" {
+  description = "Models whose full-field raw forecast should be uploaded to the common bucket"
+  type        = set(string)
+  default     = ["aifs", "aifs_ens"]
 }
 
 # -----------------------------------------------------------------------------
@@ -40,10 +64,8 @@ variable "name_prefix" {
 }
 
 locals {
-  # Standard naming: {prefix}-{environment}-{resource}
   resource_prefix = "${var.name_prefix}-${var.environment}"
 
-  # Common labels applied to all resources
   common_labels = {
     project     = var.name_prefix
     environment = var.environment
