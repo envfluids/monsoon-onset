@@ -1,7 +1,7 @@
 # ngcm inference
-"jax[tpu]"
+jax[tpu]
 flax
-"https://github.com/google-deepmind/graphcast/archive/refs/tags/v0.2.zip"
+https://github.com/google-deepmind/graphcast/archive/refs/tags/v0.2.zip
 
 # Data processing
 xarray
