@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 import json
 import logging
 import re
@@ -25,7 +25,9 @@ logging.basicConfig(
 DATE_RE = re.compile(r"^\d{8}T00$")
 DEFAULT_SERVER = "https://cloud.ncmrwf.gov.in"
 REQUEST_TIMEOUT_SECONDS = 60
+CHECK_TIMEOUT_SECONDS = 15
 CHUNK_SIZE_BYTES = 1024 * 1024
+DEFAULT_LOOKBACK_DAYS = 7
 
 
 def project_root() -> Path:
@@ -57,7 +59,139 @@ def load_auth(auth_file: Path) -> tuple[str, str]:
 
 
 def output_path_for(date: str) -> Path:
-    return project_root() / "raw" / "precipitation_amount" / f"precipitation_amount_{date}.nc"
+    return (
+        project_root()
+        / "raw"
+        / "precipitation_amount"
+        / f"precipitation_amount_{date}.nc"
+    )
+
+
+def processed_output_path_for(date: str) -> Path:
+    return (
+        project_root()
+        / "output"
+        / "precipitation_amount"
+        / f"precipitation_amount_{date}.nc"
+    )
+
+
+def validate_date(date: str) -> None:
+    if not DATE_RE.fullmatch(date):
+        raise ValueError(
+            f"Date must use YYYYMMDDT00 format, for example 20260512T00: {date}"
+        )
+
+
+def candidate_dates(max_days_back: int = DEFAULT_LOOKBACK_DAYS) -> list[str]:
+    max_days_back = max(1, max_days_back)
+    today_00z = datetime.now(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    return [
+        (today_00z - timedelta(days=days_back)).strftime("%Y%m%dT00")
+        for days_back in range(max_days_back)
+    ]
+
+
+def remote_file_for(date: str) -> str:
+    run_date = date.removesuffix("T00")
+    return f"{date[:4]}/{run_date}.nc"
+
+
+def download_request(date: str, api_key: str, server: str) -> tuple[str, dict[str, str]]:
+    params = {
+        "action": "download",
+        "file": remote_file_for(date),
+        "api_key": api_key,
+    }
+    url = f"{server.rstrip('/')}/file_manager.php"
+    return url, params
+
+
+def response_looks_downloadable(response: requests.Response) -> bool:
+    if response.status_code != 200:
+        return False
+
+    content_type = response.headers.get("content-type", "").lower()
+    if any(
+        marker in content_type for marker in ("text/html", "application/json", "xml")
+    ):
+        return False
+
+    content_length = response.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) <= 0:
+                return False
+        except ValueError:
+            logging.warning("Unexpected content-length header: %s", content_length)
+
+    return True
+
+
+def remote_file_available(date: str, api_key: str, server: str) -> bool:
+    url, params = download_request(date, api_key, server)
+    remote_file = params["file"]
+
+    logging.info("Checking for NCUM forecast: %s", remote_file)
+    try:
+        response = requests.head(
+            url,
+            params=params,
+            allow_redirects=True,
+            timeout=CHECK_TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as exc:
+        logging.warning("HEAD check failed for %s: %s", remote_file, exc)
+    else:
+        if response_looks_downloadable(response):
+            logging.info("Found available NCUM forecast: %s", remote_file)
+            return True
+        if response.status_code not in {405, 501}:
+            logging.info(
+                "NCUM forecast not available for %s: HTTP %s",
+                remote_file,
+                response.status_code,
+            )
+            return False
+
+    try:
+        with requests.get(
+            url,
+            params=params,
+            stream=True,
+            timeout=CHECK_TIMEOUT_SECONDS,
+        ) as response:
+            if response_looks_downloadable(response):
+                logging.info("Found available NCUM forecast: %s", remote_file)
+                return True
+            logging.info(
+                "NCUM forecast not available for %s: HTTP %s",
+                remote_file,
+                response.status_code,
+            )
+            return False
+    except requests.RequestException as exc:
+        logging.warning("GET check failed for %s: %s", remote_file, exc)
+        return False
+
+
+def latest_available_date(
+    api_key: str, server: str, max_days_back: int = DEFAULT_LOOKBACK_DAYS
+) -> str | None:
+    for date in candidate_dates(max_days_back):
+        if remote_file_available(date, api_key, server):
+            return date
+
+    logging.warning(
+        "No NCUM forecast found after checking the last %s days.", max_days_back
+    )
+    return None
+
+
+def file_is_complete(path: Path) -> bool:
+    return path.exists() and path.stat().st_size > 0
 
 
 def prepare_output_path(output_path: Path, overwrite: bool) -> None:
@@ -78,20 +212,13 @@ def prepare_output_path(output_path: Path, overwrite: bool) -> None:
 
 
 def download_forecast(date: str, api_key: str, server: str, output_path: Path) -> None:
-    run_date = date.removesuffix("T00")
-    remote_file = f"{date[:4]}/{run_date}.nc"
+    url, params = download_request(date, api_key, server)
+    remote_file = params["file"]
     temp_path = output_path.with_name(f"{output_path.name}.part")
 
     if temp_path.exists():
         logging.warning("Removing stale partial download: %s", temp_path)
         temp_path.unlink()
-
-    params = {
-        "action": "download",
-        "file": remote_file,
-        "api_key": api_key,
-    }
-    url = f"{server.rstrip('/')}/file_manager.php"
 
     logging.info("Downloading %s", remote_file)
     logging.info("Saving to %s", output_path)
@@ -104,6 +231,10 @@ def download_forecast(date: str, api_key: str, server: str, output_path: Path) -
             timeout=REQUEST_TIMEOUT_SECONDS,
         ) as response:
             response.raise_for_status()
+            if not response_looks_downloadable(response):
+                raise RuntimeError(
+                    f"Remote response does not look like a NetCDF download: {remote_file}"
+                )
             expected_size = int(response.headers.get("content-length", 0))
 
             with temp_path.open("wb") as file_obj, tqdm(
@@ -135,23 +266,50 @@ def download_forecast(date: str, api_key: str, server: str, output_path: Path) -
         raise
 
 
+def ensure_processed(date: str) -> bool:
+    processed_path = processed_output_path_for(date)
+    if file_is_complete(processed_path):
+        logging.info("Processed NCUM file already exists: %s", processed_path)
+        return False
 
-def get_data(date: str | None = None, overwrite: bool = False) -> str | None:
+    logging.info("Preprocessing NCUM forecast for %s", date)
+    preprocess_ncum(date, project_root())
+    return True
 
-    if date is None:
-        date = datetime.now().strftime("%Y%m%dT00")
-        logging.info(f"No date provided, using current date: {date}")
+
+def get_data(
+    date: str | None = None,
+    overwrite: bool = False,
+    max_days_back: int = DEFAULT_LOOKBACK_DAYS,
+) -> str | None:
     try:
         api_key, server = load_auth(project_root() / ".auth" / "keys.json")
-        output_path = output_path_for(date)
-        if output_path.exists():
-            logging.info("Output file already exists: %s", output_path)
-            return None
+        remote_checked = False
+
+        if date is not None:
+            validate_date(date)
         else:
-            prepare_output_path(output_path, overwrite)
-            download_forecast(date, api_key, server, output_path)
-            preprocess_ncum(date, project_root())
+            date = latest_available_date(api_key, server, max_days_back)
+            if date is None:
+                return None
+            remote_checked = True
+
+        output_path = output_path_for(date)
+        if file_is_complete(output_path) and not overwrite:
+            logging.info("Raw NCUM file already exists: %s", output_path)
+            if ensure_processed(date):
+                return date
+            return None
+
+        if not remote_checked and not remote_file_available(date, api_key, server):
+            logging.info("NCUM forecast is not available: %s", date)
+            return None
+
+        prepare_output_path(output_path, overwrite)
+        download_forecast(date, api_key, server, output_path)
+        if ensure_processed(date):
             return date
+        return date
     except Exception as exc:
         logging.error("Failed to download forecast: %s", exc)
         return None
@@ -169,9 +327,15 @@ def main() -> int:
         action="store_true",
         help="Replace the output file if it already exists.",
     )
+    parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=DEFAULT_LOOKBACK_DAYS,
+        help="Number of recent 00z forecast dates to check when --date is omitted.",
+    )
     args = parser.parse_args()
 
-    date = get_data(args.date, args.overwrite)
+    date = get_data(args.date, args.overwrite, args.lookback_days)
     if date:
         logging.info(f"Successfully downloaded and processed forecast for date: {date}")
     else:

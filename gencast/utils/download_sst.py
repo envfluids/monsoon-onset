@@ -66,15 +66,38 @@ def get_open_data(DATE, param):
     return ds
 
 def get_sst(date_f):
+    SST_DIR.mkdir(parents=True, exist_ok=True)
+    out_path = SST_DIR / f"sst_{date_f}.nc"
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+
+    if out_path.exists():
+        logging.info("SST file %s already exists. Skipping download.", out_path)
+        return out_path
+
     date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
     sfc_mars = get_open_data(DATE=date, param=list(PARAM_SFC_MARS.keys()))
     sfc_mars = sfc_mars.rename(PARAM_SFC_MARS)
 
     for var in sfc_mars.data_vars:
         sfc_mars[var] = sfc_mars[var].astype(np.float32)
-        sfc_mars[var].attrs.pop("_earthkit")
+        sfc_mars[var].attrs.pop("_earthkit", None)
 
-    sfc_mars.to_netcdf(SST_DIR / f"sst_{date_f}.nc")
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    try:
+        sfc_mars.to_netcdf(tmp_path)
+        tmp_path.replace(out_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    if not out_path.exists():
+        raise RuntimeError(f"SST download did not create {out_path}")
+
+    logging.info("SST file saved to %s", out_path)
+    return out_path
 
 def main():
     parser = argparse.ArgumentParser(description='Run GenCast for a given date.')

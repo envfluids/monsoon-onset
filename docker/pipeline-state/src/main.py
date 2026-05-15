@@ -38,8 +38,9 @@ Response shape (sketch — actual contents depend on the configured regions):
 
 GCS layout assumed (matches docker shims):
   common bucket:
-    ic/ecmwf/<date>/grib/<filename>
-    ic/ncep/<date>/gdas_<date>.pgrb2
+    raw/ecmwf/<date>/grib/<filename>
+    raw/ncep/<date>/gdas_<date>.pgrb2
+    raw/gencast/sst/<date>/sst_<date>.nc
     full_field/<model>/<date>/...           (optional, gated by upload flag for NGCM)
     intermediate/{model}_{region}_{date}_done
   region bucket:
@@ -187,11 +188,11 @@ def ic_ecmwf_paths(date: str) -> list[str]:
     base = datetime.strptime(date, "%Y%m%dT%H")
     dates = [base - timedelta(hours=12), base - timedelta(hours=6), base]
     filenames = [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
-    return [f"ic/ecmwf/{date}/grib/{f}" for f in filenames]
+    return [f"raw/ecmwf/{date}/grib/{f}" for f in filenames]
 
 
 def ic_ncep_paths(date: str) -> list[str]:
-    return [f"ic/ncep/{date}/gdas_{date}.pgrb2"]
+    return [f"raw/ncep/{date}/gdas_{date}.pgrb2"]
 
 
 def ic_present(source: str, date: str) -> bool:
@@ -373,7 +374,7 @@ def _missing_ic_paths(source: str, date: str) -> list[str]:
         return []
     paths = ic_ecmwf_paths(date) if source == "ecmwf" else ic_ncep_paths(date)
     if source == "ecmwf":
-        paths.append(f"ic/gencast_sst/{date}/sst_{date}.nc")
+        paths.append(f"raw/gencast/sst/{date}/sst_{date}.nc")
     return [p for p in paths if not gcs_object_exists(GCS_COMMON_BUCKET, p)]
 
 
