@@ -1,10 +1,11 @@
-import earthkit.data as ekd
+import argparse
 import datetime
 import logging
-import xarray as xr
-import numpy as np
 from pathlib import Path
-import argparse
+
+import earthkit.data as ekd
+import numpy as np
+import xarray as xr
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,6 +16,7 @@ logging.basicConfig(
 
 
 SST_DIR = Path(__file__).parent.parent / "raw" / "sst_ic"
+
 
 def get_mars_retrieval(date, param):
 
@@ -31,13 +33,13 @@ def get_mars_retrieval(date, param):
         "REPRES": "LL",
     }
 
-
     levtype = "sfc"
     request["levtype"] = levtype
 
     print(request)
-    
+
     return request
+
 
 PARAM_SFC_MARS = {"sst": "sea_surface_temperature"}
 
@@ -47,9 +49,7 @@ def get_open_data(DATE, param):
     data_list = []
     for date in [DATE - datetime.timedelta(hours=12), DATE]:
         date_mars = date - datetime.timedelta(hours=24)
-        data = ekd.from_source(
-            "mars", request=get_mars_retrieval(date_mars, param)
-        )
+        data = ekd.from_source("mars", request=get_mars_retrieval(date_mars, param))
         data = data.to_xarray()
         if "time" not in data.coords:
             data = data.expand_dims("time")
@@ -58,12 +58,12 @@ def get_open_data(DATE, param):
             data = data.assign_coords(longitude=data.longitude % 360)
             data = data.sortby("longitude")
 
-
         data_list.append(data)
-        
+
     ds = xr.concat(data_list, dim="time")
 
     return ds
+
 
 def get_sst(date_f):
     SST_DIR.mkdir(parents=True, exist_ok=True)
@@ -99,13 +99,20 @@ def get_sst(date_f):
     logging.info("SST file saved to %s", out_path)
     return out_path
 
+
 def main():
-    parser = argparse.ArgumentParser(description='Run GenCast for a given date.')
-    parser.add_argument('--date', type=str, help='Date to run the model for (YYYYMMDDTHH format)', required=True)
+    parser = argparse.ArgumentParser(description="Run GenCast for a given date.")
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Date to run the model for (YYYYMMDDTHH format)",
+        required=True,
+    )
     args = parser.parse_args()
     date_f = args.date
 
     get_sst(date_f)
+
 
 if __name__ == "__main__":
     main()

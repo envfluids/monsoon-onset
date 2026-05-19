@@ -140,6 +140,17 @@ GENCAST_COMPANION = CompanionJobSpec(
     ),
 )
 
+PIPELINES["gencast"] = {
+    "pipeline": PipelineSpec(
+        name="gencast",
+        downloader_path=PIPELINES["aifs"]["pipeline"].downloader_path,
+        downloader_function=PIPELINES["aifs"]["pipeline"].downloader_function,
+        allowed_hours=PIPELINES["aifs"]["pipeline"].allowed_hours,
+    ),
+    "jobs": [],
+    "companions": [GENCAST_COMPANION],
+}
+
 PIPELINES["ecmwf"]["jobs"].extend(PIPELINES["aifs"]["jobs"])
 PIPELINES["ecmwf"]["jobs"].extend(PIPELINES["aifs_ens"]["jobs"])
 PIPELINES["ecmwf"]["companions"] = [GENCAST_COMPANION]
@@ -384,7 +395,7 @@ def run_one(pipeline, date_f=None, dry_run=False):
         submit_pipeline_jobs(pipeline, resolved_date, dry_run=dry_run)
         return
 
-    if pipeline == "ecmwf":
+    if pipeline in {"ecmwf", "gencast"}:
         submit_missing_ecmwf_companions(resolved_date, dry_run=dry_run)
 
 
