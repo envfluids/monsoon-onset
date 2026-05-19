@@ -29,7 +29,7 @@ from blend import blend
 from models import AIFS_CONFIG, NCUM_CONFIG
 from process_forecast import process_forecast
 from utils import compute_roll_sum
-from maps_subdistrict import make_maps
+from blend.utils.india2026.AIFS_NCUM_blend.maps_subdistrict import make_maps
 
 # ── Active models ─────────────────────────────────────────────────────────────
 ACTIVE_MODELS = [

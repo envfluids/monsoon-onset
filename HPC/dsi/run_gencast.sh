@@ -4,7 +4,7 @@
 #SBATCH -n 64
 #SBATCH --gres=gpu:h100:4
 #SBATCH --mem=400G
-#SBATCH -t 06:00:00
+#SBATCH -t 12:00:00
 
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"

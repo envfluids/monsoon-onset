@@ -8,12 +8,27 @@ Usage
 Outputs
 -------
 blend/maps_subdistrict/india2026/AIFS_NCUM_blend/
-    prob_weeks1-4_<date>.pdf / .png
-    map_maxperiod_<date>.pdf  / .png
+    prob_weeks1-4_<date>.pdf / .png          – 4-panel weekly probability map
+    map_maxperiod_<date>.pdf  / .png         – single map coloured by peak onset period
+    clim_prob_weeks1-4_<date>.pdf / .png     – 4-panel climatological probability map
+    anom_weeks1-4_<date>.pdf / .png          – 4-panel probability anomaly map
+    rain_<model>_weeks1-4_<date>.pdf / .png  – 4-panel daily rainfall map per model
+
+Notes
+-----
+prob_clim_mr_week* columns are stored on the logit (log-odds) scale.  The script
+applies a sigmoid transform to convert them to probabilities before plotting so
+that the climatological maps and anomaly maps share the same [0,1] probability
+space as the week1–week4 columns.
+
+Requirements
+------------
+geopandas, matplotlib, pandas, numpy  (all in the project venv)
 """
 
-from datetime import timedelta
+import re
 import logging
+from datetime import timedelta
 from pathlib import Path
 
 import geopandas as gpd
@@ -62,6 +77,26 @@ def load_data(run_dir: Path) -> pd.DataFrame:
     return df
 
 
+def load_full_data(run_dir: Path) -> pd.DataFrame:
+    csv = run_dir / "blend_output_full.csv"
+    if not csv.exists():
+        raise FileNotFoundError(f"blend_output_full.csv not found in {run_dir}")
+    df = pd.read_csv(csv, parse_dates=["time"])
+    df["id"] = df["id"].astype(str)
+    return df
+
+
+def detect_forecast_names(df: pd.DataFrame) -> list:
+    """Return sorted list of model names found as <name>_rain_daily_week1 columns."""
+    names = sorted({
+        m.group(1)
+        for col in df.columns
+        for m in [re.match(r'^(.+)_rain_daily_week1$', col)]
+        if m
+    })
+    return names
+
+
 def load_active_ids() -> set:
     dissem   = pd.read_csv(DISSEM_FILE)["id"].astype(str)
     excluded = pd.read_csv(EXCLUDE_FILE)["id"].astype(str)
@@ -78,6 +113,7 @@ def load_shapefiles() -> tuple:
 
 
 def max_period(vf: list) -> str:
+    """Return the period label with the highest mass (same rule as old maps.py)."""
     w1, w2, w3, w4, lat = vf
     if w1 >= 0.65:
         return 'just_week1'
@@ -102,22 +138,45 @@ def build_color_schemes() -> tuple:
     return period_order, period_colors, prob_bins, prob_cmap, prob_norm
 
 
+def build_anomaly_colorscheme() -> tuple:
+    """Diverging colorblind-friendly (blue/red) scale centred at 0 for prob anomalies."""
+    anom_bins = [-0.40, -0.20, -0.10, -0.05, -0.02, 0.00, 0.02, 0.05, 0.10, 0.20, 0.40]
+    n = len(anom_bins) - 1
+    anom_cmap = ListedColormap(plt.get_cmap('RdBu')(np.linspace(0, 1, n)))
+    anom_norm = BoundaryNorm(anom_bins, ncolors=n, clip=True)
+    return anom_bins, anom_cmap, anom_norm
+
+
+def build_rainfall_colorscheme() -> tuple:
+    """Sequential yellow-green-blue scale for daily rainfall (mm/day)."""
+    rain_bins = [0, 2, 5, 10, 20, 30, 50, 80]
+    n = len(rain_bins) - 1
+    rain_cmap = ListedColormap(plt.get_cmap('YlGnBu')(np.linspace(0.05, 1.0, n)))
+    rain_norm = BoundaryNorm(rain_bins, ncolors=n, clip=True)
+    return rain_bins, rain_cmap, rain_norm
+
+
 def save_fig(out_dir, fig, stem: str):
     out_dir.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_dir / f"{stem}.png", dpi=150, bbox_inches='tight')
     fig.savefig(out_dir / f"{stem}.pdf",            bbox_inches='tight')
 
 
-def plot_weekly_probs(grp, t, merged_gdf, state_gdf, active_ids,
-                      prob_cmap, prob_norm, prob_bins, out_dir):
-    ds = t.strftime('%Y-%m-%d')
-    week_titles = {
+def _week_titles(t: "pd.Timestamp") -> dict:
+    return {
         i: (
             f"{(t + timedelta(days=(i-1)*7+1)).strftime('%m/%d/%Y')} – "
             f"{(t + timedelta(days=(i-1)*7+7)).strftime('%m/%d/%Y')}"
         )
         for i in range(1, 5)
     }
+
+
+def plot_weekly_probs(grp, t, merged_gdf, state_gdf, active_ids,
+                      prob_cmap, prob_norm, prob_bins, out_dir):
+    """4-panel map: one panel per week (weeks 1–4)."""
+    ds = t.strftime('%Y-%m-%d')
+    week_titles = _week_titles(t)
 
     forecast_ids = set(grp["id"])
     on_ids = active_ids & forecast_ids
@@ -167,6 +226,7 @@ def plot_weekly_probs(grp, t, merged_gdf, state_gdf, active_ids,
 
 def plot_max_period(grp, t, merged_gdf, state_gdf, active_ids,
                     period_order, period_colors, pdays, out_dir):
+    """Single map coloured by the period with highest onset probability mass."""
     ds = t.strftime('%Y-%m-%d')
 
     forecast_ids = set(grp["id"])
@@ -223,10 +283,188 @@ def plot_max_period(grp, t, merged_gdf, state_gdf, active_ids,
     plt.close(fig)
 
 
-def make_maps(out_dir):
+def plot_clim_probs(grp, t, merged_gdf, state_gdf, active_ids,
+                    prob_cmap, prob_norm, prob_bins, out_dir):
+    """4-panel climatological onset probability map (weeks 1–4).
 
+    prob_clim_mr_week* values are on the logit scale and are converted
+    to probabilities via sigmoid before plotting.
+    """
+    ds = t.strftime('%Y-%m-%d')
+    week_titles = _week_titles(t)
+
+    forecast_ids = set(grp["id"])
+    on_ids = active_ids & forecast_ids
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 6),
+                             sharex=True, sharey=True,
+                             gridspec_kw={'wspace': 0.03})
+
+    clim_cols = ['prob_clim_mr_week1', 'prob_clim_mr_week2',
+                 'prob_clim_mr_week3', 'prob_clim_mr_week4']
+
+    for i, (ax, ccol) in enumerate(zip(axes, clim_cols), 1):
+        off_gdf = merged_gdf[~merged_gdf["id"].isin(on_ids)]
+        if not off_gdf.empty:
+            off_gdf.plot(ax=ax, color='#d3d3d3', linewidth=0.0)
+
+        active_gdf = merged_gdf[merged_gdf["id"].isin(on_ids)].copy()
+        active_gdf = active_gdf.merge(grp[["id", ccol]], on="id", how="left")
+        active_gdf = active_gdf.dropna(subset=[ccol])
+
+        if not active_gdf.empty:
+            # sigmoid converts logit → probability
+            active_gdf["clim_prob"] = 1.0 / (1.0 + np.exp(-active_gdf[ccol]))
+            active_gdf["color"] = active_gdf["clim_prob"].apply(
+                lambda v: prob_cmap(prob_norm(v))
+            )
+            active_gdf.plot(ax=ax, color=active_gdf["color"].tolist(),
+                            linewidth=0.1, edgecolor='none')
+
+        merged_gdf.boundary.plot(ax=ax, linewidth=0.1, edgecolor='#888888')
+        state_gdf.boundary.plot(ax=ax, linewidth=1.2, edgecolor='black')
+
+        ax.set_title(week_titles[i], fontsize=10, pad=6)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude' if i == 1 else '')
+
+    sm = plt.cm.ScalarMappable(norm=prob_norm, cmap=prob_cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=list(axes), orientation='horizontal',
+                        fraction=0.04, pad=0.08)
+    cbar.set_label('Climatological probability of onset')
+
+    fig.suptitle(f"Climatological monsoon onset probability by week – forecast date {ds}",
+                 fontsize=12)
+    fig.subplots_adjust(left=0.04, right=0.96, top=0.88, bottom=0.18)
+    save_fig(out_dir, fig, f"clim_prob_weeks1-4_{ds}")
+    plt.close(fig)
+
+
+def plot_prob_anomalies(grp, t, merged_gdf, state_gdf, active_ids,
+                        anom_bins, anom_cmap, anom_norm, out_dir):
+    """4-panel probability anomaly map: forecast prob minus climatological prob.
+
+    Anomaly = week[n] - sigmoid(prob_clim_mr_week[n]).
+    Blue = above climatology, red = below climatology.
+    """
+    ds = t.strftime('%Y-%m-%d')
+    week_titles = _week_titles(t)
+
+    forecast_ids = set(grp["id"])
+    on_ids = active_ids & forecast_ids
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 6),
+                             sharex=True, sharey=True,
+                             gridspec_kw={'wspace': 0.03})
+
+    week_cols = ['week1', 'week2', 'week3', 'week4']
+    clim_cols = ['prob_clim_mr_week1', 'prob_clim_mr_week2',
+                 'prob_clim_mr_week3', 'prob_clim_mr_week4']
+
+    needed = ["id"] + week_cols + clim_cols
+    grp_sub = grp[[c for c in needed if c in grp.columns]]
+
+    for i, (ax, wcol, ccol) in enumerate(zip(axes, week_cols, clim_cols), 1):
+        off_gdf = merged_gdf[~merged_gdf["id"].isin(on_ids)]
+        if not off_gdf.empty:
+            off_gdf.plot(ax=ax, color='#d3d3d3', linewidth=0.0)
+
+        active_gdf = merged_gdf[merged_gdf["id"].isin(on_ids)].copy()
+        active_gdf = active_gdf.merge(grp_sub[["id", wcol, ccol]], on="id", how="left")
+        active_gdf = active_gdf.dropna(subset=[wcol, ccol])
+
+        if not active_gdf.empty:
+            clim_prob = 1.0 / (1.0 + np.exp(-active_gdf[ccol]))
+            active_gdf["anom"] = active_gdf[wcol].values - clim_prob.values
+            active_gdf["color"] = active_gdf["anom"].apply(
+                lambda v: anom_cmap(anom_norm(v))
+            )
+            active_gdf.plot(ax=ax, color=active_gdf["color"].tolist(),
+                            linewidth=0.1, edgecolor='none')
+
+        merged_gdf.boundary.plot(ax=ax, linewidth=0.1, edgecolor='#888888')
+        state_gdf.boundary.plot(ax=ax, linewidth=1.2, edgecolor='black')
+
+        ax.set_title(week_titles[i], fontsize=10, pad=6)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude' if i == 1 else '')
+
+    sm = plt.cm.ScalarMappable(norm=anom_norm, cmap=anom_cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=list(axes), orientation='horizontal',
+                        fraction=0.04, pad=0.08)
+    cbar.set_label('Probability anomaly (forecast − climatology)')
+
+    fig.suptitle(
+        f"Monsoon onset probability anomaly by week – forecast date {ds}", fontsize=12
+    )
+    fig.subplots_adjust(left=0.04, right=0.96, top=0.88, bottom=0.18)
+    save_fig(out_dir, fig, f"anom_weeks1-4_{ds}")
+    plt.close(fig)
+
+
+def plot_rainfall(grp, t, merged_gdf, state_gdf, active_ids,
+                  forecast_name: str, rain_bins, rain_cmap, rain_norm, out_dir):
+    """4-panel daily rainfall map for a single forecast model (weeks 1–4)."""
+    ds = t.strftime('%Y-%m-%d')
+    week_titles = _week_titles(t)
+
+    forecast_ids = set(grp["id"])
+    on_ids = active_ids & forecast_ids
+
+    fig, axes = plt.subplots(1, 4, figsize=(20, 6),
+                             sharex=True, sharey=True,
+                             gridspec_kw={'wspace': 0.03})
+
+    rain_cols = [f"{forecast_name}_rain_daily_week{w}" for w in range(1, 5)]
+
+    for i, (ax, rcol) in enumerate(zip(axes, rain_cols), 1):
+        if rcol not in grp.columns:
+            ax.set_visible(False)
+            continue
+
+        off_gdf = merged_gdf[~merged_gdf["id"].isin(on_ids)]
+        if not off_gdf.empty:
+            off_gdf.plot(ax=ax, color='#d3d3d3', linewidth=0.0)
+
+        active_gdf = merged_gdf[merged_gdf["id"].isin(on_ids)].copy()
+        active_gdf = active_gdf.merge(grp[["id", rcol]], on="id", how="left")
+        active_gdf = active_gdf.dropna(subset=[rcol])
+
+        if not active_gdf.empty:
+            active_gdf["color"] = active_gdf[rcol].apply(
+                lambda v: rain_cmap(rain_norm(v))
+            )
+            active_gdf.plot(ax=ax, color=active_gdf["color"].tolist(),
+                            linewidth=0.1, edgecolor='none')
+
+        merged_gdf.boundary.plot(ax=ax, linewidth=0.1, edgecolor='#888888')
+        state_gdf.boundary.plot(ax=ax, linewidth=1.2, edgecolor='black')
+
+        ax.set_title(week_titles[i], fontsize=10, pad=6)
+        ax.set_xlabel('Longitude')
+        ax.set_ylabel('Latitude' if i == 1 else '')
+
+    sm = plt.cm.ScalarMappable(norm=rain_norm, cmap=rain_cmap)
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=list(axes), orientation='horizontal',
+                        fraction=0.04, pad=0.08)
+    cbar.set_label('Daily rainfall (mm/day)')
+
+    fig.suptitle(
+        f"Daily rainfall by week [{forecast_name.upper()}] – forecast date {ds}",
+        fontsize=12,
+    )
+    fig.subplots_adjust(left=0.04, right=0.96, top=0.88, bottom=0.18)
+    save_fig(out_dir, fig, f"rain_{forecast_name}_weeks1-4_{ds}")
+    plt.close(fig)
+
+
+def make_maps(out_dir: Path):
 
     summary    = load_data(out_dir)
+    full_data  = load_full_data(out_dir)
     active_ids = load_active_ids()
 
     logging.info("Loading shapefiles ...")
@@ -234,6 +472,11 @@ def make_maps(out_dir):
     merged_gdf = subdistrict_gdf[subdistrict_gdf["id"].isin(active_ids)].copy()
 
     period_order, period_colors, prob_bins, prob_cmap, prob_norm = build_color_schemes()
+    anom_bins, anom_cmap, anom_norm = build_anomaly_colorscheme()
+    rain_bins, rain_cmap, rain_norm = build_rainfall_colorscheme()
+
+    forecast_names = detect_forecast_names(full_data)
+    logging.info(f"Forecast models found: {forecast_names}")
 
     pdays = {
         'just_week1':   (1, 7),
@@ -244,14 +487,30 @@ def make_maps(out_dir):
         'later':        (29, None),
     }
 
+    full_by_time = {t: g for t, g in full_data.groupby('time')}
+
     for t, grp in summary.groupby('time'):
         ds = t.strftime('%Y-%m-%d')
-        logging.info(f"Plotting {ds}...")
+        logging.info(f"Plotting {ds} ...")
 
         plot_weekly_probs(grp, t, merged_gdf, state_gdf, active_ids,
                           prob_cmap, prob_norm, prob_bins, out_dir)
+
         plot_max_period(grp, t, merged_gdf, state_gdf, active_ids,
                         period_order, period_colors, pdays, out_dir)
 
-    logging.info(f"Done. Maps saved to {out_dir}/")
+        full_grp = full_by_time.get(t)
+        if full_grp is not None:
+            plot_clim_probs(full_grp, t, merged_gdf, state_gdf, active_ids,
+                            prob_cmap, prob_norm, prob_bins, out_dir)
 
+            plot_prob_anomalies(full_grp, t, merged_gdf, state_gdf, active_ids,
+                                anom_bins, anom_cmap, anom_norm, out_dir)
+
+            for fcst in forecast_names:
+                plot_rainfall(full_grp, t, merged_gdf, state_gdf, active_ids,
+                              fcst, rain_bins, rain_cmap, rain_norm, out_dir)
+        else:
+            logging.warning(f"No full_data row for {ds}, skipping clim/anom/rain maps")
+
+    logging.info(f"Done. Maps saved to {out_dir}/")
