@@ -276,7 +276,7 @@ def writer_loop(
 def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ngpus):
     date = pd.to_datetime(date_f, format="%Y%m%dT%H")
     filename = output_dir / f"init_{date_f}_partial.zarr"
-    final_filename = output_dir / f"init_{date_f}_DEBUG.zarr"
+    final_filename = output_dir / f"init_{date_f}.zarr"
     if final_filename.exists():
         logging.warning(
             f"Final output file {final_filename} already exists. Skipping model run."
