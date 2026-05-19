@@ -1,13 +1,13 @@
 import argparse
 import concurrent.futures
 import datetime
-import logging
 import json
+import logging
+import os
 import shutil
 import tempfile
 import time
 from pathlib import Path
-import os
 
 import haiku as hk
 import jax
@@ -45,11 +45,18 @@ REPO_ROOT = BASE.parent
 # jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
 # jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
-DEBUG = False
+DEBUG_FLAG = os.getenv("GENCAST_DEBUG", "false")
+if DEBUG_FLAG.strip().lower() == "1":
+    logging.info(
+        "GENCAST_DEBUG is set to a truthy value (%s). Enabling DEBUG mode.", DEBUG_FLAG
+    )
+    DEBUG = True
+else:
+    DEBUG = False
 
 if DEBUG:
-    N_MEMBERS = 8
-    N_DAYS = 4
+    N_MEMBERS = 4
+    N_DAYS = 2
     DEBUG_SUFFIX = "__DEBUG"
 else:
     N_MEMBERS = 24
@@ -125,7 +132,9 @@ def _remove_store(path):
 
 
 def _select_pmap_devices(num_samples):
-    devices = jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
+    devices = (
+        jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
+    )
     for count in range(min(len(devices), num_samples), 0, -1):
         if num_samples % count == 0:
             selected = devices[:count]
@@ -475,7 +484,9 @@ def initialize_jax_runtime() -> dict[str, object]:
         )
 
     expected_processes = os.getenv("GENCAST_EXPECTED_PROCESS_COUNT")
-    if expected_processes is not None and jax.process_count() != int(expected_processes):
+    if expected_processes is not None and jax.process_count() != int(
+        expected_processes
+    ):
         raise RuntimeError(
             f"Expected {expected_processes} JAX processes, found {jax.process_count()}"
         )
@@ -494,9 +505,13 @@ def get_model():
     with open(MODEL_PATH, "rb") as f:
         ckpt = checkpoint.load(f, gencast.CheckPoint)
         if not _env_bool("GENCAST_JAX_DISTRIBUTED"):
-            logging.info("Running in non-distributed mode, modifying model config for GPU execution.")
+            logging.info(
+                "Running in non-distributed mode, modifying model config for GPU execution."
+            )
             denoiser_architecture_config = ckpt.denoiser_architecture_config
-            denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
+            denoiser_architecture_config.sparse_transformer_config.attention_type = (
+                "triblockdiag_mha"
+            )
             denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
     params = ckpt.params
     state = {}
@@ -639,7 +654,9 @@ def run_model(date_f, runtime):
     try:
         date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
         if DEBUG:
-            logging.info("Running in DEBUG mode with reduced ensemble members and days.")
+            logging.info(
+                "Running in DEBUG mode with reduced ensemble members and days."
+            )
         outfile = _forecast_output_path(date_f)
         if outfile.exists():
             logging.info(f"Output file {outfile} already exists. Skipping run.")
@@ -662,7 +679,9 @@ def run_model(date_f, runtime):
             )
         with _TimedOperation("saved output template construction"):
             saved_targets_template_ds = _targets_template_for_save(targets_template_ds)
-        num_ensemble_members = int(os.getenv("GENCAST_ENSEMBLE_MEMBERS", str(N_MEMBERS)))
+        num_ensemble_members = int(
+            os.getenv("GENCAST_ENSEMBLE_MEMBERS", str(N_MEMBERS))
+        )
         rng = jax.random.PRNGKey(0)
 
         rngs = np.stack(
@@ -755,7 +774,6 @@ def main():
 
     runtime = initialize_jax_runtime()
     run_model(date_f, runtime)
-
 
 
 if __name__ == "__main__":
