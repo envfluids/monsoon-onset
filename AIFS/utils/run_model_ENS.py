@@ -1,9 +1,12 @@
 import argparse
+import concurrent.futures
 import gc
 import logging
 import multiprocessing as mp
+import os
 import queue
 import shutil
+import time
 import traceback
 from pathlib import Path
 
@@ -38,6 +41,68 @@ TFM_N320_LATLON = load_npz(TFM_N320_LATLON_PATH)
 
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
+
+
+class ZarrMirror:
+    def __init__(self, source_root, target_root, max_workers):
+        self.source_root = Path(source_root)
+        self.target_root = Path(target_root)
+        self.executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="zarr-mirror",
+        )
+        self.queued_signatures = {}
+        self.futures = []
+
+    def enqueue_changed(self, source_root=None):
+        source_root = Path(source_root or self.source_root)
+        for local_file in source_root.rglob("*"):
+            if not local_file.is_file():
+                continue
+            relative = local_file.relative_to(source_root)
+            try:
+                stat = local_file.stat()
+            except FileNotFoundError:
+                continue
+            signature = (stat.st_size, stat.st_mtime_ns)
+            if self.queued_signatures.get(relative) == signature:
+                continue
+            self.queued_signatures[relative] = signature
+            self.futures.append(
+                self.executor.submit(self._copy_file, local_file, relative)
+            )
+
+    def wait(self):
+        errors = []
+        try:
+            for future in concurrent.futures.as_completed(self.futures):
+                try:
+                    future.result()
+                except BaseException as exc:
+                    errors.append(exc)
+            self.futures.clear()
+        finally:
+            if errors:
+                raise RuntimeError(
+                    "Zarr mirror failed for one or more component files: "
+                    + "; ".join(str(error) for error in errors[:5])
+                )
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=False)
+
+    def _copy_file(self, local_file, relative):
+        target_file = self.target_root / relative
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(1, 4):
+            try:
+                shutil.copyfile(local_file, target_file)
+                break
+            except OSError:
+                if attempt == 3:
+                    raise
+                time.sleep(attempt)
+        logging.info(f"Mirrored {local_file} to {target_file}")
 
 
 # def get_state(date_f):
@@ -196,6 +261,8 @@ def writer_loop(
     stop_event,
     filename,
     final_filename,
+    mirror_target,
+    mirror_workers,
     n_members,
     n_workers,
     date,
@@ -203,6 +270,10 @@ def writer_loop(
     pending = {}
     next_member = 0
     done_workers = set()
+    mirror = None
+    if mirror_target:
+        mirror = ZarrMirror(filename, mirror_target, mirror_workers)
+        logging.info(f"Streaming AIFS-ENS Zarr components to {mirror_target}")
 
     try:
         while next_member < n_members:
@@ -242,6 +313,8 @@ def writer_loop(
 
                     del ds
                     gc.collect()
+                    if mirror is not None:
+                        mirror.enqueue_changed(filename)
                     next_member += 1
 
             elif message_type == "done":
@@ -266,14 +339,34 @@ def writer_loop(
             else:
                 raise RuntimeError(f"Unknown writer queue message: {message_type}")
 
+        if mirror is not None:
+            logging.info("Waiting for in-flight AIFS-ENS Zarr mirror copies")
+            mirror.wait()
         filename.rename(final_filename)
+        if mirror is not None:
+            logging.info("Reconciling final AIFS-ENS Zarr store to mirror target")
+            mirror.enqueue_changed(final_filename)
+            mirror.wait()
         status_queue.put(("done", str(final_filename)))
     except BaseException:
         stop_event.set()
         status_queue.put(("error", "writer", traceback.format_exc()))
+    finally:
+        if mirror is not None:
+            mirror.close()
 
 
-def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ngpus):
+def run_model(
+    output_dir,
+    n_members,
+    date_f,
+    lead_time,
+    save_vars,
+    cpkt_path,
+    ngpus,
+    mirror_target=None,
+    mirror_workers=8,
+):
     date = pd.to_datetime(date_f, format="%Y%m%dT%H")
     filename = output_dir / f"init_{date_f}_partial.zarr"
     final_filename = output_dir / f"init_{date_f}.zarr"
@@ -311,6 +404,8 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ng
             stop_event,
             filename,
             final_filename,
+            mirror_target,
+            mirror_workers,
             n_members,
             n_workers,
             date,
@@ -444,8 +539,21 @@ def main():
     ngpus = torch.cuda.device_count()
     logging.info(f"Detected {ngpus} CUDA GPUs")
 
+    mirror_target = os.environ.get("AIFS_ENS_ZARR_MIRROR_TARGET")
+    mirror_workers = int(os.environ.get("AIFS_ENS_ZARR_MIRROR_WORKERS", "8"))
+    if mirror_target:
+        logging.info(f"AIFS-ENS Zarr mirror target: {mirror_target}")
+
     final_filename = run_model(
-        output_dir, n_members, date_f, lead_time, save_fields, cpkt_path, ngpus
+        output_dir,
+        n_members,
+        date_f,
+        lead_time,
+        save_fields,
+        cpkt_path,
+        ngpus,
+        mirror_target=mirror_target,
+        mirror_workers=mirror_workers,
     )
     logging.info(f"Model run complete. Final output saved to {final_filename}")
     logging.info("Exiting inference script")

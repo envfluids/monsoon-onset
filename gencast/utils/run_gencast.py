@@ -7,6 +7,8 @@ import os
 import shutil
 import tempfile
 import time
+import traceback
+import zlib
 from pathlib import Path
 
 import haiku as hk
@@ -16,6 +18,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 import zarr
+from jax.experimental import multihost_utils
 from graphcast import (
     checkpoint,
     data_utils,
@@ -88,6 +91,33 @@ RENAME_DICT = {
 MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"
 STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
+MAX_EXCEPTION_MESSAGE_CHARS = int(
+    os.getenv("GENCAST_EXCEPTION_MESSAGE_CHARS", "4000")
+)
+
+
+def _truncate_text(text, limit=MAX_EXCEPTION_MESSAGE_CHARS):
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    return f"{text[:limit]}... <truncated {omitted} chars>"
+
+
+def _log_exception_summary(exc):
+    message = _truncate_text(str(exc).replace("\n", "\\n"))
+    logging.error("GenCast failed: %s: %s", exc.__class__.__name__, message)
+    logging.error("GenCast traceback summary:")
+    frames = traceback.extract_tb(exc.__traceback__)
+    for frame in frames[-12:]:
+        logging.error(
+            '  File "%s", line %s, in %s',
+            frame.filename,
+            frame.lineno,
+            frame.name,
+        )
+        if frame.line:
+            logging.error("    %s", frame.line)
+
 
 def open_nc_file(path):
     try:
@@ -96,6 +126,7 @@ def open_nc_file(path):
         logging.error(f"Failed to open {path} with h5netcdf: {e}")
         logging.info(f"Attempting to open {path} with netcdf4 engine instead.")
         return xr.open_dataset(path, engine="netcdf4").compute()
+
 
 class _TimedOperation:
     def __init__(self, operation):
@@ -150,13 +181,66 @@ def _select_pmap_devices(num_samples):
         selected = devices[:1]
 
     if len(selected) != len(devices):
+        device_scope = "global" if _env_bool("GENCAST_JAX_DISTRIBUTED") else "local"
         logging.info(
-            "Using %d of %d local JAX devices so %d samples divide evenly.",
+            "Using %d of %d %s JAX devices so %d samples divide evenly.",
             len(selected),
             len(devices),
+            device_scope,
             num_samples,
         )
     return selected
+
+
+def _array_crc32(array):
+    data = np.asarray(array)
+    checksum = zlib.crc32(f"{data.shape}|{data.dtype}".encode("utf-8"))
+    checksum = zlib.crc32(np.ascontiguousarray(data).view(np.uint8), checksum)
+    return np.uint32(checksum)
+
+
+def _numeric_coord_names(dataset):
+    return [
+        name
+        for name, coord in dataset.coords.items()
+        if np.issubdtype(np.asarray(coord.data).dtype, np.number)
+    ]
+
+
+def _dataset_host_arrays(dataset):
+    for name, variable in dataset.data_vars.items():
+        yield f"data_var:{name}", variable.data
+    for name in _numeric_coord_names(dataset):
+        yield f"coord:{name}", dataset.coords[name].data
+
+
+def _log_multihost_dataset_differences(dataset, label):
+    if jax.process_count() == 1:
+        return []
+
+    mismatches = []
+    for name, array in _dataset_host_arrays(dataset):
+        digest = np.asarray(_array_crc32(array), dtype=np.uint32)
+        all_digests = np.asarray(multihost_utils.process_allgather(digest)).reshape(
+            -1
+        )
+        if len(set(all_digests.tolist())) > 1:
+            mismatches.append(f"{name}={all_digests.tolist()}")
+
+    if mismatches:
+        logging.warning(
+            "%s differs across JAX processes: %s",
+            label,
+            "; ".join(mismatches),
+        )
+    else:
+        logging.info(
+            "%s data variables and numeric coordinates are identical across "
+            "%d JAX processes.",
+            label,
+            jax.process_count(),
+        )
+    return mismatches
 
 
 def _zarr_chunks_for_var(dims, sizes, sample_chunk, time_chunk):
@@ -669,6 +753,7 @@ def run_model(date_f, runtime):
             run_forward_pmap, task_config = get_model()
         with _TimedOperation("initial condition import"):
             ic = import_ic(task_config, date)
+        _log_multihost_dataset_differences(ic, "initial conditions")
         lat = ic.lat.values
         lon = ic.lon.values
         level = ic.level.values
@@ -676,6 +761,11 @@ def run_model(date_f, runtime):
             forcings_ds, targets_template_ds = get_forcings_targets(
                 task_config, date, N_STEPS, lat, lon, level
             )
+        _log_multihost_dataset_differences(forcings_ds, "forcings")
+        _log_multihost_dataset_differences(
+            targets_template_ds,
+            "finite rollout target template",
+        )
         with _TimedOperation("saved output template construction"):
             saved_targets_template_ds = _targets_template_for_save(targets_template_ds)
         num_ensemble_members = int(
@@ -725,7 +815,7 @@ def run_model(date_f, runtime):
                     predictor_fn=run_forward_pmap,
                     rngs=rngs,
                     inputs=ic,
-                    targets_template=targets_template_ds * np.nan,
+                    targets_template=targets_template_ds,
                     forcings=forcings_ds,
                     num_steps_per_chunk=num_steps_per_chunk,
                     num_samples=num_ensemble_members,
@@ -771,8 +861,12 @@ def main():
     args = parser.parse_args()
     date_f = args.date
 
-    runtime = initialize_jax_runtime()
-    run_model(date_f, runtime)
+    try:
+        runtime = initialize_jax_runtime()
+        run_model(date_f, runtime)
+    except Exception as exc:
+        _log_exception_summary(exc)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
