@@ -132,48 +132,10 @@ def build_member_dataset(
         torch.cuda.empty_cache()
 
 
-def put_member_in_order(
-    worker_id,
-    ens_number,
-    ds,
-    result_queue,
-    stop_event,
-    next_result,
-    result_condition,
-):
-    with result_condition:
-        while next_result.value != ens_number:
-            if stop_event.is_set():
-                return False
-            result_condition.wait(timeout=5)
-
-        if stop_event.is_set():
-            result_condition.notify_all()
-            return False
-
-    while not stop_event.is_set():
-        try:
-            result_queue.put(("member", ens_number, ds), timeout=5)
-            break
-        except queue.Full:
-            continue
-    else:
-        with result_condition:
-            result_condition.notify_all()
-        return False
-
-    with result_condition:
-        next_result.value += 1
-        result_condition.notify_all()
-
-    logging.info(f"Worker {worker_id} published ensemble {ens_number} in order")
-    return True
-
-
 def worker_loop(
     worker_id,
     gpu_id,
-    members,
+    task_queue,
     input_state,
     date,
     lead_time,
@@ -181,12 +143,18 @@ def worker_loop(
     cpkt_path,
     result_queue,
     stop_event,
-    next_result,
-    result_condition,
 ):
-    logging.info(f"Worker {worker_id} using GPU {gpu_id} for members {members}")
+    logging.info(f"Worker {worker_id} using GPU {gpu_id}")
     try:
-        for ens_number in members:
+        while not stop_event.is_set():
+            try:
+                ens_number = task_queue.get(timeout=5)
+            except queue.Empty:
+                continue
+
+            if ens_number is None:
+                break
+
             if stop_event.is_set():
                 break
 
@@ -202,26 +170,23 @@ def worker_loop(
                 cpkt_path,
                 gpu_id,
             )
-            published = put_member_in_order(
-                worker_id,
-                ens_number,
-                ds,
-                result_queue,
-                stop_event,
-                next_result,
-                result_condition,
-            )
+            while not stop_event.is_set():
+                try:
+                    result_queue.put(("member", ens_number, ds), timeout=5)
+                    logging.info(
+                        f"Worker {worker_id} completed ensemble {ens_number}"
+                    )
+                    break
+                except queue.Full:
+                    continue
+
             del ds
             gc.collect()
             torch.cuda.empty_cache()
-            if not published:
-                break
 
         result_queue.put(("done", worker_id))
     except BaseException:
         stop_event.set()
-        with result_condition:
-            result_condition.notify_all()
         result_queue.put(("error", worker_id, traceback.format_exc()))
 
 
@@ -235,6 +200,7 @@ def writer_loop(
     n_workers,
     date,
 ):
+    pending = {}
     next_member = 0
     done_workers = set()
 
@@ -252,41 +218,44 @@ def writer_loop(
             message_type = message[0]
             if message_type == "member":
                 _, ens_number, ds = message
-                if ens_number != next_member:
-                    raise RuntimeError(
-                        f"Writer received ensemble {ens_number}, expected "
-                        f"{next_member}."
-                    )
+                pending[ens_number] = ds
 
-                if next_member == 0:
-                    logging.info(
-                        f"Saving forecast for ensemble {next_member} and date "
-                        f"{date} to {filename} (mode=w)"
-                    )
-                    ds.to_zarr(filename, zarr_format=2, mode="w")
-                else:
-                    logging.info(
-                        f"Saving forecast for ensemble {next_member} and date "
-                        f"{date} to {filename} (mode=a, append)"
-                    )
-                    ds.to_zarr(
-                        filename,
-                        zarr_format=2,
-                        mode="a",
-                        append_dim="number",
-                    )
+                while next_member in pending:
+                    ds = pending.pop(next_member)
+                    if next_member == 0:
+                        logging.info(
+                            f"Saving forecast for ensemble {next_member} and date "
+                            f"{date} to {filename} (mode=w)"
+                        )
+                        ds.to_zarr(filename, zarr_format=2, mode="w")
+                    else:
+                        logging.info(
+                            f"Saving forecast for ensemble {next_member} and date "
+                            f"{date} to {filename} (mode=a, append)"
+                        )
+                        ds.to_zarr(
+                            filename,
+                            zarr_format=2,
+                            mode="a",
+                            append_dim="number",
+                        )
 
-                del ds
-                gc.collect()
-                next_member += 1
+                    del ds
+                    gc.collect()
+                    next_member += 1
 
             elif message_type == "done":
                 _, worker_id = message
                 done_workers.add(worker_id)
                 if len(done_workers) == n_workers and next_member < n_members:
+                    missing = [
+                        member
+                        for member in range(next_member, n_members)
+                        if member not in pending
+                    ]
                     raise RuntimeError(
                         f"All workers finished before all members were written. "
-                        f"Next expected member: {next_member}"
+                        f"Missing members: {missing}"
                     )
 
             elif message_type == "error":
@@ -324,11 +293,15 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ng
     input_state = postprocess_ens(get_ic(date))
     n_workers = min(ngpus, n_members)
     ctx = mp.get_context("spawn")
+    task_queue = ctx.Queue()
     result_queue = ctx.Queue(maxsize=max(2, n_workers))
     status_queue = ctx.Queue()
     stop_event = ctx.Event()
-    next_result = ctx.Value("i", 0)
-    result_condition = ctx.Condition()
+
+    for ens_number in range(n_members):
+        task_queue.put(ens_number)
+    for _ in range(n_workers):
+        task_queue.put(None)
 
     writer = ctx.Process(
         target=writer_loop,
@@ -348,15 +321,14 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ng
 
     workers = []
     for worker_id in range(n_workers):
-        members = list(range(worker_id, n_members, n_workers))
         gpu_id = worker_id
-        logging.info(f"Assigning members {members} to worker {worker_id} GPU {gpu_id}")
+        logging.info(f"Starting worker {worker_id} on GPU {gpu_id}")
         worker = ctx.Process(
             target=worker_loop,
             args=(
                 worker_id,
                 gpu_id,
-                members,
+                task_queue,
                 input_state,
                 date,
                 lead_time,
@@ -364,8 +336,6 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ng
                 cpkt_path,
                 result_queue,
                 stop_event,
-                next_result,
-                result_condition,
             ),
             name=f"aifs-ens-worker-{worker_id}",
         )
@@ -405,8 +375,6 @@ def run_model(output_dir, n_members, date_f, lead_time, save_vars, cpkt_path, ng
             raise RuntimeError(f"Unknown status message: {status[0]}")
     except BaseException:
         stop_event.set()
-        with result_condition:
-            result_condition.notify_all()
         for worker in workers:
             if worker.is_alive():
                 worker.terminate()
