@@ -89,6 +89,13 @@ MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"
 STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
 
+def open_nc_file(path):
+    try:
+        return xr.open_dataset(path, engine="h5netcdf").compute()
+    except Exception as e:
+        logging.error(f"Failed to open {path} with h5netcdf: {e}")
+        logging.info(f"Attempting to open {path} with netcdf4 engine instead.")
+        return xr.open_dataset(path, engine="netcdf4").compute()
 
 class _TimedOperation:
     def __init__(self, operation):
@@ -524,18 +531,10 @@ def get_model():
     print("Model description:\n", ckpt.description, "\n")
     print("Model license:\n", ckpt.license, "\n")
 
-    diffs_stddev_by_level = xr.open_dataset(
-        STATS_DIR / "diffs_stddev_by_level.nc", engine="h5netcdf"
-    ).compute()
-    mean_by_level = xr.open_dataset(
-        STATS_DIR / "mean_by_level.nc", engine="h5netcdf"
-    ).compute()
-    stddev_by_level = xr.open_dataset(
-        STATS_DIR / "stddev_by_level.nc", engine="h5netcdf"
-    ).compute()
-    min_by_level = xr.open_dataset(
-        STATS_DIR / "min_by_level.nc", engine="h5netcdf"
-    ).compute()
+    diffs_stddev_by_level = open_nc_file(STATS_DIR / "diffs_stddev_by_level.nc")
+    mean_by_level = open_nc_file(STATS_DIR / "mean_by_level.nc")
+    stddev_by_level = open_nc_file(STATS_DIR / "stddev_by_level.nc")
+    min_by_level = open_nc_file(STATS_DIR / "min_by_level.nc")
 
     def construct_wrapped_gencast():
         """Constructs and wraps the GenCast Predictor."""
