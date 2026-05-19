@@ -19,10 +19,9 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from netCDF4 import Dataset
-
-from utils import find_onset, compute_quasi_onset
 from models.config import ModelConfig
+from netCDF4 import Dataset
+from utils import compute_quasi_onset, find_onset
 
 log = logging.getLogger(__name__)
 
@@ -111,7 +110,13 @@ def process_forecast(
     # Normalise axis order regardless of how the NetCDF stored it.
     # Target: deterministic -> (day, time, lat, lon)
     #         ensemble      -> (day, number, time, lat, lon)
-    target_order = ["day", "number" if config.is_ensemble else None, "time", "lat", "lon"]
+    target_order = [
+        "day",
+        "number" if config.is_ensemble else None,
+        "time",
+        "lat",
+        "lon",
+    ]
     target_order = [d for d in target_order if d is not None]
     if list(var_dims) != target_order:
         try:
@@ -140,7 +145,9 @@ def process_forecast(
             log.warning(
                 "%s: file %s has %d time entries; ignoring pipeline_date and "
                 "decoding from NetCDF time variable.",
-                config.label, tp_file, len(tvals),
+                config.label,
+                tp_file,
+                len(tvals),
             )
         origin = pd.to_datetime(time_units.split(" since ")[1])
         fdates = origin + pd.to_timedelta(tvals, unit="D")
@@ -159,7 +166,10 @@ def process_forecast(
             log.warning(
                 "Source cell %s (lat=%.2f, lon=%.2f) not found in %s NetCDF grid; "
                 "skipping this cell.",
-                sid, slat, slon, config.label,
+                sid,
+                slat,
+                slon,
+                config.label,
             )
         else:
             sid_to_idx[sid] = (li, lj)
@@ -167,7 +177,9 @@ def process_forecast(
     # Keep only weights whose source cell was matched
     weights_df = weights_df[weights_df["source_id"].isin(sid_to_idx)].copy()
     if weights_df.empty:
-        log.error("No source cells matched for %s – returning empty DataFrame.", config.label)
+        log.error(
+            "No source cells matched for %s – returning empty DataFrame.", config.label
+        )
         return pd.DataFrame()
 
     # ── 4. Build sparse weight matrix (n_targets × n_sources) ─────────────────
@@ -204,7 +216,7 @@ def process_forecast(
     if config.is_ensemble:
         # Average over ensemble members first so all downstream logic is the same
         # raw_sel: [days, ens, time, lat, lon] → mean over axis 1
-        raw_sel = np.nanmean(raw_sel, axis=1)   # [days, time, lat, lon]
+        raw_sel = np.nanmean(raw_sel, axis=1)  # [days, time, lat, lon]
 
     # Extract source cells: [days, time, n_sources]
     src_precip = raw_sel[:, :, li_arr, lj_arr]
@@ -213,7 +225,7 @@ def process_forecast(
     #   [days*time, n_sources] @ W.T → [days*time, n_targets]
     n_days, n_times, _ = src_precip.shape
     flat = src_precip.reshape(n_days * n_times, n_sources).astype(np.float64)
-    sub_flat = flat @ W.T.astype(np.float64)          # [days*time, n_targets]
+    sub_flat = flat @ W.T.astype(np.float64)  # [days*time, n_targets]
     sub_precip = sub_flat.reshape(n_days, n_times, n_targets)
     # sub_precip[day_idx, time_idx, target_idx]
 
@@ -228,7 +240,7 @@ def process_forecast(
             if thr is None or np.isnan(thr):
                 continue
 
-            series = sub_precip[:, ti, tgt_i]   # daily precip [n_valid_days]
+            series = sub_precip[:, ti, tgt_i]  # daily precip [n_valid_days]
 
             onset_day = find_onset(series, window, thr)
             quasi_arr = compute_quasi_onset(series, window, thr)

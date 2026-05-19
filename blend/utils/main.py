@@ -287,13 +287,16 @@ def main() -> None:
 
     ran_any = False
     for blend in selected:
-        ran_any = run_blend(
-            blend,
-            args.date,
-            dry_run=args.dry_run,
-            debug=args.debug,
-            skip_to=args.skip_to,
-        ) or ran_any
+        ran_any = (
+            run_blend(
+                blend,
+                args.date,
+                dry_run=args.dry_run,
+                debug=args.debug,
+                skip_to=args.skip_to,
+            )
+            or ran_any
+        )
 
     if not ran_any:
         logger.info("No blends were run for %s.", args.date)

@@ -15,21 +15,21 @@ What it does
 5. Generates maps with maps_subdistrict.py.
 """
 
+import argparse
 import logging
-import re
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import argparse
-
-from blend import blend
+from maps_subdistrict import make_maps
 from models import AIFS_CONFIG, NCUM_CONFIG
 from process_forecast import process_forecast
 from utils import compute_roll_sum
-from blend.utils.india2026.AIFS_NCUM_blend.maps_subdistrict import make_maps
+
+from blend import blend
 
 # ── Active models ─────────────────────────────────────────────────────────────
 ACTIVE_MODELS = [
@@ -43,7 +43,6 @@ logging.basicConfig(
         "%(asctime)s - %(levelname)s - %(name)s - %(pathname)s:%(lineno)d - %(message)s"
     ),
 )
-
 
 
 def parse_date(date_str: str) -> datetime:
@@ -91,13 +90,17 @@ def get_data(date: str, base: Path, source: str | None = None):
     else:
         out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM"
 
-    support_dir = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
-    coefs_dir   = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
+    support_dir = (
+        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
+    )
+    coefs_dir = (
+        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
+    )
 
-    thresholds_file    = support_dir / "subdistrict_thresholds.csv"
-    clim_file          = coefs_dir   / "subdistrict_full_clim_by_id_time.csv"
+    thresholds_file = support_dir / "subdistrict_thresholds.csv"
+    clim_file = coefs_dir / "subdistrict_full_clim_by_id_time.csv"
     dissemination_file = support_dir / "dissemination_subdistricts.csv"
-    exclude_file       = support_dir / "subdistricts_to_exclude.csv"
+    exclude_file = support_dir / "subdistricts_to_exclude.csv"
 
     out_file = out_path / "all_data.csv"
 
@@ -117,7 +120,9 @@ def get_data(date: str, base: Path, source: str | None = None):
         file_dt = requested_dt - timedelta(hours=cfg.init_offset_hours)
         file_date_str = file_dt.strftime("%Y%m%dT%H")
         model_files[cfg.label] = base / cfg.file_template.format(date=file_date_str)
-        logging.info(f"  {cfg.label} file : {model_files[cfg.label]} exists={model_files[cfg.label].exists()}")
+        logging.info(
+            f"  {cfg.label} file : {model_files[cfg.label]} exists={model_files[cfg.label].exists()}"
+        )
 
     os.makedirs(out_path, exist_ok=True)
     logging.info("STEP 7: output directory created")
@@ -126,12 +131,15 @@ def get_data(date: str, base: Path, source: str | None = None):
     logging.info("STEP 8: loading support data")
     thresholds = pd.read_csv(thresholds_file)
     thresholds.columns = [c.strip() for c in thresholds.columns]
-    if "onset_threshold" in thresholds.columns and "onset_thresh" not in thresholds.columns:
+    if (
+        "onset_threshold" in thresholds.columns
+        and "onset_thresh" not in thresholds.columns
+    ):
         thresholds = thresholds.rename(columns={"onset_threshold": "onset_thresh"})
 
     dissemination_ids = pd.read_csv(dissemination_file)["id"].astype(int).tolist()
-    exclude_ids       = pd.read_csv(exclude_file)["id"].astype(int).tolist()
-    allowed_ids       = set(dissemination_ids) - set(exclude_ids)
+    exclude_ids = pd.read_csv(exclude_file)["id"].astype(int).tolist()
+    allowed_ids = set(dissemination_ids) - set(exclude_ids)
     logging.info(f"  allowed_ids count: {len(allowed_ids)}")
 
     if not allowed_ids:
@@ -192,7 +200,7 @@ def get_data(date: str, base: Path, source: str | None = None):
 
     # ── 5. Bin forecast days into weekly intervals ─────────────────────────────
     logging.info("STEP 12: binning into weekly intervals")
-    bins   = [0, 7, 14, 21, 28, np.inf]
+    bins = [0, 7, 14, 21, 28, np.inf]
     labels = ["week1", "week2", "week3", "week4", "later"]
     merged["interval"] = pd.cut(merged["day"], bins=bins, labels=labels, right=True)
 
@@ -200,8 +208,8 @@ def get_data(date: str, base: Path, source: str | None = None):
     logging.info("STEP 13: aggregating")
     agg_dict = {}
     for var in rain_cols:
-        agg_dict[var]                  = "sum"
-        agg_dict[f"{var}_5day_total"]  = "max"
+        agg_dict[var] = "sum"
+        agg_dict[f"{var}_5day_total"] = "max"
         agg_dict[f"{var}_10day_total"] = "min"
 
     agg = (
@@ -213,7 +221,9 @@ def get_data(date: str, base: Path, source: str | None = None):
     # ── 7. Pivot to wide ────────────────────────────────────────────────────────
     logging.info("STEP 14: pivoting to wide")
     wide = agg.pivot_table(
-        index=["time", "id"], columns="interval", values=list(agg_dict.keys()),
+        index=["time", "id"],
+        columns="interval",
+        values=list(agg_dict.keys()),
         observed=False,
     ).reset_index()
 
@@ -226,8 +236,8 @@ def get_data(date: str, base: Path, source: str | None = None):
     for var in rain_cols:
         src = var.replace("_rain_daily", "")
         for wk in labels:
-            o5  = f"{var}_5day_total_{wk}"
-            n5  = f"max_{src}_5day_{wk}"
+            o5 = f"{var}_5day_total_{wk}"
+            n5 = f"max_{src}_5day_{wk}"
             o10 = f"{var}_10day_total_{wk}"
             n10 = f"min_{src}_10day_{wk}"
             if o5 in wide.columns:
@@ -246,10 +256,12 @@ def get_data(date: str, base: Path, source: str | None = None):
     for var in rain_cols:
         src = var.replace("_rain_daily", "")
         for wk in labels:
-            max_col  = f"max_{src}_5day_{wk}"
+            max_col = f"max_{src}_5day_{wk}"
             diff_col = f"diff_{src}_{wk}"
             if max_col in wide.columns:
-                wide[diff_col] = np.power(wide[max_col].clip(lower=0.0), 0.25) - thresh_rt4
+                wide[diff_col] = (
+                    np.power(wide[max_col].clip(lower=0.0), 0.25) - thresh_rt4
+                )
 
     # ── 11. Merge climatological weekly probabilities ───────────────────────────
     logging.info("STEP 17: merging climatology")
@@ -257,8 +269,13 @@ def get_data(date: str, base: Path, source: str | None = None):
     clim["id"] = clim["id"].astype(int)
 
     wide["mm_dd"] = pd.to_datetime(wide["time"]).dt.strftime("%m-%d")
-    wide = wide.merge(clim, left_on=["id", "mm_dd"], right_on=["id", "time"],
-                      how="left", suffixes=("", "_clim"))
+    wide = wide.merge(
+        clim,
+        left_on=["id", "mm_dd"],
+        right_on=["id", "time"],
+        how="left",
+        suffixes=("", "_clim"),
+    )
     if "time_clim" in wide.columns:
         wide = wide.drop(columns=["time_clim"])
     wide = wide.drop(columns=["mm_dd"])
@@ -272,8 +289,14 @@ def get_data(date: str, base: Path, source: str | None = None):
 def main():
     logging.info("STEP 1: main() started")
 
-    parser = argparse.ArgumentParser(description="Download initial conditions for IFS model")
-    parser.add_argument("--date", default=None, help="Date to download in format YYYYMMDDTHH. Defaults to latest.")
+    parser = argparse.ArgumentParser(
+        description="Download initial conditions for IFS model"
+    )
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="Date to download in format YYYYMMDDTHH. Defaults to latest.",
+    )
     args = parser.parse_args()
 
     date = args.date
@@ -282,7 +305,7 @@ def main():
         logging.error("Invalid format! Expected: --20260511T00")
         raise ValueError("Invalid date format. Expected 'YYYYMMDDTHH'.")
 
-    base      = Path(__file__).resolve().parent.parent.parent.parent.parent
+    base = Path(__file__).resolve().parent.parent.parent.parent.parent
     logging.info(f"STEP 4: base = {base}")
 
     logging.info("STEP 5: checking input files")

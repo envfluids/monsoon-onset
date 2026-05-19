@@ -1,5 +1,5 @@
 """
-blend.py – Multinomial logistic blend of forecast features.
+blend.py - Multinomial logistic blend of forecast features.
 
 Coefficient file format (2026)
 -------------------------------
@@ -12,7 +12,7 @@ The new coefficient file uses a tidy (long) format:
     ...
 
 `term` encodes <interval>::<feature_name>.  This is pivoted internally to a
-(n_intervals × n_features) matrix before prediction.
+(n_intervals * n_features) matrix before prediction.
 
 Missing features (e.g. diff_ngcm_* when NeuralGCM is not active) are
 zero-filled automatically, so the coefficients for any missing model simply
@@ -40,7 +40,7 @@ def _load_coef_tidy(path: Path) -> pd.DataFrame:
     df[["interval", "feature"]] = df["term"].str.split("::", n=1, expand=True)
     wide = df.pivot(index="interval", columns="feature", values="estimate")
     wide.columns.name = None
-    wide.index.name   = None
+    wide.index.name = None
     return wide
 
 
@@ -57,8 +57,8 @@ def _softmax_probs(X: np.ndarray, coefs: np.ndarray) -> np.ndarray:
     -------
     (n_rows, n_classes) probabilities
     """
-    logits = X @ coefs.T            # (n_rows, n_classes)
-    exp_l  = np.exp(logits - logits.max(axis=1, keepdims=True))   # numerically stable
+    logits = X @ coefs.T  # (n_rows, n_classes)
+    exp_l = np.exp(logits - logits.max(axis=1, keepdims=True))  # numerically stable
     return exp_l / exp_l.sum(axis=1, keepdims=True)
 
 
@@ -74,19 +74,28 @@ def blend(df_raw: pd.DataFrame, output_dir: Path) -> tuple[pd.DataFrame, pd.Data
     Returns
     -------
     (summary, summary_public)
-      summary        – id, time, predicted-probability columns
-      summary_public – summary rounded to 4 d.p., columns reordered
+      summary        - id, time, predicted-probability columns
+      summary_public - summary rounded to 4 d.p., columns reordered
     """
     base = Path(__file__).resolve().parent.parent.parent.parent.parent  # monsoon-onset/
 
-    coef_file = base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs" / "coefs_full_model_subdistrict.csv"
+    coef_file = (
+        base
+        / "blend"
+        / "data"
+        / "india2026"
+        / "AIFS_NCUM_blend"
+        / "data"
+        / "coefs"
+        / "coefs_full_model_subdistrict.csv"
+    )
 
     if not coef_file.exists():
         raise FileNotFoundError(f"Coefficient file not found: {coef_file}")
 
     # ── 1. Load and reshape coefficient matrix ────────────────────────────────
     coef_wide = _load_coef_tidy(coef_file)
-    features  = coef_wide.columns.tolist()
+    features = coef_wide.columns.tolist()
 
     # Append the reference class ("later") as a row of zero coefficients so
     # softmax yields one probability per class where the week1..week4 row sums
@@ -95,7 +104,7 @@ def blend(df_raw: pd.DataFrame, output_dir: Path) -> tuple[pd.DataFrame, pd.Data
     ref_class = "later"
     if ref_class not in coef_wide.index:
         coef_wide.loc[ref_class] = 0.0
-    intervals  = coef_wide.index.tolist()
+    intervals = coef_wide.index.tolist()
 
     # ── 2. Build design matrix ────────────────────────────────────────────────
     df = df_raw.copy()
@@ -122,9 +131,9 @@ def blend(df_raw: pd.DataFrame, output_dir: Path) -> tuple[pd.DataFrame, pd.Data
                 df[feat] = df[feat] * df[p]
 
     # ── 3. Compute softmax probabilities ──────────────────────────────────────
-    X        = df[features].values.astype(float)
-    probs    = _softmax_probs(X, coef_wide.values.astype(float))
-    prob_df  = pd.DataFrame(probs, columns=intervals, index=df.index)
+    X = df[features].values.astype(float)
+    probs = _softmax_probs(X, coef_wide.values.astype(float))
+    prob_df = pd.DataFrame(probs, columns=intervals, index=df.index)
 
     # ── 4. Combine and write outputs ──────────────────────────────────────────
     id_cols = ["id", "time"]
@@ -138,7 +147,7 @@ def blend(df_raw: pd.DataFrame, output_dir: Path) -> tuple[pd.DataFrame, pd.Data
 
     # Summary: id, time, predicted probabilities only
     summary_cols = id_cols + intervals
-    summary      = combined[[c for c in summary_cols if c in combined.columns]].copy()
+    summary = combined[[c for c in summary_cols if c in combined.columns]].copy()
     summary.to_csv(output_dir / "blend_output_summary.csv", index=False)
 
     log.info("Blend outputs written to %s", output_dir)
