@@ -1,7 +1,9 @@
 
 import jax
 import jax.numpy as jnp
+import json
 import logging
+import os
 
 import haiku as hk
 import numpy as np
@@ -39,7 +41,6 @@ JAX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 jax.config.update("jax_compilation_cache_dir", str(JAX_CACHE_DIR))
 jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
 jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
-jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
 N_MEMBERS = 24
 N_DAYS = 50
@@ -50,12 +51,86 @@ STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y"}
+
+
+def initialize_jax_runtime() -> dict[str, object]:
+    batch_task_index = os.getenv("BATCH_TASK_INDEX")
+    batch_task_count = os.getenv("BATCH_TASK_COUNT")
+    batch_job_id = os.getenv("BATCH_JOB_ID")
+
+    if batch_task_index is not None and batch_job_id is not None:
+        logging.info(
+            "Detected Cloud Batch environment: task_index=%s, task_count=%s, job_id=%s",
+            batch_task_index,
+            batch_task_count,
+            batch_job_id,
+        )
+        # Cloud Batch internal DNS: <job-id>-0-<task-index>
+        coordinator_address = f"{batch_job_id}-0-0:1234"
+        jax.distributed.initialize(
+            coordinator_address=coordinator_address,
+            num_processes=int(batch_task_count or 1),
+            process_id=int(batch_task_index),
+        )
+    elif _env_bool("GENCAST_JAX_DISTRIBUTED"):
+        logging.info("Initializing JAX distributed runtime (auto-detect).")
+        jax.distributed.initialize()
+
+    local_devices = jax.local_devices()
+    global_devices = jax.devices()
+    runtime = {
+        "jax_version": jax.__version__,
+        "backend": jax.default_backend(),
+        "process_index": jax.process_index(),
+        "process_count": jax.process_count(),
+        "local_device_count": jax.local_device_count(),
+        "global_device_count": jax.device_count(),
+        "local_devices": [str(device) for device in local_devices],
+        "global_devices": [str(device) for device in global_devices],
+    }
+    logging.info("GenCast JAX runtime: %s", json.dumps(runtime, sort_keys=True))
+
+    expected_global = os.getenv("GENCAST_EXPECTED_GLOBAL_DEVICES")
+    if expected_global is not None and jax.device_count() != int(expected_global):
+        raise RuntimeError(
+            f"Expected {expected_global} global JAX devices, found {jax.device_count()}"
+        )
+
+    expected_local = os.getenv("GENCAST_EXPECTED_LOCAL_DEVICES")
+    if expected_local is not None and jax.local_device_count() != int(expected_local):
+        raise RuntimeError(
+            f"Expected {expected_local} local JAX devices, found {jax.local_device_count()}"
+        )
+
+    expected_processes = os.getenv("GENCAST_EXPECTED_PROCESS_COUNT")
+    if expected_processes is not None and jax.process_count() != int(expected_processes):
+        raise RuntimeError(
+            f"Expected {expected_processes} JAX processes, found {jax.process_count()}"
+        )
+
+    return runtime
+
+
+def write_run_metadata(date_f: str, runtime: dict[str, object]) -> None:
+    FCST_DIR.mkdir(parents=True, exist_ok=True)
+    metadata_path = FCST_DIR / f"run_metadata_{date_f}.json"
+    with metadata_path.open("w") as f:
+        json.dump(runtime, f, indent=2, sort_keys=True)
+
+
 def get_model():
     with open(MODEL_PATH, "rb") as f:
         ckpt = checkpoint.load(f, gencast.CheckPoint)
-        denoiser_architecture_config = ckpt.denoiser_architecture_config
-        denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
-        denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
+        if not _env_bool("GENCAST_JAX_DISTRIBUTED"):
+            logging.info("Running in non-distributed mode, modifying model config for GPU execution.")
+            denoiser_architecture_config = ckpt.denoiser_architecture_config
+            denoiser_architecture_config.sparse_transformer_config.attention_type = "triblockdiag_mha"
+            denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
     params = ckpt.params
     state = {}
 
@@ -186,11 +261,12 @@ def import_ic(task_config, date):
     return ic
 
 
-def run_model(date_f):
+def run_model(date_f, runtime):
     date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
     outfile = FCST_DIR / f"init_{date_f}.nc"
     if outfile.exists():
         logging.info(f"Output file {outfile} already exists. Skipping run.")
+        write_run_metadata(date_f, runtime)
         return
     run_forward_pmap, task_config = get_model()
     ic = import_ic(task_config, date)
@@ -198,7 +274,7 @@ def run_model(date_f):
     lon = ic.lon.values
     level = ic.level.values
     forcings_ds, targets_template_ds = get_forcings_targets(task_config, date, N_STEPS, lat, lon, level)
-    num_ensemble_members = N_MEMBERS   # @param int
+    num_ensemble_members = int(os.getenv("GENCAST_ENSEMBLE_MEMBERS", str(N_MEMBERS)))
     rng = jax.random.PRNGKey(0)
 
     rngs = np.stack(
@@ -207,6 +283,17 @@ def run_model(date_f):
     num_steps_per_chunk = 1
     total_steps = N_STEPS
     current_step = 0
+    pmap_devices = jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
+    if num_ensemble_members != len(pmap_devices):
+        raise RuntimeError(
+            f"GenCast ensemble members ({num_ensemble_members}) must match pmap devices "
+            f"({len(pmap_devices)}) for this execution."
+        )
+    logging.info(
+        "Running GenCast with %s ensemble members over %s pmap devices.",
+        num_ensemble_members,
+        len(pmap_devices),
+    )
 
     chunks = []
     for chunk in rollout.chunked_prediction_generator_multiple_runs(
@@ -218,7 +305,7 @@ def run_model(date_f):
         forcings=forcings_ds,
         num_steps_per_chunk = 1,
         num_samples = num_ensemble_members,
-        pmap_devices=jax.local_devices()
+        pmap_devices=pmap_devices
         ):
         chunks.append(chunk)
         current_step += num_steps_per_chunk
@@ -227,7 +314,12 @@ def run_model(date_f):
 
     predictions = xr.combine_by_coords(chunks)
 
-    predictions.to_netcdf(outfile)
+    if jax.process_index() == 0:
+        predictions.to_netcdf(outfile)
+        logging.info("Wrote GenCast output to %s", outfile)
+    else:
+        logging.info("Skipping NetCDF write on nonzero JAX process %s.", jax.process_index())
+    write_run_metadata(date_f, runtime)
 
 
 
@@ -238,7 +330,8 @@ def main():
     args = parser.parse_args()
     date_f = args.date
 
-    run_model(date_f)
+    runtime = initialize_jax_runtime()
+    run_model(date_f, runtime)
 
 if __name__ == "__main__":
     main()
