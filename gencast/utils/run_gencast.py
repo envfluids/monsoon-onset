@@ -1,29 +1,31 @@
-
-import jax
-import jax.numpy as jnp
-import json
+import argparse
+import concurrent.futures
+import datetime
 import logging
+import json
+import shutil
+import tempfile
+import time
+from pathlib import Path
 import os
 
 import haiku as hk
+import jax
+import jax.numpy as jnp
 import numpy as np
-from preprocess_ic import get_ic
-
-from graphcast import rollout
-from graphcast import xarray_jax
-from graphcast import normalization
-from graphcast import checkpoint
-from graphcast import data_utils
-from graphcast import gencast
-from graphcast import nan_cleaning
-
-import h5netcdf
-import xarray as xr
 import pandas as pd
-from pathlib import Path
-import argparse
-import datetime
-
+import xarray as xr
+import zarr
+from graphcast import (
+    checkpoint,
+    data_utils,
+    gencast,
+    nan_cleaning,
+    normalization,
+    rollout,
+    xarray_jax,
+)
+from preprocess_ic import get_ic
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,19 +38,384 @@ BASE = Path(__file__).parent.parent
 
 REPO_ROOT = BASE.parent
 
-JAX_CACHE_DIR = REPO_ROOT.parent / "jax_cache"
-JAX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-jax.config.update("jax_compilation_cache_dir", str(JAX_CACHE_DIR))
-jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
-jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+# JAX_CACHE_DIR = REPO_ROOT.parent / "jax_cache"
+# JAX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+# jax.config.update("jax_compilation_cache_dir", str(JAX_CACHE_DIR))
+# jax.config.update("jax_persistent_cache_min_entry_size_bytes", -1)
+# jax.config.update("jax_persistent_cache_min_compile_time_secs", 0)
+# jax.config.update("jax_persistent_cache_enable_xla_caches", "xla_gpu_per_fusion_autotune_cache_dir")
 
-N_MEMBERS = 24
-N_DAYS = 50
-N_STEPS = N_DAYS * 2 # 2 steps per day (12h interval)
+DEBUG = False
+
+if DEBUG:
+    N_MEMBERS = 8
+    N_DAYS = 4
+    DEBUG_SUFFIX = "__DEBUG"
+else:
+    N_MEMBERS = 24
+    N_DAYS = 50
+
+N_STEPS = N_DAYS * 2  # 2 steps per day (12h interval)
+
+SAVE_LEVELS = [200, 500, 700, 850]
+SAVE_DICT = {
+    "geopotential": SAVE_LEVELS,
+    "u_component_of_wind": SAVE_LEVELS,
+    "v_component_of_wind": SAVE_LEVELS,
+    "2m_temperature": [],
+    "sea_surface_temperature": [],
+    "total_precipitation_12hr": [],
+    "mean_sea_level_pressure": [],
+}
+
+RENAME_DICT = {
+    "geopotential": "z",
+    "u_component_of_wind": "u",
+    "v_component_of_wind": "v",
+    "2m_temperature": "2t",
+    "sea_surface_temperature": "sst",
+    "total_precipitation_12hr": "tp",
+    "mean_sea_level_pressure": "msl",
+}
 
 MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"
 STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
+
+
+class _TimedOperation:
+    def __init__(self, operation):
+        self._operation = operation
+        self._start = None
+
+    def __enter__(self):
+        self._start = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        elapsed = time.perf_counter() - self._start
+        if exc_type is None:
+            logging.info("Completed %s in %.2fs.", self._operation, elapsed)
+        else:
+            logging.info("Failed %s after %.2fs.", self._operation, elapsed)
+
+
+def _forecast_output_path(date_f):
+    suffix = DEBUG_SUFFIX if DEBUG else ""
+    final_path = FCST_DIR / f"init_{date_f}{suffix}.zarr"
+    return final_path
+
+
+def _partial_temp_prefix(outfile):
+    return f".{outfile.name}.partial."
+
+
+def _remove_stale_partial_temp_dirs(outfile):
+    prefix = _partial_temp_prefix(outfile)
+    for path in FCST_DIR.glob(f"{prefix}*"):
+        logging.info(f"Removing stale partial output directory {path}.")
+        _remove_store(path)
+
+
+def _remove_store(path):
+    if path.is_dir():
+        shutil.rmtree(path)
+    elif path.exists():
+        path.unlink()
+
+
+def _select_pmap_devices(num_samples):
+    devices = jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
+    for count in range(min(len(devices), num_samples), 0, -1):
+        if num_samples % count == 0:
+            selected = devices[:count]
+            break
+    else:
+        selected = devices[:1]
+
+    if len(selected) != len(devices):
+        logging.info(
+            "Using %d of %d local JAX devices so %d samples divide evenly.",
+            len(selected),
+            len(devices),
+            num_samples,
+        )
+    return selected
+
+
+def _zarr_chunks_for_var(dims, sizes, sample_chunk, time_chunk):
+    chunks = []
+    for dim in dims:
+        if dim == "sample":
+            chunks.append(sample_chunk)
+        elif dim == "time":
+            chunks.append(time_chunk)
+        elif dim == "batch":
+            chunks.append(1)
+        else:
+            chunks.append(sizes[dim])
+    return tuple(chunks)
+
+
+def _validate_save_config(targets_template):
+    missing_vars = sorted(set(SAVE_DICT) - set(targets_template.data_vars))
+    if missing_vars:
+        raise ValueError(f"SAVE_DICT includes unknown target variables: {missing_vars}")
+
+    missing_renames = sorted(set(SAVE_DICT) - set(RENAME_DICT))
+    if missing_renames:
+        raise ValueError(
+            f"RENAME_DICT is missing saved target variables: {missing_renames}"
+        )
+
+    renamed_vars = [RENAME_DICT[name] for name in SAVE_DICT]
+    duplicate_renames = sorted(
+        {name for name in renamed_vars if renamed_vars.count(name) > 1}
+    )
+    if duplicate_renames:
+        raise ValueError(
+            f"RENAME_DICT maps multiple saved variables to: {duplicate_renames}"
+        )
+
+    allowed_levels = set(SAVE_LEVELS)
+    requested_level_lists = []
+    available_levels = set(np.asarray(targets_template.level.values).tolist())
+    for name, levels in SAVE_DICT.items():
+        levels = tuple(levels)
+        var = targets_template[name]
+        if "level" in var.dims:
+            if not levels:
+                raise ValueError(f"SAVE_DICT['{name}'] must include pressure levels.")
+
+            extra_levels = sorted(set(levels) - allowed_levels)
+            if extra_levels:
+                raise ValueError(
+                    f"SAVE_DICT['{name}'] includes levels outside SAVE_LEVELS: "
+                    f"{extra_levels}"
+                )
+
+            missing_levels = sorted(set(levels) - available_levels)
+            if missing_levels:
+                raise ValueError(
+                    f"SAVE_DICT['{name}'] includes levels not in model output: "
+                    f"{missing_levels}"
+                )
+
+            requested_level_lists.append(levels)
+        elif levels:
+            raise ValueError(
+                f"SAVE_DICT['{name}'] specifies pressure levels, but the variable "
+                "has no level dimension."
+            )
+
+    if len(set(requested_level_lists)) > 1:
+        raise ValueError(
+            "All saved pressure-level variables must use the same level list so "
+            "they can share one output 'level' coordinate."
+        )
+
+
+def _targets_template_for_save(targets_template):
+    _validate_save_config(targets_template)
+
+    data_vars = {}
+    for name, levels in SAVE_DICT.items():
+        var = targets_template[name]
+        if "level" in var.dims:
+            var = var.sel(level=list(levels))
+        data_vars[RENAME_DICT[name]] = var
+
+    return xr.Dataset(data_vars=data_vars, attrs=targets_template.attrs)
+
+
+def _initialize_partial_zarr(
+    partial_path,
+    targets_template,
+    num_samples,
+    sample_chunk,
+    time_chunk,
+):
+    root = zarr.open_group(str(partial_path), mode="w", zarr_format=2)
+    root.attrs.update(targets_template.attrs)
+    sizes = dict(targets_template.sizes)
+    sizes["sample"] = num_samples
+
+    coords = dict(targets_template.coords)
+    coords["sample"] = xr.DataArray(np.arange(num_samples), dims=("sample",))
+    for name, coord in coords.items():
+        values = np.asarray(coord.values)
+        chunks = values.shape if values.shape else None
+        array = root.create_array(
+            name,
+            shape=values.shape,
+            chunks=chunks,
+            dtype=values.dtype,
+            fill_value=None,
+        )
+        array[...] = values
+        array.attrs.update(coord.attrs)
+        array.attrs["_ARRAY_DIMENSIONS"] = list(coord.dims)
+
+    for name, var in targets_template.data_vars.items():
+        dims = ("sample",) + var.dims
+        shape = tuple(sizes[dim] for dim in dims)
+        chunks = _zarr_chunks_for_var(dims, sizes, sample_chunk, time_chunk)
+        fill_value = np.nan if np.issubdtype(var.dtype, np.floating) else None
+        array = root.create_array(
+            name,
+            shape=shape,
+            chunks=chunks,
+            dtype=var.dtype,
+            fill_value=fill_value,
+        )
+        array.attrs.update(var.attrs)
+        array.attrs["_ARRAY_DIMENSIONS"] = list(dims)
+
+
+def _slice_from_coordinate_values(values, full_values, dim):
+    values = np.asarray(values)
+    indexer = pd.Index(full_values).get_indexer(values)
+    if (indexer < 0).any():
+        raise ValueError(
+            f"Chunk contains {dim} values that are not in the output template."
+        )
+    expected = np.arange(indexer[0], indexer[0] + len(indexer))
+    if not np.array_equal(indexer, expected):
+        raise ValueError(
+            f"Chunk {dim} values are not contiguous in the output template."
+        )
+    return slice(int(indexer[0]), int(indexer[-1]) + 1)
+
+
+def _write_prediction_chunk(
+    partial_path,
+    chunk,
+    target_times,
+    sample_values,
+    target_levels,
+):
+    region = {
+        "sample": _slice_from_coordinate_values(
+            chunk.sample.values, sample_values, "sample"
+        ),
+        "time": _slice_from_coordinate_values(chunk.time.values, target_times, "time"),
+    }
+    if target_levels is not None:
+        region["level"] = slice(None)
+
+    root = zarr.open_group(str(partial_path), mode="r+", zarr_format=2)
+    for name, levels in SAVE_DICT.items():
+        output_name = RENAME_DICT[name]
+        var = chunk[name]
+        if "level" in var.dims:
+            var = var.sel(level=list(levels))
+            region["level"] = _slice_from_coordinate_values(
+                var.level.values,
+                target_levels,
+                "level",
+            )
+
+        key = tuple(region[dim] if dim in region else slice(None) for dim in var.dims)
+        root[output_name][key] = np.asarray(var.data)
+    return region
+
+
+def _timed_write_prediction_chunk(*args):
+    started = time.perf_counter()
+    region = _write_prediction_chunk(*args)
+    return region, time.perf_counter() - started
+
+
+class _AsyncPredictionWriter:
+    def __init__(
+        self,
+        partial_path,
+        target_times,
+        sample_values,
+        target_levels,
+        max_pending=2,
+    ):
+        self._partial_path = partial_path
+        self._target_times = target_times
+        self._sample_values = sample_values
+        self._target_levels = target_levels
+        self._max_pending = max_pending
+        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        self._pending = []
+
+    def submit(self, chunk):
+        self._drain_completed()
+        if len(self._pending) >= self._max_pending:
+            started = time.perf_counter()
+            self._finish_next()
+            logging.info(
+                "Async writer backpressure waited %.2fs for %s.",
+                time.perf_counter() - started,
+                self._partial_path,
+            )
+
+        future = self._executor.submit(
+            _timed_write_prediction_chunk,
+            self._partial_path,
+            chunk,
+            self._target_times,
+            self._sample_values,
+            self._target_levels,
+        )
+        self._pending.append(future)
+
+    def wait(self, operation="async writer drain"):
+        started = time.perf_counter()
+        pending_count = len(self._pending)
+        while self._pending:
+            self._finish_next()
+        logging.info(
+            "Completed %s for %s: %d pending writes drained in %.2fs.",
+            operation,
+            self._partial_path,
+            pending_count,
+            time.perf_counter() - started,
+        )
+
+    def close(self):
+        self._executor.shutdown(wait=True)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback):
+        try:
+            if exc_type is None:
+                self.wait("final async writer drain")
+        finally:
+            self.close()
+
+    def _drain_completed(self):
+        remaining = []
+        for future in self._pending:
+            if future.done():
+                region, write_seconds = future.result()
+                logging.info(
+                    "Finished writing chunk to %s in %.2fs: sample=%s, time=%s.",
+                    self._partial_path,
+                    write_seconds,
+                    region["sample"],
+                    region["time"],
+                )
+            else:
+                remaining.append(future)
+        self._pending = remaining
+
+    def _finish_next(self):
+        future = self._pending.pop(0)
+        region, write_seconds = future.result()
+        logging.info(
+            "Finished writing chunk to %s in %.2fs: sample=%s, time=%s.",
+            self._partial_path,
+            write_seconds,
+            region["sample"],
+            region["time"],
+        )
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -142,10 +509,18 @@ def get_model():
     print("Model description:\n", ckpt.description, "\n")
     print("Model license:\n", ckpt.license, "\n")
 
-    diffs_stddev_by_level = xr.open_dataset(STATS_DIR / "diffs_stddev_by_level.nc").compute()
-    mean_by_level = xr.open_dataset(STATS_DIR / "mean_by_level.nc").compute()
-    stddev_by_level = xr.open_dataset(STATS_DIR / "stddev_by_level.nc").compute()
-    min_by_level = xr.open_dataset(STATS_DIR / "min_by_level.nc").compute()
+    diffs_stddev_by_level = xr.open_dataset(
+        STATS_DIR / "diffs_stddev_by_level.nc", engine="h5netcdf"
+    ).compute()
+    mean_by_level = xr.open_dataset(
+        STATS_DIR / "mean_by_level.nc", engine="h5netcdf"
+    ).compute()
+    stddev_by_level = xr.open_dataset(
+        STATS_DIR / "stddev_by_level.nc", engine="h5netcdf"
+    ).compute()
+    min_by_level = xr.open_dataset(
+        STATS_DIR / "min_by_level.nc", engine="h5netcdf"
+    ).compute()
 
     def construct_wrapped_gencast():
         """Constructs and wraps the GenCast Predictor."""
@@ -168,17 +543,15 @@ def get_model():
             predictor=predictor,
             reintroduce_nans=True,
             fill_value=min_by_level,
-            var_to_clean='sea_surface_temperature',
+            var_to_clean="sea_surface_temperature",
         )
 
         return predictor
-
 
     @hk.transform_with_state
     def run_forward(inputs, targets_template, forcings):
         predictor = construct_wrapped_gencast()
         return predictor(inputs, targets_template=targets_template, forcings=forcings)
-
 
     run_forward_jitted = jax.jit(
         lambda rng, i, t, f: run_forward.apply(params, state, rng, i, t, f)[0]
@@ -191,61 +564,60 @@ def get_model():
 
 def get_forcings_targets(task_config, date, lt, lat, lon, level):
     dt = 12
-    times = [pd.Timedelta(dt*i+dt, 'h') for i in range(lt)]
-    datetimes = [date+t for t in times]
+    times = [pd.Timedelta(dt * i + dt, "h") for i in range(lt)]
+    datetimes = [date + t for t in times]
 
     forcings = xr.Dataset(
-                    coords={
-                        "datetime" : datetimes,
-                        "time" : times,
-                        "lat": lat,
-                        "lon": lon,})
+        coords={
+            "datetime": datetimes,
+            "time": times,
+            "lat": lat,
+            "lon": lon,
+        }
+    )
 
     data_utils.add_derived_vars(forcings)
     forcings = forcings.drop_vars(["datetime", "year_progress", "day_progress"])
     forcings = forcings.drop_vars("lat")
     forcings = forcings.expand_dims("batch", axis=0)
-    
+
     forcings = forcings.transpose("batch", "time", "lon")
-    
+
     target_vars = list(task_config.target_variables)
     target_vars_sfc = [
-        '2m_temperature',
-        'mean_sea_level_pressure',
-        '10m_v_component_of_wind',
-        '10m_u_component_of_wind',
-        'total_precipitation_12hr',
-        'sea_surface_temperature',
+        "2m_temperature",
+        "mean_sea_level_pressure",
+        "10m_v_component_of_wind",
+        "10m_u_component_of_wind",
+        "total_precipitation_12hr",
+        "sea_surface_temperature",
     ]
 
     data_vars = {}
     for var in target_vars:
         if var in target_vars_sfc:
             # Surface variables (no level dimension)
-            data_vars[var] = (("time", "lat", "lon"),
-                              np.zeros((len(times),
-                              lat.size,
-                              lon.size), dtype=np.float32))
+            data_vars[var] = (
+                ("time", "lat", "lon"),
+                np.zeros((len(times), lat.size, lon.size), dtype=np.float32),
+            )
         else:
             # Variables with level dimension
-            data_vars[var] = (("time", "level", "lat", "lon"),
-                              np.zeros((len(times),
-                              level.size,
-                              lat.size,
-                              lon.size), dtype=np.float32))
+            data_vars[var] = (
+                ("time", "level", "lat", "lon"),
+                np.zeros(
+                    (len(times), level.size, lat.size, lon.size), dtype=np.float32
+                ),
+            )
 
     targets_template = xr.Dataset(
         data_vars=data_vars,
-        coords={
-            "time": times,
-            "lat": lat,
-            "lon": lon,
-            "level": level
-        }
+        coords={"time": times, "lat": lat, "lon": lon, "level": level},
     )
 
     targets_template = targets_template.expand_dims("batch")
     return forcings, targets_template
+
 
 def import_ic(task_config, date):
     ic = get_ic(date)
@@ -253,8 +625,8 @@ def import_ic(task_config, date):
         data_utils.add_derived_vars(ic)
     if set(task_config.forcing_variables) & {data_utils.TISR}:
         data_utils.add_tisr_var(ic)
-    
-    ic['time'] = [-pd.Timedelta('12h'), pd.Timedelta(0)]
+
+    ic["time"] = [-pd.Timedelta("12h"), pd.Timedelta(0)]
 
     ic = ic.drop_vars(["datetime", "year_progress", "day_progress"])
 
@@ -262,76 +634,129 @@ def import_ic(task_config, date):
 
 
 def run_model(date_f, runtime):
-    date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
-    outfile = FCST_DIR / f"init_{date_f}.nc"
-    if outfile.exists():
-        logging.info(f"Output file {outfile} already exists. Skipping run.")
-        write_run_metadata(date_f, runtime)
-        return
-    run_forward_pmap, task_config = get_model()
-    ic = import_ic(task_config, date)
-    lat = ic.lat.values
-    lon = ic.lon.values
-    level = ic.level.values
-    forcings_ds, targets_template_ds = get_forcings_targets(task_config, date, N_STEPS, lat, lon, level)
-    num_ensemble_members = int(os.getenv("GENCAST_ENSEMBLE_MEMBERS", str(N_MEMBERS)))
-    rng = jax.random.PRNGKey(0)
+    run_started = time.perf_counter()
+    run_status = "failed"
+    try:
+        date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
+        if DEBUG:
+            logging.info("Running in DEBUG mode with reduced ensemble members and days.")
+        outfile = _forecast_output_path(date_f)
+        if outfile.exists():
+            logging.info(f"Output file {outfile} already exists. Skipping run.")
+            run_status = "skipped"
+            write_run_metadata(date_f, runtime)
+            return
 
-    rngs = np.stack(
-        [jax.random.fold_in(rng, i) for i in range(num_ensemble_members)], axis=0)
+        FCST_DIR.mkdir(parents=True, exist_ok=True)
+        _remove_stale_partial_temp_dirs(outfile)
+        with _TimedOperation("get_model"):
+            run_forward_pmap, task_config = get_model()
+        with _TimedOperation("initial condition import"):
+            ic = import_ic(task_config, date)
+        lat = ic.lat.values
+        lon = ic.lon.values
+        level = ic.level.values
+        with _TimedOperation("forcings and target template construction"):
+            forcings_ds, targets_template_ds = get_forcings_targets(
+                task_config, date, N_STEPS, lat, lon, level
+            )
+        with _TimedOperation("saved output template construction"):
+            saved_targets_template_ds = _targets_template_for_save(targets_template_ds)
+        num_ensemble_members = int(os.getenv("GENCAST_ENSEMBLE_MEMBERS", str(N_MEMBERS)))
+        rng = jax.random.PRNGKey(0)
 
-    num_steps_per_chunk = 1
-    total_steps = N_STEPS
-    current_step = 0
-    pmap_devices = jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
-    if num_ensemble_members != len(pmap_devices):
-        raise RuntimeError(
-            f"GenCast ensemble members ({num_ensemble_members}) must match pmap devices "
-            f"({len(pmap_devices)}) for this execution."
+        rngs = np.stack(
+            [jax.random.fold_in(rng, i) for i in range(num_ensemble_members)], axis=0
         )
-    logging.info(
-        "Running GenCast with %s ensemble members over %s pmap devices.",
-        num_ensemble_members,
-        len(pmap_devices),
-    )
 
-    chunks = []
-    for chunk in rollout.chunked_prediction_generator_multiple_runs(
-        # Use pmapped version to parallelise across devices.
-        predictor_fn=run_forward_pmap,
-        rngs=rngs,
-        inputs=ic,
-        targets_template=targets_template_ds * np.nan,
-        forcings=forcings_ds,
-        num_steps_per_chunk = 1,
-        num_samples = num_ensemble_members,
-        pmap_devices=pmap_devices
-        ):
-        chunks.append(chunk)
-        current_step += num_steps_per_chunk
-        logging.info(f"Completed {current_step}/{total_steps} steps.")
-    
+        num_steps_per_chunk = 1
+        total_steps = N_STEPS
+        sample_values = np.arange(num_ensemble_members)
+        pmap_devices = _select_pmap_devices(num_ensemble_members)
+        total_chunks = total_steps * (num_ensemble_members // len(pmap_devices))
 
-    predictions = xr.combine_by_coords(chunks)
+        with tempfile.TemporaryDirectory(
+            prefix=_partial_temp_prefix(outfile),
+            dir=FCST_DIR,
+        ) as partial_temp_dir:
+            partial_outfile = Path(partial_temp_dir) / outfile.name
+            with _TimedOperation("partial Zarr initialization"):
+                _initialize_partial_zarr(
+                    partial_path=partial_outfile,
+                    targets_template=saved_targets_template_ds,
+                    num_samples=num_ensemble_members,
+                    sample_chunk=len(pmap_devices),
+                    time_chunk=num_steps_per_chunk,
+                )
 
-    if jax.process_index() == 0:
-        predictions.to_netcdf(outfile)
-        logging.info("Wrote GenCast output to %s", outfile)
-    else:
-        logging.info("Skipping NetCDF write on nonzero JAX process %s.", jax.process_index())
-    write_run_metadata(date_f, runtime)
+            target_levels = (
+                saved_targets_template_ds.level.values
+                if "level" in saved_targets_template_ds.coords
+                else None
+            )
+            chunks_queued = 0
+            with _AsyncPredictionWriter(
+                partial_path=partial_outfile,
+                target_times=targets_template_ds.time.values,
+                sample_values=sample_values,
+                target_levels=target_levels,
+            ) as writer:
+                chunk_wait_started = time.perf_counter()
+                for chunk in rollout.chunked_prediction_generator_multiple_runs(
+                    # Use pmapped version to parallelise across devices.
+                    predictor_fn=run_forward_pmap,
+                    rngs=rngs,
+                    inputs=ic,
+                    targets_template=targets_template_ds * np.nan,
+                    forcings=forcings_ds,
+                    num_steps_per_chunk=num_steps_per_chunk,
+                    num_samples=num_ensemble_members,
+                    pmap_devices=pmap_devices,
+                ):
+                    chunk_generation_seconds = time.perf_counter() - chunk_wait_started
+                    writer.submit(chunk)
+                    chunks_queued += 1
+                    logging.info(
+                        "Queued chunk %d/%d for async write to %s after %.2fs "
+                        "waiting for rollout chunk.",
+                        chunks_queued,
+                        total_chunks,
+                        partial_outfile,
+                        chunk_generation_seconds,
+                    )
+                    chunk_wait_started = time.perf_counter()
 
-
+            with _TimedOperation("Zarr metadata consolidation"):
+                zarr.consolidate_metadata(str(partial_outfile))
+            with _TimedOperation("final output rename"):
+                partial_outfile.rename(outfile)
+        logging.info(f"Forecast written to {outfile}.")
+        run_status = "completed"
+    finally:
+        logging.info(
+            "run_model(%s) %s in %.2fs.",
+            date_f,
+            run_status,
+            time.perf_counter() - run_started,
+        )
+        write_run_metadata(date_f, runtime)
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run GenCast for a given date.')
-    parser.add_argument('--date', type=str, help='Date to run the model for (YYYYMMDDTHH format)', required=True)
+    parser = argparse.ArgumentParser(description="Run GenCast for a given date.")
+    parser.add_argument(
+        "--date",
+        type=str,
+        help="Date to run the model for (YYYYMMDDTHH format)",
+        required=True,
+    )
     args = parser.parse_args()
     date_f = args.date
 
     runtime = initialize_jax_runtime()
     run_model(date_f, runtime)
+
+
 
 if __name__ == "__main__":
     main()

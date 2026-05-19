@@ -1,9 +1,10 @@
-import earthkit.data as ekd
 import datetime
 import logging
-import xarray as xr
-import numpy as np
 from pathlib import Path
+
+import earthkit.data as ekd
+import numpy as np
+import xarray as xr
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,7 +20,8 @@ REPO_ROOT = BASE.parent
 GRIB_OUTPUT_DIR = REPO_ROOT / "AIFS" / "raw" / "ifs_ic" / "grib"
 SST_DIR = BASE / "raw" / "sst_ic"
 LSM_PATH = BASE / "data" / "gencast_lsm_mask.nc"
-LSM_MASK = xr.open_dataarray(LSM_PATH)
+LSM_MASK = xr.open_dataarray(LSM_PATH, engine="h5netcdf")
+
 
 def get_grib_path(date):
     date_f = date.strftime("%Y%m%d%H%M%S")
@@ -31,20 +33,21 @@ def get_grib_path(date):
 
     return str(grib_path)
 
+
 def get_sst(date):
     date_f = date.strftime("%Y%m%dT%H")
     sst_path = SST_DIR / f"sst_{date_f}.nc"
     if not sst_path.exists():
         logging.error(f"SST file {sst_path} does not exist.")
         raise FileNotFoundError(f"SST file {sst_path} not found.")
-    sst = xr.open_dataset(sst_path)
+    sst = xr.open_dataset(sst_path, engine="h5netcdf")
     return sst
+
 
 def get_open_data(DATE, param, levelist=[]):
     # Get the data for the current date and the previous date
     data_list = []
     for date in [DATE - datetime.timedelta(hours=12), DATE]:
-
         full_data_path = get_grib_path(date)
         full_data = ekd.from_source("file", path=full_data_path)
         if levelist:
@@ -60,12 +63,12 @@ def get_open_data(DATE, param, levelist=[]):
             data = data.assign_coords(longitude=data.longitude % 360)
             data = data.sortby("longitude")
 
-
         data_list.append(data)
-        
+
     ds = xr.concat(data_list, dim="time")
 
     return ds
+
 
 def get_ic(date):
 
@@ -75,9 +78,16 @@ def get_ic(date):
         "2t": "2m_temperature",
         "msl": "mean_sea_level_pressure",
         "lsm": "land_sea_mask",
-        "z": "geopotential_at_surface"
+        "z": "geopotential_at_surface",
     }
-    PARAM_PL = {"gh": "geopotential_height", "t": "temperature", "u": "u_component_of_wind", "v": "v_component_of_wind", "w": "vertical_velocity", "q": "specific_humidity"}
+    PARAM_PL = {
+        "gh": "geopotential_height",
+        "t": "temperature",
+        "u": "u_component_of_wind",
+        "v": "v_component_of_wind",
+        "w": "vertical_velocity",
+        "q": "specific_humidity",
+    }
     LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
 
     sfc = get_open_data(DATE=date, param=list(PARAM_SFC.keys()))
@@ -89,14 +99,14 @@ def get_ic(date):
     ic = xr.merge([sfc, pl, sst], join="exact")
 
     ic = ic.rename({"latitude": "lat", "longitude": "lon"})
-    ic['lat'] = ic.lat.astype(np.float32)
-    ic['lon'] = ic.lon.astype(np.float32)
-    ic['level'] = ic.level.astype(np.int32)
+    ic["lat"] = ic.lat.astype(np.float32)
+    ic["lon"] = ic.lon.astype(np.float32)
+    ic["level"] = ic.level.astype(np.int32)
     ic = ic.sortby(["lat", "lon"])
 
-    ic['sea_surface_temperature'] = ic['sea_surface_temperature'].where(LSM_MASK == 1)
+    ic["sea_surface_temperature"] = ic["sea_surface_temperature"].where(LSM_MASK == 1)
 
-    ic['geopotential_height'] = ic['geopotential_height'] * 9.80665
+    ic["geopotential_height"] = ic["geopotential_height"] * 9.80665
     ic = ic.rename({"geopotential_height": "geopotential"})
 
     for var in ic.data_vars:
@@ -107,8 +117,9 @@ def get_ic(date):
     ic = ic.expand_dims("batch")
     ic = ic.assign_coords(datetime=(("batch", "time"), [ic.time.values]))
 
-    ic['geopotential_at_surface'] = ic['geopotential_at_surface'].isel(time=0, batch=0).squeeze()
-    ic['land_sea_mask'] = ic['land_sea_mask'].isel(time=0, batch=0).squeeze()
-
+    ic["geopotential_at_surface"] = (
+        ic["geopotential_at_surface"].isel(time=0, batch=0).squeeze()
+    )
+    ic["land_sea_mask"] = ic["land_sea_mask"].isel(time=0, batch=0).squeeze()
 
     return ic
