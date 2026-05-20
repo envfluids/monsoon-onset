@@ -172,6 +172,7 @@ main:
                       assign:
                         - ${model}_job_id: $${"${replace(model, "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
                         - ${model}_job_name: $${"projects/" + project_id + "/locations/${region}/jobs/" + ${model}_job_id}
+                        - ${model}_attempt: 1
                   # A prior workflow run may have left a FAILED/CANCELLED job at
                   # this id. Batch ids are immutable, so resubmitting would 409
                   # forever. Probe first; if stale, delete (synchronous via the
@@ -212,9 +213,15 @@ main:
                             taskGroups:
                               - taskCount: 1
                                 taskSpec:
+%{ if batch_config.model_resources[model].cpu_milli != null || batch_config.model_resources[model].memory_mib != null ~}
                                   computeResource:
-                                    cpuMilli: 8000
-                                    memoryMib: ${model == "aifs_ens" || model == "neuralgcm" ? 65536 : 32768}
+%{ if batch_config.model_resources[model].cpu_milli != null ~}
+                                    cpuMilli: ${batch_config.model_resources[model].cpu_milli}
+%{ endif ~}
+%{ if batch_config.model_resources[model].memory_mib != null ~}
+                                    memoryMib: ${batch_config.model_resources[model].memory_mib}
+%{ endif ~}
+%{ endif ~}
                                   maxRetryCount: 1
                                   maxRunDuration: "${model == "aifs_ens" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
                                   runnables:
@@ -229,20 +236,33 @@ main:
                                           GCS_COMMON_BUCKET: $${common_bucket}
                                           GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
                                           UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
+%{ if model == "aifs_ens" && contains(full_field_models, model) ~}
+                                  volumes:
+                                    - gcs:
+                                        remotePath: $${common_bucket}
+                                      mountPath: /mnt/disks/common
+%{ endif ~}
                             allocationPolicy:
                               serviceAccount:
                                 email: "${pipeline_sa}"
                               instances:
                                 - installGpuDrivers: true
                                   policy:
-                                    machineType: "${batch_config.machine_type}"
+                                    machineType: "${batch_config.model_resources[model].machine_type}"
                                     bootDisk:
                                       image: "${batch_config.os_image}"
-                                      sizeGb: ${model == "aifs_ens" ? 200 : batch_config.boot_disk_gb}
+%{ if batch_config.model_resources[model].boot_disk_size_gb != null ~}
+                                      sizeGb: ${batch_config.model_resources[model].boot_disk_size_gb}
+%{ endif ~}
+%{ if batch_config.model_resources[model].boot_disk_type != null ~}
+                                      type: "${batch_config.model_resources[model].boot_disk_type}"
+%{ endif ~}
                                     provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
+%{ if batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ~}
                                     accelerators:
-                                      - type: "${batch_config.gpu_type}"
-                                        count: ${batch_config.gpu_count}
+                                      - type: "${batch_config.model_resources[model].gpu_type}"
+                                        count: ${batch_config.model_resources[model].gpu_count}
+%{ endif ~}
                               location:
                                 allowedLocations: ["regions/${region}"]
                               network:
@@ -266,16 +286,51 @@ main:
                   - poll_${model}:
                       steps:
                         - get_${model}_status:
-                            call: googleapis.batch.v1.projects.locations.jobs.get
-                            args:
-                              name: $${${model}_job_name}
-                            result: ${model}_status
+                            try:
+                              call: googleapis.batch.v1.projects.locations.jobs.get
+                              args:
+                                name: $${${model}_job_name}
+                              result: ${model}_status
+                            except:
+                              as: e
+                              steps:
+                                - handle_${model}_poll_get_error:
+                                    switch:
+                                      - condition: $${default(map.get(e, "code"), 0) == 404}
+                                        next: submit_${model}_batch
+                                      - condition: true
+                                        raise: $${e}
                         - check_${model}_state:
                             switch:
                               - condition: $${${model}_status.status.state == "SUCCEEDED"}
                                 next: ${model}_done
                               - condition: $${${model}_status.status.state == "FAILED" or ${model}_status.status.state == "CANCELLED"}
-                                raise: '$${"${model} job did not complete successfully: " + ${model}_job_name + " state=" + ${model}_status.status.state}'
+                                next: maybe_retry_${model}
+                              - condition: true
+                                next: sleep_${model}
+                        - maybe_retry_${model}:
+                            switch:
+                              - condition: $${${model}_attempt < ${batch_config.max_attempts}}
+                                next: log_${model}_retry
+                              - condition: true
+                                raise: '$${"${model} job did not complete successfully after ${batch_config.max_attempts} attempts: " + ${model}_job_name + " state=" + ${model}_status.status.state + " events=" + json.encode_to_string(default(map.get(${model}_status.status, "statusEvents"), []))}'
+                        - log_${model}_retry:
+                            call: sys.log
+                            args:
+                              severity: WARNING
+                              text: '$${"${model} Batch job attempt " + json.encode_to_string(${model}_attempt) + " failed with state=" + ${model}_status.status.state + " events=" + json.encode_to_string(default(map.get(${model}_status.status, "statusEvents"), [])) + "; deleting and recreating " + ${model}_job_name}'
+                        - delete_failed_${model}_job:
+                            call: googleapis.batch.v1.projects.locations.jobs.delete
+                            args:
+                              name: $${${model}_job_name}
+                        - increment_${model}_attempt:
+                            assign:
+                              - ${model}_attempt: $${${model}_attempt + 1}
+                        - sleep_${model}_retry:
+                            call: sys.sleep
+                            args:
+                              seconds: 60
+                            next: submit_${model}_batch
                         - sleep_${model}:
                             call: sys.sleep
                             args:
@@ -296,180 +351,71 @@ main:
                         - condition: $${gencast_action.date == ""}
                           next: gencast_done
                         - condition: true
-                          next: prepare_gencast_tpu
-                  - prepare_gencast_tpu:
+                          next: prepare_gencast_dispatch
+                  - prepare_gencast_dispatch:
                       assign:
-                        - gencast_qr_id: $${"gencast-" + text.replace_all(gencast_action.date, "T", "-")}
-                        - gencast_node_id: $${gencast_qr_id}
-                        - gencast_qr_url: $${"https://tpu.googleapis.com/v2alpha1/projects/" + project_id + "/locations/${tpu_config.zone}/queuedResources/" + gencast_qr_id}
-                        - gencast_create_url: $${"https://tpu.googleapis.com/v2alpha1/projects/" + project_id + "/locations/${tpu_config.zone}/queuedResources?queuedResourceId=" + gencast_qr_id}
-                        - gencast_poll_count: 0
-                  - submit_gencast_tpu:
-                      try:
-                        call: http.post
-                        args:
-                          url: $${gencast_create_url}
-                          auth:
-                            type: OAuth2
-                            scopes: ["https://www.googleapis.com/auth/cloud-platform"]
-                          body:
-                            queueingPolicy:
-                              validUntilDuration: "${tpu_config.request_valid_duration}"
-                            tpu:
-                              nodeSpec:
-                                - parent: "projects/${project_id}/locations/${tpu_config.zone}"
-                                  nodeId: $${gencast_node_id}
-                                  node:
-                                    runtimeVersion: "${tpu_config.runtime_version}"
-                                    acceleratorConfig:
-                                      type: "${tpu_config.accelerator_type}"
-                                      topology: "${tpu_config.topology}"
-                                    networkConfig:
-                                      network: "${tpu_config.vpc_network}"
-                                      subnetwork: "${tpu_config.vpc_subnet}"
-                                      enableExternalIps: ${tpu_config.enable_external_ips}
-                                    serviceAccount:
-                                      email: "${pipeline_sa}"
-                                      scope: ["https://www.googleapis.com/auth/cloud-platform"]
-                                    metadata:
-                                      startup-script: ${jsonencode(gencast_tpu_startup_script)}
-                                      date: $${gencast_action.date}
-                                      forecast-regions: $${json.encode_to_string(gencast_action.regions)}
-                                      common-bucket: $${common_bucket}
-                                      region-buckets: $${json.encode_to_string(region_buckets)}
-                                      gencast-image: "${tpu_config.image}"
-                                      artifact-registry-host: "${tpu_config.artifact_registry_host}"
-                                      expected-global-devices: "${tpu_config.global_device_count}"
-                                      expected-local-devices: "${tpu_config.local_device_count}"
-                                      expected-process-count: "${tpu_config.process_count}"
-                                      ensemble-members: "${tpu_config.global_device_count}"
-                        result: gencast_create_operation
-                      except:
-                        as: e
-                        steps:
-                          - handle_gencast_submit_error:
-                              switch:
-                                - condition: $${default(map.get(e, "code"), 0) == 409}
-                                  next: poll_gencast_completion
-                                - condition: true
-                                  raise: $${e}
-                  # The TPU API's queuedResources.create returns a long-running
-                  # operation. http.post finishes as soon as the operation is
-                  # accepted; if the underlying create later errors (no capacity,
-                  # quota, bad accelerator config), the QR is never made and the
-                  # workflow would otherwise silently poll a phantom resource.
-                  # Poll the operation until done and raise on error.
-                  - prepare_gencast_submit_poll:
-                      assign:
-                        - gencast_submit_op_name: $${gencast_create_operation.body.name}
-                        - gencast_submit_op_url: $${"https://tpu.googleapis.com/v2alpha1/" + gencast_submit_op_name}
-                        - gencast_submit_op_polls: 0
-                  - poll_gencast_submit_operation:
-                      call: http.get
+                        - gencast_run_id: $${"gencast-" + text.replace_all(gencast_action.date, "T", "-")}
+                  - run_gencast_dispatch:
+                      call: googleapis.run.v2.projects.locations.jobs.run
                       args:
-                        url: $${gencast_submit_op_url}
-                        auth:
-                          type: OAuth2
-                          scopes: ["https://www.googleapis.com/auth/cloud-platform"]
-                      result: gencast_submit_op
-                  - check_gencast_submit_operation_done:
-                      switch:
-                        - condition: $${default(map.get(gencast_submit_op.body, "done"), false) == true}
-                          next: check_gencast_submit_operation_error
-                        - condition: $${gencast_submit_op_polls >= 60}
-                          next: raise_gencast_submit_op_timeout
-                        - condition: true
-                          next: sleep_gencast_submit_operation
-                  - sleep_gencast_submit_operation:
-                      call: sys.sleep
-                      args:
-                        seconds: 10
-                  - bump_gencast_submit_operation_polls:
-                      assign:
-                        - gencast_submit_op_polls: $${gencast_submit_op_polls + 1}
-                      next: poll_gencast_submit_operation
-                  - check_gencast_submit_operation_error:
-                      switch:
-                        - condition: $${default(map.get(gencast_submit_op.body, "error"), null) != null}
-                          next: raise_gencast_submit_op_error
-                        - condition: true
-                          next: poll_gencast_completion
-                  - raise_gencast_submit_op_error:
-                      raise: '$${"GenCast queued resource create operation failed: " + json.encode_to_string(gencast_submit_op.body.error)}'
-                  - raise_gencast_submit_op_timeout:
-                      raise: '$${"GenCast queued resource create operation did not finish in 10 minutes: " + gencast_submit_op_name}'
-                  - poll_gencast_completion:
-                      call: pipeline_state
-                      args:
-                        base_url: $${pipeline_state_url}
-                        date: $${requested_date}
-                      result: gencast_poll_state
-                  - check_gencast_outputs:
-                      assign:
-                        - gencast_remaining_action: $${default(map.get(gencast_poll_state.actions.models_to_run_by_model, "gencast"), default_model_action)}
-                  - maybe_cleanup_gencast_success:
-                      switch:
-                        - condition: $${gencast_remaining_action.date == ""}
-                          next: cleanup_gencast_success
-                        - condition: true
-                          next: get_gencast_qr_state
-                  - get_gencast_qr_state:
-                      try:
-                        call: http.get
-                        args:
-                          url: $${gencast_qr_url}
-                          auth:
-                            type: OAuth2
-                            scopes: ["https://www.googleapis.com/auth/cloud-platform"]
-                        result: gencast_qr
-                      except:
-                        as: e
-                        steps:
-                          - handle_gencast_qr_get_error:
-                              switch:
-                                - condition: $${default(map.get(e, "code"), 0) == 404}
-                                  next: raise_gencast_qr_missing
-                                - condition: true
-                                  raise: $${e}
-                  - check_gencast_qr_state:
-                      switch:
-                        - condition: $${gencast_qr.body.state.state == "FAILED" or gencast_qr.body.state.state == "SUSPENDED"}
-                          next: cleanup_gencast_failed
-                        - condition: $${gencast_poll_count >= ${tpu_config.max_polls}}
-                          next: cleanup_gencast_timeout
-                        - condition: true
-                          next: sleep_gencast
-                  - sleep_gencast:
-                      call: sys.sleep
-                      args:
-                        seconds: ${tpu_config.poll_interval_seconds}
-                  - increment_gencast_poll:
-                      assign:
-                        - gencast_poll_count: $${gencast_poll_count + 1}
-                      next: poll_gencast_completion
-                  - cleanup_gencast_success:
-                      call: delete_gencast_queued_resource
-                      args:
-                        queued_resource_url: $${gencast_qr_url}
+                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs["tpu-dispatch"].name}"
+                        body:
+                          overrides:
+                            containerOverrides:
+                              - env:
+                                  - name: WORKLOAD_NAME
+                                    value: "gencast"
+                                  - name: RUN_ID
+                                    value: $${gencast_run_id}
+                                  - name: DATE
+                                    value: $${gencast_action.date}
+                                  - name: WORKLOAD_IMAGE
+                                    value: "${tpu_config.workload_image}"
+                                  - name: FORECAST_REGIONS
+                                    value: $${json.encode_to_string(gencast_action.regions)}
+                                  - name: GCS_COMMON_BUCKET
+                                    value: $${common_bucket}
+                                  - name: GCS_REGION_BUCKETS
+                                    value: $${json.encode_to_string(region_buckets)}
+                                  - name: PROJECT_ID
+                                    value: $${project_id}
+                                  - name: TPU_ZONE
+                                    value: "${tpu_config.zone}"
+                                  - name: TPU_ACCELERATOR_TYPE
+                                    value: "${tpu_config.accelerator_type}"
+                                  - name: TPU_RUNTIME_VERSION
+                                    value: "${tpu_config.runtime_version}"
+                                  - name: TPU_SPOT
+                                    value: "${tpu_config.spot}"
+                                  - name: TPU_NETWORK
+                                    value: "${tpu_config.vpc_network}"
+                                  - name: TPU_SUBNETWORK
+                                    value: "${tpu_config.vpc_subnet}"
+                                  - name: TPU_SERVICE_ACCOUNT
+                                    value: "${pipeline_sa}"
+                                  - name: ARTIFACT_REGISTRY_HOST
+                                    value: "${tpu_config.artifact_registry_host}"
+                                  - name: MAX_ATTEMPTS
+                                    value: "${tpu_config.max_attempts}"
+                                  - name: POLL_INTERVAL_SECONDS
+                                    value: "${tpu_config.poll_interval_seconds}"
+                                  - name: QUEUE_TIMEOUT_SECONDS
+                                    value: "${tpu_config.queue_timeout_seconds}"
+                                  - name: RUN_TIMEOUT_SECONDS
+                                    value: "${tpu_config.run_timeout_seconds}"
+                                  - name: REQUEST_VALID_DURATION
+                                    value: "${tpu_config.request_valid_duration}"
+                                  - name: GENCAST_EXPECTED_GLOBAL_DEVICES
+                                    value: "${tpu_config.global_device_count}"
+                                  - name: GENCAST_EXPECTED_LOCAL_DEVICES
+                                    value: "${tpu_config.local_device_count}"
+                                  - name: GENCAST_EXPECTED_PROCESS_COUNT
+                                    value: "${tpu_config.process_count}"
+                                  - name: GENCAST_ENSEMBLE_MEMBERS
+                                    value: "${tpu_config.global_device_count}"
                   - gencast_done:
                       assign:
                         - gencast_branch_done: true
-                  - cleanup_gencast_failed:
-                      call: delete_gencast_queued_resource
-                      args:
-                        queued_resource_url: $${gencast_qr_url}
-                      next: raise_gencast_failed
-                  - raise_gencast_failed:
-                      raise: '$${"GenCast TPU queued resource failed before expected outputs were present: " + gencast_qr_url + " state=" + gencast_qr.body.state.state}'
-                  - cleanup_gencast_timeout:
-                      call: delete_gencast_queued_resource
-                      args:
-                        queued_resource_url: $${gencast_qr_url}
-                      next: raise_gencast_timeout
-                  - raise_gencast_timeout:
-                      raise: '$${"GenCast TPU output did not appear before workflow timeout: " + gencast_qr_url}'
-                  - raise_gencast_qr_missing:
-                      raise: '$${"GenCast TPU queued resource not found (404) — never created or deleted before outputs appeared: " + gencast_qr_url}'
 %{ endif ~}
 
     - probe_state_post_models:
@@ -635,26 +581,3 @@ pipeline_state:
         result: response
     - return_body:
         return: $${response.body}
-
-delete_gencast_queued_resource:
-  params: [queued_resource_url]
-  steps:
-    - delete_resource:
-        try:
-          call: http.delete
-          args:
-            url: $${queued_resource_url}
-            auth:
-              type: OAuth2
-              scopes: ["https://www.googleapis.com/auth/cloud-platform"]
-        except:
-          as: e
-          steps:
-            - ignore_missing_resource:
-                switch:
-                  - condition: $${default(map.get(e, "code"), 0) == 404}
-                    next: deleted
-                  - condition: true
-                    raise: $${e}
-    - deleted:
-        return: true

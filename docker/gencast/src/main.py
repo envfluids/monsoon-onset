@@ -6,14 +6,8 @@ Multi-region behavior (same pattern as AIFS / NeuralGCM):
      bucket (shared across regions).
   2. Run inference once (the expensive step).
   3. (Optional) Upload full-field raw forecast to the COMMON bucket.
-  4. For each region in FORECAST_REGIONS, upload the per-region GenCast output
-     to that region's bucket and write a per-(model, region) marker.
-
-A region-specific post-processing script for GenCast does not yet exist in the
-science layer; until it does, the shim publishes the raw inference file under
-`output/gencast/{date}/init_{date}.nc` in each region bucket. When a science
-post-process is added, this shim should call it with `--region {region}` and
-upload the post-processed output instead (analogous to AIFS).
+  4. For each region in FORECAST_REGIONS, run region post-processing, upload
+     the per-region GenCast output, and write a per-(model, region) marker.
 
 Environment Variables:
     DATE              : ECMWF 00z cycle date YYYYMMDDTHH (the GenCast init date)
@@ -92,6 +86,37 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
     logger.info("Wrote to gs://%s/%s", bucket_name, gcs_path)
 
 
+def write_dispatch_status(
+    date: str,
+    state: str,
+    message: str,
+    exit_code: int | None = None,
+) -> None:
+    bucket_name = os.getenv("TPU_DISPATCH_STATUS_BUCKET")
+    status_path = os.getenv("TPU_DISPATCH_STATUS_PATH")
+    if not bucket_name or not status_path:
+        return
+    payload = {
+        "run_id": os.getenv("TPU_DISPATCH_RUN_ID", ""),
+        "attempt": int(os.getenv("TPU_DISPATCH_ATTEMPT", "0")),
+        "workload": os.getenv("TPU_DISPATCH_WORKLOAD", MODEL),
+        "date": date,
+        "state": state,
+        "queued_resource_id": os.getenv("TPU_DISPATCH_QUEUED_RESOURCE_ID", ""),
+        "node_id": os.getenv("TPU_DISPATCH_NODE_ID", ""),
+        "zone": os.getenv("TPU_DISPATCH_ZONE", ""),
+        "started_at": "",
+        "updated_at": dt.datetime.now(dt.UTC).isoformat(),
+        "message": message,
+        "exit_code": exit_code,
+    }
+    _client().bucket(bucket_name).blob(status_path).upload_from_string(
+        json.dumps(payload, sort_keys=True),
+        content_type="application/json",
+    )
+    logger.info("Wrote TPU dispatch status %s to gs://%s/%s", state, bucket_name, status_path)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -108,6 +133,14 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
               type=lambda v: str(v).lower() == "true", default=True)
 @click.option("--graphcast-bucket", envvar="GRAPHCAST_BUCKET", default=GRAPHCAST_BUCKET)
 def main(date, regions, common_bucket, region_buckets, upload_full_field, graphcast_bucket):
+    try:
+        _main(date, regions, common_bucket, region_buckets, upload_full_field, graphcast_bucket)
+    except Exception as exc:
+        write_dispatch_status(date, "FAILED", f"GenCast shim failed: {exc}", 1)
+        raise
+
+
+def _main(date, regions, common_bucket, region_buckets, upload_full_field, graphcast_bucket):
     regions = json.loads(regions)
     region_buckets = json.loads(region_buckets)
 
@@ -140,6 +173,7 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field, graphc
             raise click.ClickException(f"No bucket configured for region {region!r}")
         _upload_region_outputs(date, region, region_buckets[region])
         _write_completion_marker(date, region, common_bucket)
+    write_dispatch_status(date, "SUCCEEDED", "GenCast outputs uploaded", 0)
 
 
 def _setup_directories() -> None:
@@ -203,6 +237,17 @@ def _run_inference(date: str) -> dict[str, object]:
     return _read_run_metadata(date)
 
 
+def _run_post_process(date: str, region: str) -> None:
+    env = {**os.environ, "PYTHONPATH": str(GENCAST_UTILS)}
+    logger.info("Running GenCast post_process.py for %s region=%s", date, region)
+    subprocess.run(
+        [sys.executable, "post_process.py", "--date", date, "--region", region],
+        cwd=GENCAST_UTILS,
+        check=True,
+        env=env,
+    )
+
+
 def _log_jax_runtime(env: dict[str, str]) -> None:
     result = subprocess.run(
         [
@@ -234,28 +279,26 @@ def _read_run_metadata(date: str) -> dict[str, object]:
 
 
 def _upload_full_field(date: str, common_bucket: str) -> None:
-    raw_path = GENCAST_UTILS.parent / "raw" / "output" / f"init_{date}.nc"
+    raw_path = GENCAST_UTILS.parent / "raw" / "output" / f"init_{date}.zarr"
     if not raw_path.exists():
         raise RuntimeError(f"Expected raw GenCast forecast is missing: {raw_path}")
-    upload_file(common_bucket, raw_path, f"full_field/gencast/{date}/init_{date}.nc")
+    upload_directory(common_bucket, raw_path, f"full_field/gencast/{date}/init_{date}.zarr")
 
 
 def _upload_region_outputs(date: str, region: str, region_bucket: str) -> None:
     """Publish the per-region GenCast output.
 
-    No region-specific post-processing script exists yet — until one is added
-    in gencast/utils/, this uploads the raw inference file under
-    output/gencast/{date}/init_{date}.nc in the region's bucket. Replace with
-    a post_process.py call when the science layer adds region dispatch
-    analogous to AIFS/utils/post_process.py.
+    Run the region post-processing script against the raw Zarr forecast, then
+    upload the region-specific precipitation product.
     """
-    raw_path = GENCAST_UTILS.parent / "raw" / "output" / f"init_{date}.nc"
-    if not raw_path.exists():
-        raise RuntimeError(f"Expected raw GenCast forecast is missing: {raw_path}")
+    _run_post_process(date, region)
+    tp_path = GENCAST_UTILS.parent / "output" / region / "tp" / f"tp_0p25_{date}.nc"
+    if not tp_path.exists():
+        raise RuntimeError(f"Expected raw GenCast forecast is missing: {tp_path}")
     upload_file(
         region_bucket,
-        raw_path,
-        f"output/gencast/{date}/init_{date}.nc",
+        tp_path,
+        f"output/gencast/{date}/tp_0p25_{date}.nc",
     )
 
 

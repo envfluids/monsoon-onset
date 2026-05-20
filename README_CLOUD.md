@@ -52,11 +52,11 @@ raw/
   ecmwf/{date}/grib/*.grib2                 <- ECMWF IFS GRIB initial conditions
   gencast/sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
   ncep/{date}/gdas_{date}.pgrb2             <- NCEP GDAS initial conditions
-raw_forecast/
+full_field/
   aifs/{date}/init_{date}.nc                <- AIFS full-field forecast
   aifs_ens/{date}/init_{date}.zarr/         <- AIFS-ENS full-field forecast
   neuralgcm/{date}/member_*.zarr/           <- NeuralGCM full-field member forecasts
-  gencast/{date}/init_{date}.nc             <- GenCast full-field forecast
+  gencast/{date}/init_{date}.zarr/          <- GenCast full-field forecast
 intermediate/
   latest_date.txt                           <- latest date marker written by downloader
   latest_ecmwf_date.txt                     <- actual ECMWF date written by downloader
@@ -304,12 +304,12 @@ The workflow polls every 120 seconds (longer than AIFS because NeuralGCM takes m
 
 **GenCast TPU queued resource:**
 
-GenCast runs on a TPU v5p-32 slice with topology `2x4x4`. The default zone is `us-central1-a`; set `gencast_tpu_zone = "us-east5-a"` to move TPU capacity east. If the TPU zone is outside the primary region, Terraform creates a matching regional subnet and NAT on the existing VPC.
+GenCast runs on a TPU v5p-32 slice with topology `2x2x4`. The default zone is `us-central1-a`; set `gencast_tpu_zone = "us-east5-a"` to move TPU capacity east. If the TPU zone is outside the primary region, Terraform creates a matching regional subnet and NAT on the existing VPC.
 
 The workflow submits one queued resource per GenCast date, using a stable ID `gencast-{date}`. Duplicate submissions poll the existing queued resource. The startup script runs the GenCast container on every TPU VM host with JAX distributed initialization enabled. `run_gencast.py` logs and validates:
-- global device count: `32`
+- global device count: `16`
 - local device count per TPU VM: `4`
-- process count: `8`
+- process count: `4`
 
 Only JAX process 0 uploads full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts.
 

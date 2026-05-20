@@ -17,6 +17,84 @@ locals {
     : lookup(local.gpu_machine_type_defaults, var.gpu_type, "n1-standard-8")
   )
 
+  gpu_machine_resource_defaults = {
+    "a2-highgpu-1g" = {
+      cpu_milli  = 12000
+      memory_mib = 87040
+      gpu_type   = "nvidia-tesla-a100"
+      gpu_count  = 1
+    }
+    "a2-highgpu-2g" = {
+      cpu_milli  = 24000
+      memory_mib = 174080
+      gpu_type   = "nvidia-tesla-a100"
+      gpu_count  = 2
+    }
+    "a2-highgpu-4g" = {
+      cpu_milli  = 48000
+      memory_mib = 348160
+      gpu_type   = "nvidia-tesla-a100"
+      gpu_count  = 4
+    }
+    "a2-highgpu-8g" = {
+      cpu_milli  = 96000
+      memory_mib = 696320
+      gpu_type   = "nvidia-tesla-a100"
+      gpu_count  = 8
+    }
+    "g2-standard-16" = {
+      cpu_milli  = 16000
+      memory_mib = 65536
+      gpu_type   = "nvidia-l4"
+      gpu_count  = 1
+    }
+    "n1-standard-8" = {
+      cpu_milli  = 8000
+      memory_mib = 30720
+      gpu_type   = var.gpu_type
+      gpu_count  = 1
+    }
+  }
+
+  legacy_batch_model_resources = {
+    aifs = {
+      machine_type      = local.gpu_machine_type
+      boot_disk_size_gb = var.batch_boot_disk_size_gb
+      boot_disk_type    = var.batch_boot_disk_type
+    }
+    neuralgcm = {
+      machine_type      = local.gpu_machine_type
+      boot_disk_size_gb = var.batch_boot_disk_size_gb
+      boot_disk_type    = var.batch_boot_disk_type
+    }
+  }
+
+  batch_model_resource_configs = merge(local.legacy_batch_model_resources, var.batch_model_resources)
+
+  batch_model_resources = {
+    for model, config in local.batch_model_resource_configs : model => {
+      machine_type      = coalesce(try(config.machine_type, null), local.gpu_machine_type)
+      boot_disk_size_gb = try(config.boot_disk_size_gb, null)
+      boot_disk_type    = try(config.boot_disk_type, null)
+      cpu_milli = coalesce(
+        try(config.cpu_milli, null),
+        try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].cpu_milli, null)
+      )
+      memory_mib = coalesce(
+        try(config.memory_mib, null),
+        try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].memory_mib, null)
+      )
+      gpu_type = coalesce(
+        try(config.gpu_type, null),
+        try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].gpu_type, null)
+      )
+      gpu_count = coalesce(
+        try(config.gpu_count, null),
+        try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].gpu_count, null)
+      )
+    }
+  }
+
   # JSON-encoded summary of {region: models} consumed by postprocess and pipeline-state.
   region_models = jsonencode({ for k, v in var.regions : k => v.models })
 
@@ -32,6 +110,7 @@ locals {
       memory  = "4Gi"
       cpu     = "2"
       timeout = "900s"
+      retries = 2
       # Optional env-var names to mount from Secret Manager when supplied in
       # var.external_api_secrets.
       secrets = ["ECMWF_API_KEY", "ECMWF_API_URL", "ECMWF_API_EMAIL"]
@@ -42,6 +121,7 @@ locals {
       memory  = "16Gi"
       cpu     = "4"
       timeout = "1800s"
+      retries = 2
       secrets = []
     }
     blend = {
@@ -50,6 +130,7 @@ locals {
       memory  = "8Gi"
       cpu     = "4"
       timeout = "1800s"
+      retries = 2
       secrets = []
     }
     sync = {
@@ -58,6 +139,16 @@ locals {
       memory  = "1Gi"
       cpu     = "1"
       timeout = "600s"
+      retries = 2
+      secrets = []
+    }
+    "tpu-dispatch" = {
+      name    = "${var.name_prefix}-${var.environment}-tpu-dispatch"
+      image   = var.tpu_dispatch_image
+      memory  = "1Gi"
+      cpu     = "1"
+      timeout = "86400s"
+      retries = 0
       secrets = []
     }
   }
@@ -195,7 +286,7 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       }
 
       timeout     = each.value.timeout
-      max_retries = 2
+      max_retries = each.value.retries
 
       service_account = var.service_account_email
     }
@@ -232,6 +323,18 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       template[0].template[0].containers[0].image,
     ]
   }
+}
+
+resource "google_project_iam_member" "pipeline_tpu_admin" {
+  project = var.project_id
+  role    = "roles/tpu.admin"
+  member  = "serviceAccount:${var.service_account_email}"
+}
+
+resource "google_service_account_iam_member" "pipeline_tpu_vm_service_account_user" {
+  service_account_id = var.service_account_id
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${var.service_account_email}"
 }
 
 # -----------------------------------------------------------------------------

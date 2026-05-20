@@ -62,7 +62,14 @@ def resolve_targets(config: dict, override: str) -> list[str]:
         return requested
 
     base_ref = os.environ.get("BASE_REF", "HEAD~1")
-    changed = changed_files(base_ref)
+    try:
+        changed = changed_files(base_ref)
+    except RuntimeError as exc:
+        print(
+            f"{exc}; rebuilding all images because the diff base is unavailable",
+            file=sys.stderr,
+        )
+        return all_images
     print(f"changed files vs {base_ref}: {changed or 'NONE'}", file=sys.stderr)
 
     global_paths = config.get("global", []) or []

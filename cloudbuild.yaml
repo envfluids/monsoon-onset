@@ -35,7 +35,7 @@ steps:
   # Writes the list to /workspace/targets; downstream steps grep it as a gate.
   # ---------------------------------------------------------------------------
   - id: detect-targets
-    name: python:3.11-slim
+    name: python:3.11
     entrypoint: bash
     env:
       - "TARGETS=${_TARGETS}"
@@ -82,6 +82,16 @@ steps:
       - |
         grep -qx pipeline-state targets || { echo "skip"; exit 0; }
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest || true
+    waitFor: [detect-targets]
+
+  - id: pull-cache-tpu-dispatch
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx tpu-dispatch targets || { echo "skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:latest || true
     waitFor: [detect-targets]
 
   - id: pull-cache-sync
@@ -179,6 +189,22 @@ steps:
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest \
           -f docker/pipeline-state/Dockerfile .
     waitFor: [pull-cache-pipeline-state]
+
+  - id: build-tpu-dispatch
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - -c
+      - |
+        grep -qx tpu-dispatch targets || { echo "skip"; exit 0; }
+        docker build \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:latest \
+          -f docker/tpu-dispatch/Dockerfile .
+    waitFor: [pull-cache-tpu-dispatch]
 
   - id: build-sync
     name: gcr.io/cloud-builders/docker
@@ -300,6 +326,16 @@ steps:
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state
     waitFor: [build-pipeline-state]
 
+  - id: push-tpu-dispatch
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx tpu-dispatch targets || { echo "skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch
+    waitFor: [build-tpu-dispatch]
+
   - id: push-sync
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
@@ -365,8 +401,8 @@ steps:
   # the resolved digest at revision-create time and does not auto-follow tag
   # movement on :latest, so explicit updates are required to deploy changes.
   #
-  # Batch (aifs, neuralgcm) and TPU (gencast) tasks resolve :latest at submit
-  # time, so they pick up new builds without a deploy step here.
+  # Batch (aifs, neuralgcm) and TPU workload (gencast) tasks resolve :latest at
+  # submit time. Cloud Run jobs, including tpu-dispatch, need explicit updates.
   # ---------------------------------------------------------------------------
   - id: deploy-pipeline-state
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -391,6 +427,18 @@ steps:
           --project=${PROJECT_ID} --region=${_REGION} \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
     waitFor: [push-downloader]
+
+  - id: deploy-tpu-dispatch
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx tpu-dispatch targets || { echo "skip"; exit 0; }
+        gcloud run jobs update monsoon-${_ENV}-tpu-dispatch \
+          --project=${PROJECT_ID} --region=${_REGION} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:${_SHORT_SHA}
+    waitFor: [push-tpu-dispatch]
 
   - id: deploy-sync
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim

@@ -4,9 +4,11 @@ flax
 https://github.com/google-deepmind/graphcast/archive/refs/tags/v0.2.zip
 
 # Data processing
-xarray
+xarray==2024.11.0
+dask
 h5py
 h5netcdf
+netcdf4
 gcsfs
 zarr
 earthkit-data

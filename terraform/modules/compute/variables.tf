@@ -84,6 +84,11 @@ variable "service_account_email" {
   type        = string
 }
 
+variable "service_account_id" {
+  description = "Full resource ID of the pipeline service account"
+  type        = string
+}
+
 # -----------------------------------------------------------------------------
 # Container Images
 # -----------------------------------------------------------------------------
@@ -125,6 +130,11 @@ variable "neuralgcm_image" {
 
 variable "gencast_image" {
   description = "Container image for GenCast inference"
+  type        = string
+}
+
+variable "tpu_dispatch_image" {
+  description = "Container image for the TPU dispatch Cloud Run job"
   type        = string
 }
 
@@ -185,10 +195,43 @@ variable "batch_boot_disk_size_gb" {
   default     = 100
 }
 
+variable "batch_boot_disk_type" {
+  description = "Boot disk type for Cloud Batch GPU VMs. Leave null to use the Batch/Compute default."
+  type        = string
+  default     = null
+}
+
 variable "batch_enable_image_streaming" {
   description = "Enable Cloud Batch image streaming for model container runnables stored in Artifact Registry."
   type        = bool
   default     = false
+}
+
+variable "batch_job_max_attempts" {
+  description = "Maximum workflow-level create/poll attempts for each GPU Batch job. Retries recreate failed/cancelled Batch jobs."
+  type        = number
+  default     = 3
+}
+
+variable "batch_model_resources" {
+  description = "Sparse per-model overrides for Cloud Batch GPU VM resources. Unset CPU, memory, and GPU fields use known machine-type defaults when available."
+  type = map(object({
+    machine_type      = optional(string)
+    boot_disk_size_gb = optional(number)
+    boot_disk_type    = optional(string)
+    cpu_milli         = optional(number)
+    memory_mib        = optional(number)
+    gpu_type          = optional(string)
+    gpu_count         = optional(number)
+  }))
+  default = {
+    aifs_ens = {
+      machine_type      = "a2-highgpu-4g"
+      boot_disk_size_gb = 300
+      cpu_milli         = 12000
+      memory_mib        = 204800
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -206,25 +249,8 @@ variable "gencast_tpu_zone" {
   }
 }
 
-variable "gencast_tpu_runtime_version" {
-  description = "Cloud TPU VM runtime for GenCast"
-  type        = string
-  default     = "tpu-ubuntu2204-base"
-}
-
-variable "gencast_tpu_topology" {
-  description = "GenCast TPU v5p topology (product = chip count). v5p-32 is 16 chips on 2x2x4."
-  type        = string
-  default     = "2x2x4"
-
-  validation {
-    condition     = var.gencast_tpu_topology == "2x2x4"
-    error_message = "GenCast is configured for a TPU v5p-32 slice (16 chips), which uses 2x2x4 topology."
-  }
-}
-
 variable "gencast_tpu_global_device_count" {
-  description = "Expected global TPU devices visible to GenCast after JAX distributed initialization. Equals the topology chip count."
+  description = "Expected global TPU devices visible to GenCast after JAX distributed initialization."
   type        = number
   default     = 16
 }
@@ -241,20 +267,55 @@ variable "gencast_tpu_process_count" {
   default     = 4
 }
 
+variable "gencast_tpu_poll_interval_seconds" {
+  description = "Dispatch controller polling interval for GenCast TPU status markers"
+  type        = number
+  default     = 60
+}
+
+variable "gencast_tpu_runtime_version" {
+  description = "Cloud TPU VM runtime for GenCast"
+  type        = string
+  default     = "v2-alpha-tpuv5"
+}
+
+variable "gencast_tpu_accelerator_type" {
+  description = "GenCast TPU accelerator slice"
+  type        = string
+  default     = "v5p-32"
+
+  validation {
+    condition     = var.gencast_tpu_accelerator_type == "v5p-32"
+    error_message = "GenCast is configured for v5p-32 TPU slices."
+  }
+}
+
+variable "gencast_tpu_spot" {
+  description = "Use Spot/preemptible TPU queued resources for GenCast"
+  type        = bool
+  default     = true
+}
+
+variable "gencast_tpu_max_attempts" {
+  description = "Maximum TPU queued-resource attempts per GenCast dispatch"
+  type        = number
+  default     = 3
+}
+
+variable "gencast_tpu_queue_timeout_seconds" {
+  description = "Maximum seconds one GenCast attempt may wait for TPU allocation"
+  type        = number
+  default     = 14400
+}
+
+variable "gencast_tpu_run_timeout_seconds" {
+  description = "Maximum seconds one GenCast attempt may run after the TPU workload reports RUNNING"
+  type        = number
+  default     = 72000
+}
+
 variable "gencast_tpu_request_valid_duration" {
-  description = "How long a GenCast TPU queued resource request may wait for capacity before failing"
+  description = "How long a GenCast TPU queued resource request may wait for capacity before expiring"
   type        = string
   default     = "14400s"
-}
-
-variable "gencast_tpu_poll_interval_seconds" {
-  description = "Workflow polling interval for GenCast TPU output completion"
-  type        = number
-  default     = 300
-}
-
-variable "gencast_tpu_max_polls" {
-  description = "Maximum workflow polls before GenCast TPU execution is treated as failed"
-  type        = number
-  default     = 96
 }

@@ -91,6 +91,8 @@ RENAME_DICT = {
 MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"
 STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
+SST_VAR = "sea_surface_temperature"
+LAND_SEA_MASK_VAR = "land_sea_mask"
 MAX_EXCEPTION_MESSAGE_CHARS = int(
     os.getenv("GENCAST_EXCEPTION_MESSAGE_CHARS", "4000")
 )
@@ -241,6 +243,53 @@ def _log_multihost_dataset_differences(dataset, label):
             jax.process_count(),
         )
     return mismatches
+
+
+def _apply_graphcast_nan_cleaner_upstream(dataset, fill_value, label):
+    if jax.process_count() == 1:
+        return dataset
+
+    if dataset is None or SST_VAR not in dataset:
+        return dataset
+
+    nan_count = int(dataset[SST_VAR].isnull().sum().item())
+    if nan_count == 0:
+        return dataset
+
+    logging.info(
+        "Applying GraphCast NaNCleaner upstream to fill %d %s NaNs in %s "
+        "before multihost device placement.",
+        nan_count,
+        SST_VAR,
+        label,
+    )
+    cleaner = nan_cleaning.NaNCleaner(
+        predictor=None,
+        reintroduce_nans=False,
+        fill_value=fill_value,
+        var_to_clean=SST_VAR,
+    )
+    return cleaner._clean(dataset)
+
+
+def _sst_land_mask(inputs):
+    if LAND_SEA_MASK_VAR in inputs:
+        mask = inputs[LAND_SEA_MASK_VAR] < 0.5
+    elif SST_VAR in inputs:
+        mask = inputs[SST_VAR].isnull().any(dim="time")
+    else:
+        return None
+
+    indexers = {dim: 0 for dim in mask.dims if dim not in {"lat", "lon"}}
+    if indexers:
+        mask = mask.isel(indexers, drop=True)
+    return mask
+
+
+def _mask_sst_output(chunk, land_mask):
+    if land_mask is None or SST_VAR not in chunk:
+        return chunk
+    return chunk.assign({SST_VAR: chunk[SST_VAR].where(~land_mask, np.nan)})
 
 
 def _zarr_chunks_for_var(dims, sizes, sample_chunk, time_chunk):
@@ -639,7 +688,7 @@ def get_model():
 
         predictor = nan_cleaning.NaNCleaner(
             predictor=predictor,
-            reintroduce_nans=True,
+            reintroduce_nans=jax.process_count() == 1,
             fill_value=min_by_level,
             var_to_clean="sea_surface_temperature",
         )
@@ -657,7 +706,7 @@ def get_model():
     # We also produce a pmapped version for running in parallel.
     run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
 
-    return run_forward_pmap, task_config
+    return run_forward_pmap, task_config, min_by_level
 
 
 def get_forcings_targets(task_config, date, lt, lat, lon, level):
@@ -676,10 +725,11 @@ def get_forcings_targets(task_config, date, lt, lat, lon, level):
 
     data_utils.add_derived_vars(forcings)
     forcings = forcings.drop_vars(["datetime", "year_progress", "day_progress"])
-    forcings = forcings.drop_vars("lat")
+    # forcings = forcings.drop_vars("lat")
     forcings = forcings.expand_dims("batch", axis=0)
 
-    forcings = forcings.transpose("batch", "time", "lon")
+    # forcings = forcings.transpose("batch", "time", "lon")
+    forcings = forcings.transpose("batch", "time", "lat", "lon")
 
     target_vars = list(task_config.target_variables)
     target_vars_sfc = [
@@ -750,9 +800,15 @@ def run_model(date_f, runtime):
         FCST_DIR.mkdir(parents=True, exist_ok=True)
         _remove_stale_partial_temp_dirs(outfile)
         with _TimedOperation("get_model"):
-            run_forward_pmap, task_config = get_model()
+            run_forward_pmap, task_config, min_by_level = get_model()
         with _TimedOperation("initial condition import"):
             ic = import_ic(task_config, date)
+        output_sst_land_mask = _sst_land_mask(ic)
+        ic = _apply_graphcast_nan_cleaner_upstream(
+            ic,
+            min_by_level,
+            "initial conditions",
+        )
         _log_multihost_dataset_differences(ic, "initial conditions")
         lat = ic.lat.values
         lon = ic.lon.values
@@ -761,6 +817,16 @@ def run_model(date_f, runtime):
             forcings_ds, targets_template_ds = get_forcings_targets(
                 task_config, date, N_STEPS, lat, lon, level
             )
+        forcings_ds = _apply_graphcast_nan_cleaner_upstream(
+            forcings_ds,
+            min_by_level,
+            "forcings",
+        )
+        targets_template_ds = _apply_graphcast_nan_cleaner_upstream(
+            targets_template_ds,
+            min_by_level,
+            "target template",
+        )
         _log_multihost_dataset_differences(forcings_ds, "forcings")
         _log_multihost_dataset_differences(
             targets_template_ds,
@@ -821,6 +887,7 @@ def run_model(date_f, runtime):
                     num_samples=num_ensemble_members,
                     pmap_devices=pmap_devices,
                 ):
+                    chunk = _mask_sst_output(chunk, output_sst_land_mask)
                     chunk_generation_seconds = time.perf_counter() - chunk_wait_started
                     writer.submit(chunk)
                     chunks_queued += 1

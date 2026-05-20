@@ -22,57 +22,6 @@ locals {
     neuralgcm = var.batch_job_template.neuralgcm_image
     gencast   = var.batch_job_template.gencast_image
   }
-
-  gencast_tpu_startup_script = <<-EOT
-    #!/bin/bash
-    set -euo pipefail
-
-    LOG_FILE=/var/log/monsoon-gencast-startup.log
-    exec > >(tee -a "$LOG_FILE" | logger -t monsoon-gencast-startup -s 2>/dev/console) 2>&1
-
-    metadata() {
-      curl -fsH "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"
-    }
-
-    DATE=$(metadata date)
-    FORECAST_REGIONS=$(metadata forecast-regions)
-    COMMON_BUCKET=$(metadata common-bucket)
-    REGION_BUCKETS=$(metadata region-buckets)
-    GENCAST_IMAGE=$(metadata gencast-image)
-    ARTIFACT_REGISTRY_HOST=$(metadata artifact-registry-host)
-    EXPECTED_GLOBAL_DEVICES=$(metadata expected-global-devices)
-    EXPECTED_LOCAL_DEVICES=$(metadata expected-local-devices)
-    EXPECTED_PROCESS_COUNT=$(metadata expected-process-count)
-    ENSEMBLE_MEMBERS=$(metadata ensemble-members)
-
-    on_error() {
-      status=$?
-      host=$(hostname)
-      marker="intermediate/gencast_$${DATE}_failed_$${host}"
-      printf "GenCast TPU startup failed on %s for %s with exit code %s\n" "$host" "$DATE" "$status" \
-        | gcloud storage cp - "gs://$${COMMON_BUCKET}/$${marker}" || true
-      exit "$status"
-    }
-    trap on_error ERR
-
-    echo "Starting GenCast TPU run date=$DATE image=$GENCAST_IMAGE expected_global_devices=$EXPECTED_GLOBAL_DEVICES expected_local_devices=$EXPECTED_LOCAL_DEVICES expected_process_count=$EXPECTED_PROCESS_COUNT"
-    systemctl start docker
-    gcloud auth configure-docker "$ARTIFACT_REGISTRY_HOST" --quiet
-    docker pull "$GENCAST_IMAGE"
-    docker run --rm --privileged --net=host --name "monsoon-gencast-$DATE" \
-      -e DATE="$DATE" \
-      -e FORECAST_REGIONS="$FORECAST_REGIONS" \
-      -e GCS_COMMON_BUCKET="$COMMON_BUCKET" \
-      -e GCS_REGION_BUCKETS="$REGION_BUCKETS" \
-      -e UPLOAD_FULL_FIELD="true" \
-      -e GENCAST_JAX_DISTRIBUTED="true" \
-      -e GENCAST_EXPECTED_GLOBAL_DEVICES="$EXPECTED_GLOBAL_DEVICES" \
-      -e GENCAST_EXPECTED_LOCAL_DEVICES="$EXPECTED_LOCAL_DEVICES" \
-      -e GENCAST_EXPECTED_PROCESS_COUNT="$EXPECTED_PROCESS_COUNT" \
-      -e GENCAST_ENSEMBLE_MEMBERS="$ENSEMBLE_MEMBERS" \
-      "$GENCAST_IMAGE"
-    echo "Finished GenCast TPU run date=$DATE"
-  EOT
 }
 
 # -----------------------------------------------------------------------------
@@ -102,12 +51,6 @@ resource "google_cloud_run_v2_service_iam_member" "workflow_pipeline_state_invok
 resource "google_project_iam_member" "workflow_batch_jobs_editor" {
   project = var.project_id
   role    = "roles/batch.jobsEditor"
-  member  = "serviceAccount:${google_service_account.workflow.email}"
-}
-
-resource "google_project_iam_member" "workflow_tpu_admin" {
-  project = var.project_id
-  role    = "roles/tpu.admin"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
@@ -197,18 +140,17 @@ resource "google_workflows_workflow" "main_pipeline" {
     cloud_run_jobs     = var.cloud_run_services
     pipeline_state_url = var.pipeline_state_url
 
-    batch_config               = var.batch_job_template
-    common_bucket              = var.common_bucket
-    region_buckets             = var.region_buckets
-    regions                    = var.regions
-    models_in_use              = local.models_in_use
-    gpu_models_in_use          = local.gpu_models_in_use
-    regions_by_model           = local.regions_by_model
-    model_images               = local.model_images
-    tpu_config                 = var.gencast_tpu_template
-    gencast_tpu_startup_script = local.gencast_tpu_startup_script
-    pipeline_sa                = var.pipeline_service_account_email
-    full_field_models          = var.full_field_models
+    batch_config      = var.batch_job_template
+    common_bucket     = var.common_bucket
+    region_buckets    = var.region_buckets
+    regions           = var.regions
+    models_in_use     = local.models_in_use
+    gpu_models_in_use = local.gpu_models_in_use
+    regions_by_model  = local.regions_by_model
+    model_images      = local.model_images
+    tpu_config        = var.gencast_tpu_dispatch_template
+    pipeline_sa       = var.pipeline_service_account_email
+    full_field_models = var.full_field_models
   })
 
   labels = {

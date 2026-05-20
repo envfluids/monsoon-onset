@@ -172,6 +172,7 @@ module "compute" {
   common_gcs_bucket     = module.storage.common_bucket_name
   region_buckets        = module.storage.region_bucket_names
   service_account_email = module.storage.pipeline_service_account_email
+  service_account_id    = module.storage.pipeline_service_account_name
 
   external_api_secrets = var.external_api_secrets
 
@@ -189,6 +190,7 @@ module "compute" {
   aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
   neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
   gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
+  tpu_dispatch_image   = "${module.storage.artifact_registry_url}/monsoon-tpu-dispatch:latest"
 
   depends_on = [module.networking, module.storage]
 }
@@ -212,13 +214,13 @@ module "orchestration" {
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
-  cloud_run_services          = module.compute.cloud_run_services
-  pipeline_state_service_name = module.compute.pipeline_state_service_name
-  pipeline_state_url          = module.compute.pipeline_state_url
-  batch_job_template          = module.compute.batch_job_template
-  gencast_tpu_template        = module.compute.gencast_tpu_template
-  common_bucket               = module.storage.common_bucket_name
-  region_buckets              = module.storage.region_bucket_names
+  cloud_run_services            = module.compute.cloud_run_services
+  pipeline_state_service_name   = module.compute.pipeline_state_service_name
+  pipeline_state_url            = module.compute.pipeline_state_url
+  batch_job_template            = module.compute.batch_job_template
+  gencast_tpu_dispatch_template = module.compute.gencast_tpu_dispatch_template
+  common_bucket                 = module.storage.common_bucket_name
+  region_buckets                = module.storage.region_bucket_names
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email

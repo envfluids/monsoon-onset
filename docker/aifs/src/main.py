@@ -21,6 +21,7 @@ Environment Variables:
     UPLOAD_FULL_FIELD : 'true' to upload raw forecast to common bucket (default true)
 """
 
+import concurrent.futures
 import json
 import logging
 import os
@@ -65,6 +66,10 @@ RAW_OUTPUT_SUBDIR = {
     "aifs_ens": "AIFS_ENS",
 }
 
+COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
+AIFS_ENS_MIRROR_WORKERS = "16"
+GCS_UPLOAD_WORKERS = int(os.environ.get("AIFS_GCS_UPLOAD_WORKERS", "16"))
+
 
 # ---------------------------------------------------------------------------
 # GCS helpers
@@ -86,13 +91,37 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 
 
 def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None:
-    bucket = _client().bucket(bucket_name)
-    for local_file in local_dir.rglob("*"):
-        if local_file.is_file():
-            relative = local_file.relative_to(local_dir)
-            gcs_path = f"{gcs_prefix}/{relative}"
-            bucket.blob(gcs_path).upload_from_filename(str(local_file))
-            logger.info(f"Uploaded {local_file} → gs://{bucket_name}/{gcs_path}")
+    local_files = [
+        local_file for local_file in local_dir.rglob("*") if local_file.is_file()
+    ]
+    logger.info(
+        "Uploading %d files from %s to gs://%s/%s with %d workers",
+        len(local_files),
+        local_dir,
+        bucket_name,
+        gcs_prefix,
+        GCS_UPLOAD_WORKERS,
+    )
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=GCS_UPLOAD_WORKERS
+    ) as executor:
+        futures = [
+            executor.submit(
+                _upload_directory_file, bucket_name, local_dir, local_file, gcs_prefix
+            )
+            for local_file in local_files
+        ]
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+
+
+def _upload_directory_file(
+    bucket_name: str, local_dir: Path, local_file: Path, gcs_prefix: str
+) -> None:
+    relative = local_file.relative_to(local_dir)
+    gcs_path = f"{gcs_prefix}/{relative}"
+    _client().bucket(bucket_name).blob(gcs_path).upload_from_filename(str(local_file))
+    logger.info(f"Uploaded {local_file} → gs://{bucket_name}/{gcs_path}")
 
 
 def upload_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
@@ -125,9 +154,12 @@ def main(date, model, regions, common_bucket, region_buckets, upload_full_field)
 
     _setup_directories(regions)
     _download_inputs(date, model, common_bucket)
-    _run_inference(date, model)
-    if upload_full_field:
+    zarr_mirror_target = _aifs_ens_zarr_mirror_target(date, model, upload_full_field)
+    _run_inference(date, model, zarr_mirror_target)
+    if upload_full_field and zarr_mirror_target is None and model != "aifs_ens":
         _upload_full_field(date, model, common_bucket)
+    elif zarr_mirror_target is not None:
+        logger.info("AIFS-ENS full-field Zarr was mirrored through GCS FUSE")
     else:
         logger.info("UPLOAD_FULL_FIELD=false — skipping AIFS full-field upload")
     for region in regions:
@@ -190,8 +222,36 @@ def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def _run_inference(aifs_date: str, model: str) -> None:
+def _aifs_ens_zarr_mirror_target(
+    aifs_date: str, model: str, upload_full_field: bool
+) -> Path | None:
+    if model != "aifs_ens" or not upload_full_field:
+        return None
+
+    if not COMMON_BUCKET_MOUNT.is_dir():
+        raise RuntimeError(
+            "AIFS-ENS full-field upload requires the GCS FUSE mount at "
+            f"{COMMON_BUCKET_MOUNT}, but it is unavailable."
+        )
+
+    target = (
+        COMMON_BUCKET_MOUNT
+        / "full_field"
+        / model
+        / aifs_date
+        / f"init_{aifs_date}.zarr"
+    )
+    logger.info("AIFS-ENS full-field Zarr mirror target: %s", target)
+    return target
+
+
+def _run_inference(
+    aifs_date: str, model: str, zarr_mirror_target: Path | None = None
+) -> None:
     env = {**os.environ, "PYTHONPATH": str(AIFS_UTILS)}
+    if zarr_mirror_target is not None:
+        env["AIFS_ENS_ZARR_MIRROR_TARGET"] = str(zarr_mirror_target)
+        env["AIFS_ENS_ZARR_MIRROR_WORKERS"] = AIFS_ENS_MIRROR_WORKERS
     script = RUN_SCRIPT[model]
     logger.info(f"Running {model} {script} for {aifs_date}")
     subprocess.run(

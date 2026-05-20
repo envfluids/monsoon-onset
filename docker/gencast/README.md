@@ -25,7 +25,7 @@ Optional environment variables:
 
 - `GRAPHCAST_BUCKET`: defaults to `dm_graphcast`
 - `GENCAST_JAX_DISTRIBUTED`: set to `true` on TPU slices
-- `GENCAST_EXPECTED_GLOBAL_DEVICES`: defaults to Terraform's v5p-32 expectation of `32`
+- `GENCAST_EXPECTED_GLOBAL_DEVICES`: defaults to Terraform's v5p-32 expectation of `16`
 - `GENCAST_EXPECTED_LOCAL_DEVICES`: defaults to Terraform's v5p host expectation of `4`
-- `GENCAST_EXPECTED_PROCESS_COUNT`: defaults to Terraform's v5p-32 host count of `8`
-- `GENCAST_ENSEMBLE_MEMBERS`: set to `32` by the workflow so the pmap axis matches the TPU devices
+- `GENCAST_EXPECTED_PROCESS_COUNT`: defaults to Terraform's v5p-32 host count of `4`
+- `GENCAST_ENSEMBLE_MEMBERS`: set to `16` by the workflow so the pmap axis matches the TPU devices

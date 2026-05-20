@@ -32,6 +32,9 @@ output "batch_job_template" {
     gpu_count       = 1
     os_image        = var.batch_vm_os_image
     boot_disk_gb    = var.batch_boot_disk_size_gb
+    boot_disk_type  = var.batch_boot_disk_type
+    model_resources = local.batch_model_resources
+    max_attempts    = var.batch_job_max_attempts
     image_streaming = var.batch_enable_image_streaming
     preemptible     = var.use_preemptible_gpu
     aifs_image      = var.aifs_image
@@ -42,25 +45,24 @@ output "batch_job_template" {
   }
 }
 
-output "gencast_tpu_template" {
-  description = "Cloud TPU queued resource template for GenCast inference"
+output "gencast_tpu_dispatch_template" {
+  description = "TPU dispatch template for GenCast inference"
   value = {
     zone                   = var.gencast_tpu_zone
+    accelerator_type       = var.gencast_tpu_accelerator_type
     runtime_version        = var.gencast_tpu_runtime_version
-    accelerator_type       = "V5P"
-    accelerator_name       = "v5p-32"
-    topology               = var.gencast_tpu_topology
-    machine_type           = "ct5p-hightpu-4t"
+    spot                   = var.gencast_tpu_spot
+    max_attempts           = var.gencast_tpu_max_attempts
+    poll_interval_seconds  = var.gencast_tpu_poll_interval_seconds
+    queue_timeout_seconds  = var.gencast_tpu_queue_timeout_seconds
+    run_timeout_seconds    = var.gencast_tpu_run_timeout_seconds
+    request_valid_duration = var.gencast_tpu_request_valid_duration
+    workload_image         = var.gencast_image
+    artifact_registry_host = split("/", var.gencast_image)[0]
     global_device_count    = var.gencast_tpu_global_device_count
     local_device_count     = var.gencast_tpu_local_device_count
     process_count          = var.gencast_tpu_process_count
-    request_valid_duration = var.gencast_tpu_request_valid_duration
-    poll_interval_seconds  = var.gencast_tpu_poll_interval_seconds
-    max_polls              = var.gencast_tpu_max_polls
-    image                  = var.gencast_image
-    artifact_registry_host = split("/", var.gencast_image)[0]
     vpc_network            = var.vpc_id
     vpc_subnet             = var.tpu_vpc_subnetwork != "" ? var.tpu_vpc_subnetwork : var.vpc_subnetwork
-    enable_external_ips    = false
   }
 }

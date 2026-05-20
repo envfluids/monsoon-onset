@@ -158,7 +158,7 @@ def run_model(date, date_f, forcings_clim, members):
         )
         precipitation = predictions_ds[["precipitation_cumulative_mean"]]
 
-        data = xarray.merge([specific_humidity, geopotential, wind, precipitation])
+        data = xarray.merge([specific_humidity, geopotential, wind, precipitation], join='outer')
         data = data.expand_dims("ensemble", axis=0)
         data["ensemble"] = [rand]
 

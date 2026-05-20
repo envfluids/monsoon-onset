@@ -106,13 +106,24 @@ variable "pipeline_state_url" {
 variable "batch_job_template" {
   description = "Cloud Batch job template configuration"
   type = object({
-    project         = string
-    region          = string
-    machine_type    = string
-    gpu_type        = string
-    gpu_count       = number
-    os_image        = string
-    boot_disk_gb    = number
+    project        = string
+    region         = string
+    machine_type   = string
+    gpu_type       = string
+    gpu_count      = number
+    os_image       = string
+    boot_disk_gb   = number
+    boot_disk_type = optional(string)
+    max_attempts   = number
+    model_resources = map(object({
+      machine_type      = string
+      boot_disk_size_gb = optional(number)
+      boot_disk_type    = optional(string)
+      cpu_milli         = optional(number)
+      memory_mib        = optional(number)
+      gpu_type          = optional(string)
+      gpu_count         = optional(number)
+    }))
     image_streaming = bool
     preemptible     = bool
     aifs_image      = string
@@ -123,25 +134,24 @@ variable "batch_job_template" {
   })
 }
 
-variable "gencast_tpu_template" {
-  description = "Cloud TPU queued resource template for GenCast inference"
+variable "gencast_tpu_dispatch_template" {
+  description = "TPU dispatch template for GenCast inference"
   type = object({
     zone                   = string
-    runtime_version        = string
     accelerator_type       = string
-    accelerator_name       = string
-    topology               = string
-    machine_type           = string
+    runtime_version        = string
+    spot                   = bool
+    max_attempts           = number
+    poll_interval_seconds  = number
+    queue_timeout_seconds  = number
+    run_timeout_seconds    = number
+    request_valid_duration = string
+    workload_image         = string
+    artifact_registry_host = string
     global_device_count    = number
     local_device_count     = number
     process_count          = number
-    request_valid_duration = string
-    poll_interval_seconds  = number
-    max_polls              = number
-    image                  = string
-    artifact_registry_host = string
     vpc_network            = string
     vpc_subnet             = string
-    enable_external_ips    = bool
   })
 }

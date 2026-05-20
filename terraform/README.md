@@ -363,7 +363,7 @@ All Cloud Run Jobs:
 
 GPU inference (AIFS and NeuralGCM) runs on **Cloud Batch**, not Cloud Run, because model
 execution requires accelerators. GenCast runs separately on a **Cloud TPU queued resource**
-using TPU v5p-32 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
+using TPU v5p-32 (`2x2x4`) and the `ct5p-hightpu-4t` TPU VM host type.
 
 ### Orchestration (`modules/orchestration`)
 
@@ -428,8 +428,12 @@ No other changes are needed — the workflow is parameterized by region.
 
 Cloud Run Job memory/CPU and Cloud Batch machine types are set in `modules/compute/main.tf` and
 `modules/compute/variables.tf`. To change them per environment, add override variables to the
-environment's `main.tf` and pass them into the module. For model Batch jobs, use `gpu_type` and
-`gpu_machine_type`. For GenCast TPU placement, set `gencast_tpu_zone`; it defaults to
+environment's `main.tf` and pass them into the module. For model Batch jobs, use
+`batch_model_resources` to override per-model VM settings such as `machine_type`,
+`boot_disk_size_gb`, `boot_disk_type`, `cpu_milli`, `memory_mib`, `gpu_type`, and `gpu_count`.
+Unset CPU, memory, and GPU fields use known machine-type defaults when available; otherwise unset
+granular fields are omitted from the Batch job. For GenCast TPU placement, set `gencast_tpu_zone`;
+it defaults to
 `us-central1-a` and supports `us-east5-a` when TPU capacity must move east.
 
 ### Updating Container Images Without Terraform

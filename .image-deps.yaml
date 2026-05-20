@@ -19,6 +19,9 @@ images:
   pipeline-state:
     - docker/pipeline-state/
 
+  tpu-dispatch:
+    - docker/tpu-dispatch/
+
   sync:
     - docker/sync/
     - sync/utils/

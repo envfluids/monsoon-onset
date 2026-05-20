@@ -18,8 +18,6 @@ Environment Variables:
 
 import json
 import logging
-import os
-from datetime import datetime, timedelta
 
 import click
 from google.cloud import storage
@@ -39,15 +37,10 @@ def _blob_exists(bucket: str, gcs_path: str) -> bool:
     return storage.Client().bucket(bucket).blob(gcs_path).exists()
 
 
-def _date_for_model(model: str, date: str) -> str:
-    if model in AIFS_MODELS:
-        return (datetime.strptime(date, "%Y%m%dT%H") - timedelta(hours=12)).strftime("%Y%m%dT%H")
-    return date
-
 
 def _marker_paths(region: str, date: str, models: list[str]) -> list[str]:
     return [
-        f"intermediate/{model}_{region}_{_date_for_model(model, date)}_done"
+        f"intermediate/{model}_{region}_{date}_done"
         for model in models
     ]
 

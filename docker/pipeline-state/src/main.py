@@ -81,6 +81,11 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_LOOKBACK_DAYS = 7
 REQUEST_TIMEOUT_SECONDS = 20
+EXTERNAL_PROBE_MAX_RETRIES = int(os.environ.get("EXTERNAL_PROBE_MAX_RETRIES", "6"))
+EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS = float(
+    os.environ.get("EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS", "2")
+)
+RETRYABLE_EXTERNAL_PROBE_STATUS = {429, 500, 502, 503, 504, "timeout"}
 
 GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
@@ -106,6 +111,19 @@ def ecmwf_url(date: datetime) -> str:
     return f"https://data.ecmwf.int/forecasts/{ymd}/00z/ifs/0p25/oper/{stamp}-0h-oper-fc.grib2"
 
 
+def ecmwf_google_url(date: datetime) -> str:
+    ymd = date.strftime("%Y%m%d")
+    stamp = date.strftime("%Y%m%d%H0000")
+    return f"https://storage.googleapis.com/ecmwf-open-data/{ymd}/00z/ifs/0p25/oper/{stamp}-0h-oper-fc.grib2"
+
+
+def ecmwf_probe_urls(date: datetime) -> list[tuple[str, str]]:
+    return [
+        ("google", ecmwf_google_url(date)),
+        ("ecmwf", ecmwf_url(date)),
+    ]
+
+
 def ncep_url(date: datetime) -> str:
     ymd = date.strftime("%Y%m%d")
     return (
@@ -127,26 +145,77 @@ def head_status(url: str) -> int | str:
         return "timeout"
 
 
+def _is_retryable_probe_status(status: int | str) -> bool:
+    if status in RETRYABLE_EXTERNAL_PROBE_STATUS:
+        return True
+    return isinstance(status, str) and status.startswith("url_error:")
+
+
+def _head_status_with_backoff(
+    source: str,
+    date_str: str,
+    provider: str,
+    url: str,
+) -> int | str:
+    for attempt in range(EXTERNAL_PROBE_MAX_RETRIES + 1):
+        status = head_status(url)
+        logger.info(
+            "external_probe source=%s provider=%s date=%s status=%s attempt=%s",
+            source,
+            provider,
+            date_str,
+            status,
+            attempt + 1,
+        )
+        if status == 200:
+            return status
+        if not _is_retryable_probe_status(status) or attempt >= EXTERNAL_PROBE_MAX_RETRIES:
+            return status
+
+        sleep_seconds = EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS * (2**attempt)
+        logger.warning(
+            "external_probe_retry source=%s provider=%s date=%s status=%s backoff=%ss attempt=%s max_attempts=%s",
+            source,
+            provider,
+            date_str,
+            status,
+            sleep_seconds,
+            attempt + 1,
+            EXTERNAL_PROBE_MAX_RETRIES + 1,
+        )
+        time.sleep(sleep_seconds)
+    return status
+
+
 def latest_external_00z(source: str, lookback_days: int, today: datetime) -> str:
-    url_for = ecmwf_url if source == "ecmwf" else ncep_url
     cursor = today.replace(hour=0, minute=0, second=0, microsecond=0)
-    n_retries = 6
-    backoff = 1
     for days_back in range(lookback_days):
         candidate = cursor - timedelta(days=days_back)
         date_str = candidate.strftime("%Y%m%dT%H")
-        status = head_status(url_for(candidate))
-        logger.info("external_probe source=%s date=%s status=%s", source, date_str, status)
-        if status == 200:
-            return date_str
-        if status == 429 and n_retries > 0:
-            logger.warning(
-                "external_probe_rate_limited source=%s date=%s backoff=%ss retries_left=%s",
-                source, date_str, backoff, n_retries,
+        if ic_present(source, date_str):
+            logger.info(
+                "external_probe source=%s date=%s status=present_in_common_bucket",
+                source,
+                date_str,
             )
-            time.sleep(backoff)
-            n_retries -= 1
-            backoff *= 2
+            return date_str
+
+        probe_urls = (
+            ecmwf_probe_urls(candidate)
+            if source == "ecmwf"
+            else [("ncep", ncep_url(candidate))]
+        )
+        for provider, url in probe_urls:
+            status = _head_status_with_backoff(source, date_str, provider, url)
+            if status == 200:
+                return date_str
+            logger.info(
+                "external_probe_unavailable source=%s provider=%s date=%s final_status=%s",
+                source,
+                provider,
+                date_str,
+                status,
+            )
     return ""
 
 
@@ -218,7 +287,7 @@ def model_region_outputs_present(model: str, region: str, date: str) -> bool:
     if model == "neuralgcm" and region == "india":
         return gcs_object_exists(bucket, f"output/neuralgcm/{date}/tp/tp_2p0_{date}.nc")
     if model == "gencast":
-        return gcs_object_exists(bucket, f"output/gencast/{date}/init_{date}.nc")
+        return gcs_object_exists(bucket, f"output/gencast/{date}/tp_0p25_{date}.nc")
 
     return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/")
 
