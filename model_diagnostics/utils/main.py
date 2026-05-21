@@ -4,7 +4,17 @@ from argparse import ArgumentParser
 from india.circulation_main import plot_circulation as plot_circulation_india
 from india.plot_precip import plot_precip as plot_precip_india
 
-# from ethiopia.circulation_main import plot_circulation as plot_circulation_ethiopia 
+from ethiopia.circulation_main import plot_circulation as plot_circulation_ethiopia
+from ethiopia.plot_precip import plot_precip as plot_precip_ethiopia
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format=(
+        "%(asctime)s - %(levelname)s - %(name)s - %(pathname)s:%(lineno)d - %(message)s"
+    ),
+)
 
 def main():
     parser = ArgumentParser(description="Run model diagnostics utilities.")
@@ -17,18 +27,14 @@ def main():
     model = args.model
 
     base = Path(__file__).resolve().parent.parent.parent
-    print(f"Base path: {base}")
-    print(f"Date: {date}")
-    print(f"Region: {region}")
-    # print(f"Model: {model}")
     if region == "india":
         plot_circulation_india(base, date)
         plot_precip_india(base, date, model)
-    if region == "ethiopia":
-        # plot_circulation_ethiopia(base, date, model)
-        pass
+    elif region == "ethiopia":
+        plot_circulation_ethiopia(base, date, model)
+        plot_precip_ethiopia(base, date, model)
     else:
-        print(f"Region '{region}' not recognized. No diagnostics will be run.")
+        logging.warning(f"Region '{region}' not recognized. No diagnostics will be run.")
 
     
 
