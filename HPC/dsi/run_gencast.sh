@@ -1,8 +1,8 @@
 #!/bin/bash -l
-#SBATCH -p general
+#SBATCH -p Monsoon
 #SBATCH -N 1 
 #SBATCH -n 32
-#SBATCH --gres=gpu:a100:4
+#SBATCH --gres=gpu:h200:4
 #SBATCH --mem=400G
 #SBATCH -t 12:00:00
 

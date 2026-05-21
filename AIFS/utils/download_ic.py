@@ -19,7 +19,7 @@ ECMWF_BASE_URL = "https://data.ecmwf.int/forecasts/"
 GOOGLE_BASE_URL = "https://storage.googleapis.com/ecmwf-open-data/"
 
 DATE_SOURCE = "aws"
-STREAMS = ["oper"]
+STREAMS = ["oper", "wave"]
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
 BASE = Path(__file__).resolve().parent.parent

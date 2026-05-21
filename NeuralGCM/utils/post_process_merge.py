@@ -1,17 +1,20 @@
-import xarray as xr
-import glob
 import argparse
-import numpy as np
-import os
+import glob
 import logging
+import os
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
 
 logging.basicConfig(
     level=logging.INFO,
     format=(
-        "%(asctime)s - %(levelname)s - %(name)s - "
-        "%(pathname)s:%(lineno)d - %(message)s"
+        "%(asctime)s - %(levelname)s - %(name)s - %(pathname)s:%(lineno)d - %(message)s"
     ),
 )
+
+BASE = Path(__file__).parent.parent
 
 
 def calculate_sji(ds):
@@ -46,6 +49,96 @@ def preprocess(ds):
     return ds
 
 
+def post_process_ethiopia(ds, date):
+    region = "ethiopia"
+    output_base = BASE / "output" / region
+    out_dir_tp = output_base / "tp"
+
+    output_base.mkdir(parents=True, exist_ok=True)
+    out_dir_tp.mkdir(parents=True, exist_ok=True)
+
+    ds = (
+        ds[["precipitation_cumulative_mean"]]
+        .isel(surface=0)
+        .drop_vars("surface")
+        .rename(
+            {
+                "longitude": "lon",
+                "latitude": "lat",
+                "precipitation_cumulative_mean": "tp",
+                "ensemble": "number",
+            }
+        )
+        .sel(lat=slice(1, 16), lon=slice(30, 51), number=slice(1, 25))
+    )
+    if "step" in ds.coords:
+        ds = ds.rename({"step": "prediction_timedelta"})
+    ds["valid_time"] = ds["time"].values[0] + ds["prediction_timedelta"].astype(
+        "timedelta64[h]"
+    )
+    ds = ds.swap_dims({"prediction_timedelta": "valid_time"})
+    ds = ds.resample(valid_time="1D").sum()
+    ds["valid_time"] = np.arange(len(ds["valid_time"]))
+    ds = ds.rename({"valid_time": "day"})
+    ds["tp"] = ds["tp"] * 1000  # convert from m to mm
+    ds = ds.transpose("time", "number", "day", "lon", "lat")
+
+    ds.to_netcdf(out_dir_tp / f"tp_2p8_{date}.nc")
+    logging.info(f"Saved tp for Ethiopia to {out_dir_tp / f'tp_2p8_{date}.nc'}")
+    return
+
+
+def post_process_india(ds, date):
+
+    region = "india"
+    output_base = BASE / "output" / region
+    output_base.mkdir(parents=True, exist_ok=True)
+
+    intermediate_pattern = f"*_{date}_INTERMEDIATE_3.nc"
+
+    logging.info(f"Merging data for date: {date}")
+
+    ds = ds.rename({"latitude": "lat", "longitude": "lon"})
+    ds = (
+        ds[["v_component_of_wind", "u_component_of_wind"]]
+        .sel(level=850)
+        .drop_vars("level")
+    )
+    logging.info("Calculating & Merging SJI")
+    SJI_out_path = output_base / "sji" / f"sji_{date}.nc"
+    ds = calculate_sji(ds)
+    ds.to_netcdf(SJI_out_path)
+    ds.close()
+
+    logging.info("Merging tcwv")
+    tcw_in_path = output_base / "tcw"
+    tcw_out_path = tcw_in_path / f"tcw_{date}.nc"
+    tcw_files = list(tcw_in_path.glob(intermediate_pattern))
+    tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
+    tcw.to_netcdf(tcw_out_path)
+    tcw.close()
+
+    logging.info("Merging tp")
+    tp_in_path = output_base / "tp"
+    tp_out_path = tp_in_path / f"tp_2p0_{date}.nc"
+    tp_files = list(tp_in_path.glob(intermediate_pattern))
+    tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
+    tp.to_netcdf(tp_out_path)
+    tp.close()
+
+    logging.info("Removing intermediate files")
+    for file in tcw_files:
+        file.unlink()
+    for file in tp_files:
+        file.unlink()
+
+
+REGION_HANDLERS = {
+    "india": post_process_india,
+    "ethiopia": post_process_ethiopia,
+}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
@@ -55,43 +148,25 @@ def main():
         type=str,
         help="Date for the inference in YYYYMMDDTHH format",
     )
+    parser.add_argument(
+        "--region",
+        type=str,
+        default=None,
+        choices=list(REGION_HANDLERS) + [None],
+        help="If given, only process this region. Default: process all regions configured for this model.",
+    )
     args = parser.parse_args()
     date = args.date
-    region = "india"
-    output_base = f"../output/{region}"
-    os.makedirs(f"{output_base}/sji", exist_ok=True)
-    logging.info(f"Merging data for date: {date}")
-    ngcm_out = xr.open_mfdataset(
-        f"../raw/output/{date}/*.zarr", engine="zarr", preprocess=preprocess
-    )
-    ngcm_out = ngcm_out.rename({"latitude": "lat", "longitude": "lon"})
-    ngcm_out = (
-        ngcm_out[["v_component_of_wind", "u_component_of_wind"]]
-        .sel(level=850)
-        .drop_vars("level")
-    )
-    logging.info("Calculating & Merging SJI")
-    ngcm_out = calculate_sji(ngcm_out)
-    ngcm_out.to_netcdf(f"{output_base}/sji/sji_{date}.nc")
-    ngcm_out.close()
 
-    logging.info("Merging tcwv")
-    tcw_files = glob.glob(f"{output_base}/tcw/*_{date}_INTERMEDIATE_3.nc")
-    tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
-    tcw.to_netcdf(f"{output_base}/tcw/tcw_{date}.nc")
-    tcw.close()
+    raw_dir = BASE / "raw" / "output" / date
 
-    logging.info("Merging tp")
-    tp_files = glob.glob(f"{output_base}/tp/*_{date}_INTERMEDIATE_3.nc")
-    tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
-    tp.to_netcdf(f"{output_base}/tp/tp_2p0_{date}.nc")
-    tp.close()
+    fcsts = raw_dir.glob("*.zarr")
+    ds = xr.open_mfdataset(fcsts, engine="zarr", preprocess=preprocess)
 
-    logging.info("Removing intermediate files")
-    for file in tcw_files:
-        os.remove(file)
-    for file in tp_files:
-        os.remove(file)
+    targets = [args.region] if args.region else list(REGION_HANDLERS)
+    for region in targets:
+        logging.info(f"Running {region} post-processing")
+        REGION_HANDLERS[region](ds, date)
 
 
 if __name__ == "__main__":
