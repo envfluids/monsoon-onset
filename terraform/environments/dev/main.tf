@@ -65,9 +65,27 @@ variable "gencast_tpu_subnet_cidr" {
   default     = "10.16.0.0/20"
 }
 
+variable "disabled_models" {
+  description = "Model names to disable globally in this environment. Hyphen and underscore spellings are both accepted, for example aifs-ens or aifs_ens."
+  type        = set(string)
+  default     = [] # "aifs-ens" to disable the AIFS-ENS model, for example
+}
+
 locals {
   environment        = "dev"
   gencast_tpu_region = regex("^(.+)-[a-z]$", var.gencast_tpu_zone)[0]
+  disabled_model_ids = toset([for model in var.disabled_models : replace(model, "-", "_")])
+  model_sync_rule_exclusions = {
+    aifs_ens = {
+      ethiopia = ["AIFS_ENS", "blend"]
+    }
+  }
+  model_stage_exclusions = {
+    # The Ethiopia blend currently requires AIFS + AIFS-ENS.
+    aifs_ens = {
+      ethiopia = ["blend"]
+    }
+  }
   additional_subnets = local.gencast_tpu_region == var.region ? {} : {
     gencast-tpu = {
       region = local.gencast_tpu_region
@@ -75,47 +93,61 @@ locals {
     }
   }
 
-  regions = {
+  base_regions = {
     india = {
       models = ["aifs", "neuralgcm"]
       stages = ["blend", "sync"]
       sync = {
-        rules = ["blend_google"]
-        sources = [
-          {
-            gcs_prefix = "output/blend/{date}/"
-            local_dir  = "blend/output_google/india/{date}/"
-            date_kind  = "date"
-          },
-        ]
+        rules     = ["blend_google"]
         git_push  = true
         date_kind = "date"
       }
     }
     ethiopia = {
       models = ["aifs", "aifs_ens", "gencast"]
-      stages = ["sync"]
+      stages = ["blend", "sync"]
       sync = {
-        rules = ["AIFS", "AIFS_ENS", "GenCast"]
-        sources = [
-          {
-            gcs_prefix = "output/aifs/{aifs_date}/AIFS/"
-            local_dir  = "AIFS/output/ethiopia/AIFS/"
-            date_kind  = "aifs_date"
-          },
-          {
-            gcs_prefix = "output/aifs_ens/{aifs_date}/AIFS_ENS/"
-            local_dir  = "AIFS/output/ethiopia/AIFS_ENS/"
-            date_kind  = "aifs_date"
-          },
-          {
-            gcs_prefix = "output/gencast/{aifs_date}/"
-            local_dir  = "gencast/output/ethiopia/"
-            date_kind  = "aifs_date"
-          },
-        ]
+        rules     = ["AIFS", "AIFS_ENS", "GenCast", "blend"]
         git_push  = false
         date_kind = "aifs_date"
+      }
+    }
+  }
+
+  disabled_stages_by_region = {
+    for region_name in keys(local.base_regions) :
+    region_name => toset(flatten([
+      for model in local.disabled_model_ids :
+      lookup(lookup(local.model_stage_exclusions, model, {}), region_name, [])
+    ]))
+  }
+
+  disabled_sync_rules_by_region = {
+    for region_name in keys(local.base_regions) :
+    region_name => toset(flatten([
+      for model in local.disabled_model_ids :
+      lookup(lookup(local.model_sync_rule_exclusions, model, {}), region_name, [])
+    ]))
+  }
+
+  regions = {
+    for region_name, cfg in local.base_regions :
+    region_name => {
+      models = [
+        for model in cfg.models : model
+        if !contains(local.disabled_model_ids, model)
+      ]
+      stages = [
+        for stage in cfg.stages : stage
+        if !contains(local.disabled_stages_by_region[region_name], stage)
+      ]
+      sync = {
+        rules = [
+          for rule in cfg.sync.rules : rule
+          if !contains(local.disabled_sync_rules_by_region[region_name], rule)
+        ]
+        git_push  = cfg.sync.git_push
+        date_kind = cfg.sync.date_kind
       }
     }
   }
@@ -206,7 +238,7 @@ module "orchestration" {
   environment = local.environment
 
   regions           = local.regions
-  full_field_models = ["aifs", "aifs_ens"]
+  full_field_models = setsubtract(toset(["aifs", "aifs_ens"]), local.disabled_model_ids)
 
   # Dev: less frequent runs
   pipeline_schedule       = "0 */6 * * *" # Every 6 hours

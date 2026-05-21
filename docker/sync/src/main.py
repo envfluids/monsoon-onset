@@ -22,10 +22,13 @@ Environment Variables:
     FORECAST_REGION   : Region whose outputs to sync
     GCS_REGION_BUCKETS: JSON map {region: bucket}
     SYNC_SPEC         : JSON copy of regions[region].sync from terraform
+                        (selects sync.yaml rule names and git behavior)
     ENABLE_DRIVE      : 'true' to enable Google Drive sync (default false)
     MONSOON_SYNC_CONFIG : Path to sync.yaml (default /app/sync/config/sync.yaml)
     MONSOON_CLUSTER     : Cluster name passed to sync config (default 'gcp')
     MONSOON_DRIVE_ROOT  : Override drive root (optional)
+    GOOGLE_DRIVE_CREDENTIALS_JSON : Optional OAuth client JSON from Secret Manager
+    GOOGLE_DRIVE_TOKEN_JSON       : Optional OAuth token JSON from Secret Manager
 """
 
 import json
@@ -37,6 +40,10 @@ from pathlib import Path
 import click
 from google.cloud import storage
 
+from sync.utils.sync_config import SyncConfig, SyncRule, load_sync_config
+from sync.utils.sync_engine import SyncEngine
+from sync.utils.sync_inventory import SyncInventory
+
 LOG_FORMAT = (
     "%(asctime)s - %(levelname)s - %(name)s - "
     "%(pathname)s:%(lineno)d - %(message)s"
@@ -44,6 +51,12 @@ LOG_FORMAT = (
 
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
+
+DRIVE_AUTH_DIR = Path("/app/sync/.auth")
+DRIVE_AUTH_ENV_FILES = {
+    "GOOGLE_DRIVE_CREDENTIALS_JSON": "credentials.json",
+    "GOOGLE_DRIVE_TOKEN_JSON": "token.json",
+}
 
 
 def _client():
@@ -97,17 +110,20 @@ def main(date, region, region_buckets, sync_spec, enable_drive, config, cluster,
     with tempfile.TemporaryDirectory() as tmp:
         sync_root = Path(tmp) / "sync-root"
         sync_root.mkdir(parents=True)
+        rule_names = set(spec["rules"])
+        sync_config = load_sync_config(
+            config,
+            sync_root=sync_root,
+            cluster=cluster,
+            drive_root=drive_root,
+            region=region,
+        )
 
-        for src in spec["sources"]:
-            gcs_prefix = src["gcs_prefix"].format(date=date, aifs_date=date)
-            local_subdir = src["local_dir"].format(date=date, aifs_date=date)
-            local_dir = sync_root / local_subdir
-            logger.info("Staging gs://%s/%s → %s", region_bucket, gcs_prefix, local_dir)
-            download_gcs_prefix(region_bucket, gcs_prefix, local_dir)
+        _stage_sync_rules(region_bucket, sync_config, rule_names, date)
 
         if enable_drive:
-            _run_sync_engine(sync_root, region, set(spec["rules"]), {date},
-                             config, cluster, drive_root)
+            _materialize_drive_auth()
+            _run_sync_engine(sync_config, rule_names, {date})
         else:
             logger.info("ENABLE_DRIVE=false — skipping Google Drive sync")
 
@@ -120,30 +136,101 @@ def main(date, region, region_buckets, sync_spec, enable_drive, config, cluster,
     logger.info(f"Sync complete for region={region} date={date}")
 
 
+def _materialize_drive_auth() -> None:
+    """Write Drive OAuth JSON env secrets to the legacy auth file locations."""
+    wrote_any = False
+    for env_name, file_name in DRIVE_AUTH_ENV_FILES.items():
+        raw = os.environ.get(env_name)
+        if not raw:
+            continue
+        parsed = json.loads(raw)
+        DRIVE_AUTH_DIR.mkdir(parents=True, exist_ok=True)
+        target = DRIVE_AUTH_DIR / file_name
+        target.write_text(json.dumps(parsed), encoding="utf-8")
+        target.chmod(0o600)
+        wrote_any = True
+
+    if wrote_any:
+        logger.info("Materialized Google Drive auth files from Secret Manager env vars")
+
+
+def _stage_sync_rules(
+    region_bucket: str,
+    sync_config: SyncConfig,
+    rule_names: set[str],
+    date: str,
+) -> None:
+    rules_by_name = {rule.name: rule for rule in sync_config.rules}
+    missing_rules = sorted(rule_names - set(rules_by_name))
+    if missing_rules:
+        raise click.ClickException(
+            f"SYNC_SPEC requested rule(s) not defined for {sync_config.region}: {missing_rules}"
+        )
+
+    for rule_name in sorted(rule_names):
+        rule = rules_by_name[rule_name]
+        if not rule.gcs_prefix:
+            raise click.ClickException(
+                f"Sync rule {sync_config.region}/{rule.name} is missing gcs_prefix; "
+                "cloud sync cannot stage it from GCS."
+            )
+        gcs_date = _date_for_rule(rule, date)
+        gcs_prefix = _render_template(rule.gcs_prefix, sync_config, date=gcs_date)
+        stage_template = rule.gcs_stage_dir or rule.local_root
+        local_dir = sync_config.sync_root / _render_template(stage_template, sync_config, date=date)
+        logger.info(
+            "Staging rule=%s gs://%s/%s → %s",
+            rule.name,
+            region_bucket,
+            gcs_prefix,
+            local_dir,
+        )
+        downloaded = download_gcs_prefix(region_bucket, gcs_prefix, local_dir)
+        if downloaded == 0:
+            raise click.ClickException(
+                f"Sync rule {sync_config.region}/{rule.name} found no GCS objects at "
+                f"gs://{region_bucket}/{gcs_prefix}"
+            )
+
+
+def _date_for_rule(rule: SyncRule, date: str) -> str:
+    # The workflow currently passes one resolved date; the kind is retained so
+    # rule metadata stays explicit if ECMWF/NCEP dates diverge later.
+    _ = rule.gcs_date_kind
+    return date
+
+
+def _render_template(value: str, sync_config: SyncConfig, *, date: str) -> str:
+    return value.format(
+        date=date,
+        aifs_date=date,
+        region=sync_config.region,
+        cluster=sync_config.cluster,
+        drive_root=sync_config.drive_root,
+    )
+
+
 def _run_sync_engine(
-    sync_root: Path,
-    region: str,
+    sync_config: SyncConfig,
     rule_names: set[str],
     dates: set[str],
-    config: str,
-    cluster: str,
-    drive_root: str | None,
 ) -> None:
     from sync.utils.drive import GoogleDriveClient
-    from sync.utils.sync_config import load_sync_config
-    from sync.utils.sync_engine import SyncEngine
-    from sync.utils.sync_inventory import SyncInventory
 
-    sync_config = load_sync_config(
-        config,
-        sync_root=sync_root,
-        cluster=cluster,
-        drive_root=drive_root,
-        region=region,
-    )
     with SyncInventory(sync_config.inventory_path) as inventory:
         engine = SyncEngine(sync_config, GoogleDriveClient.authenticated(), inventory)
+        discovered = engine.discover(dates=dates, rule_names=rule_names)
+        discovered_rules = {item.rule for item in discovered}
+        empty_rules = sorted(rule_names - discovered_rules)
+        if empty_rules:
+            raise click.ClickException(
+                f"Sync discovered no local files for requested rule(s): {empty_rules}"
+            )
         summary = engine.sync(dates=dates, rule_names=rule_names)
+        if summary.errors:
+            raise click.ClickException(
+                f"Google Drive sync finished with {summary.errors} error(s)"
+            )
     logger.info("Google Drive sync complete: %s", summary)
 
 

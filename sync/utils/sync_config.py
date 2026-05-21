@@ -16,6 +16,9 @@ class SyncRule:
     date_regex: str
     patterns: tuple[str, ...] = field(default_factory=tuple)
     ignore_patterns: tuple[str, ...] = (".nfs*",)
+    gcs_prefix: str | None = None
+    gcs_date_kind: str = "date"
+    gcs_stage_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -198,6 +201,9 @@ def _parse_rule(raw: dict[str, Any]) -> SyncRule:
         date_regex=str(raw["date_regex"]),
         patterns=patterns,
         ignore_patterns=tuple(raw.get("ignore_patterns") or (".nfs*",)),
+        gcs_prefix=str(raw["gcs_prefix"]) if raw.get("gcs_prefix") else None,
+        gcs_date_kind=str(raw.get("gcs_date_kind") or "date"),
+        gcs_stage_dir=str(raw["gcs_stage_dir"]) if raw.get("gcs_stage_dir") else None,
     )
 
 

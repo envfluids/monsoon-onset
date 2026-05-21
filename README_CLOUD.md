@@ -187,6 +187,8 @@ Initializes variables from the `args` map:
 
 The workflow calls the pipeline-state service once at the start. If no date was supplied, the service probes external IC sources for the latest 00z ECMWF and NCEP cycles, then checks GCS for cached ICs, completed forecasts, blendable outputs, and pending sync work.
 
+Each environment can disable models globally with `disabled_models` in its Terraform environment file. Model names accept hyphen or underscore spelling, so `aifs-ens` disables the internal `aifs_ens` model. The effective region config removes disabled models, dependent sync rules, and dependent stages before it is passed to Workflows and pipeline-state.
+
 The state response drives the rest of the workflow:
 
 - `models.aifs` and `models.aifs_ens`: ECMWF IC date, IC presence in the common bucket, and forecast completeness in the regional bucket
@@ -338,9 +340,12 @@ The blend container (`docker/blend/src/main.py`) does:
 1 GiB RAM, 1 vCPU, 10-minute timeout.
 
 The sync container (`docker/sync/src/main.py`) does:
-1. Downloads blend outputs from `gs://{region_bucket}/output/blend/{date}/`
-2. Optionally syncs to Google Drive (controlled by `ENABLE_DRIVE` env var)
-3. Writes the current date to `gs://{region_bucket}/latest.txt`
+1. Loads the requested sync rule names from Terraform and the rule definitions from `sync/config/sync.yaml`
+2. Stages each rule's `gcs_prefix` from the region bucket into that rule's local sync path
+3. Syncs the staged files to Google Drive (`ENABLE_DRIVE=true` in Terraform-managed Cloud Run jobs)
+4. Writes the current date to `gs://{region_bucket}/latest.txt`
+
+The sync job uses `MONSOON_CLUSTER=gcp-dev` in dev and `MONSOON_CLUSTER=gcp` in prod. When Drive OAuth files are not baked into the image, provide them through the existing `external_api_secrets` map using `GOOGLE_DRIVE_CREDENTIALS_JSON` and `GOOGLE_DRIVE_TOKEN_JSON`; the container writes them to `/app/sync/.auth/` at runtime.
 
 Writing `latest.txt` is the critical final step - it is the regional dedup signal that pipeline-state checks at the top of the next scheduler invocation. If the pipeline fails at any earlier stage, `latest.txt` is not updated, so the next scheduler tick will retry the unfinished work for the same date.
 

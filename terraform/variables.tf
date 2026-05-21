@@ -34,14 +34,9 @@ variable "regions" {
     models = list(string) # which models produce output for this region
     stages = list(string) # which post-model stages run: "blend", "sync"
     sync = object({
-      rules = list(string) # sync.yaml rule names to invoke
-      sources = list(object({
-        gcs_prefix = string # may contain {date} or {aifs_date}
-        local_dir  = string # may contain {date} or {aifs_date}
-        date_kind  = string # "date" or "aifs_date"
-      }))
-      git_push  = bool   # push to monsoon-operational repo
-      date_kind = string # "date" (NeuralGCM-paced) or "aifs_date" (AIFS-only)
+      rules     = list(string) # sync.yaml rule names to invoke
+      git_push  = bool         # push to monsoon-operational repo
+      date_kind = string       # "date" (NeuralGCM-paced) or "aifs_date" (AIFS-only)
     })
   }))
   default = {}

@@ -103,6 +103,13 @@ locals {
 
   region_buckets_json = jsonencode(var.region_buckets)
 
+  cloud_run_job_env = {
+    sync = {
+      ENABLE_DRIVE    = "true"
+      MONSOON_CLUSTER = var.environment == "dev" ? "gcp-dev" : "gcp"
+    }
+  }
+
   cloud_run_services = {
     downloader = {
       name    = "${var.name_prefix}-${var.environment}-downloader"
@@ -131,7 +138,7 @@ locals {
       cpu     = "1"
       timeout = "600s"
       retries = 2
-      secrets = []
+      secrets = ["GOOGLE_DRIVE_CREDENTIALS_JSON", "GOOGLE_DRIVE_TOKEN_JSON"]
     }
     "tpu-dispatch" = {
       name    = "${var.name_prefix}-${var.environment}-tpu-dispatch"
@@ -257,6 +264,14 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
         env {
           name  = "PROJECT_ID"
           value = var.project_id
+        }
+
+        dynamic "env" {
+          for_each = lookup(local.cloud_run_job_env, each.key, {})
+          content {
+            name  = env.key
+            value = env.value
+          }
         }
 
         dynamic "env" {

@@ -10,6 +10,7 @@ regions:
     rules:
       - name: AIFS
         kind: files
+        gcs_prefix: "output/aifs/{date}/"
         local_root: "AIFS/output/india"
         drive_path: "{drive_root}/{date}/AIFS"
         date_regex: "\\d{8}T\\d{2}"
@@ -21,6 +22,7 @@ regions:
 
       - name: NeuralGCM
         kind: files
+        gcs_prefix: "output/neuralgcm/{date}/"
         local_root: "NeuralGCM/output/india"
         drive_path: "{drive_root}/{date}/NeuralGCM"
         date_regex: "\\d{8}T\\d{2}"
@@ -31,12 +33,15 @@ regions:
 
       - name: blend
         kind: dated_directory
+        gcs_prefix: "output/blend/{date}/india2026/"
         local_root: "blend/output/india2026"
         drive_path: "{drive_root}/{date}/blend"
         date_regex: "\\d{8}T\\d{2}"
 
       - name: blend_google
         kind: dated_directory
+        gcs_prefix: "output/blend/{date}/"
+        gcs_stage_dir: "blend/output_google/{region}/{date}"
         local_root: "blend/output_google/{region}"
         drive_path: "{drive_root}/{date}/blend_google"
         date_regex: "\\d{8}T\\d{2}"
@@ -73,6 +78,8 @@ regions:
     rules:
       - name: AIFS
         kind: files
+        gcs_prefix: "output/aifs/{date}/"
+        gcs_date_kind: "aifs_date"
         local_root: "AIFS/output/ethiopia"
         drive_path: "{drive_root}/{date}/AIFS"
         date_regex: "\\d{8}T\\d{2}"
@@ -83,6 +90,8 @@ regions:
 
       - name: AIFS_ENS
         kind: files
+        gcs_prefix: "output/aifs_ens/{date}/"
+        gcs_date_kind: "aifs_date"
         local_root: "AIFS/output/ethiopia"
         drive_path: "{drive_root}/{date}/AIFS_ENS"
         date_regex: "\\d{8}T\\d{2}"
@@ -93,6 +102,9 @@ regions:
 
       - name: GenCast
         kind: files
+        gcs_prefix: "output/gencast/{date}/"
+        gcs_date_kind: "aifs_date"
+        gcs_stage_dir: "gencast/output/ethiopia/tp"
         local_root: "gencast/output/ethiopia"
         drive_path: "{drive_root}/{date}/GenCast"
         date_regex: "\\d{8}T\\d{2}"
@@ -100,15 +112,21 @@ regions:
           - ".nfs*"
         patterns:
           - "init_{date}.nc"
+          - "tp/tp_0p25_{date}.nc"
 
       - name: blend
         kind: dated_directory
+        gcs_prefix: "output/blend/{date}/ethiopia2026/"
+        gcs_date_kind: "aifs_date"
         local_root: "blend/output/ethiopia2026"
         drive_path: "{drive_root}/{date}/blend"
         date_regex: "\\d{8}T\\d{2}"
 
       - name: blend_google
         kind: dated_directory
+        gcs_prefix: "output/blend/{date}/"
+        gcs_date_kind: "aifs_date"
+        gcs_stage_dir: "blend/output_google/{region}/{date}"
         local_root: "blend/output_google/{region}"
         drive_path: "{drive_root}/{date}/blend_google"
         date_regex: "\\d{8}T\\d{2}"

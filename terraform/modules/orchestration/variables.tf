@@ -29,12 +29,7 @@ variable "regions" {
     models = list(string)
     stages = list(string)
     sync = object({
-      rules = list(string)
-      sources = list(object({
-        gcs_prefix = string
-        local_dir  = string
-        date_kind  = string
-      }))
+      rules     = list(string)
       git_push  = bool
       date_kind = string
     })
