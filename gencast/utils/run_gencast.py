@@ -344,52 +344,60 @@ def _ensure_gcsfuse_mount(bucket_name, mount_path):
     )
 
 
-def _configure_jax_compilation_cache(runtime):
+def _configure_jax_compilation_cache():
     cache_dir = os.getenv("JAX_COMPILATION_CACHE_DIR", "").strip()
     if not cache_dir:
         logging.info("No JAX persistent compilation cache configured.")
         return
 
-    mount_path = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", "/mnt/disks/common"))
-    bucket_name = os.getenv("GENCAST_GCSFUSE_BUCKET", "").strip()
-    if _path_is_relative_to(cache_dir, mount_path):
-        if not bucket_name:
-            raise RuntimeError(
-                "JAX_COMPILATION_CACHE_DIR is under GENCAST_GCSFUSE_MOUNT, "
-                "but GENCAST_GCSFUSE_BUCKET is not set."
+    try:
+        mount_path = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", "/mnt/disks/common"))
+        bucket_name = os.getenv("GENCAST_GCSFUSE_BUCKET", "").strip()
+        if _path_is_relative_to(cache_dir, mount_path):
+            if not bucket_name:
+                raise RuntimeError(
+                    "JAX_COMPILATION_CACHE_DIR is under GENCAST_GCSFUSE_MOUNT, "
+                    "but GENCAST_GCSFUSE_BUCKET is not set."
+                )
+            _ensure_gcsfuse_mount(bucket_name, mount_path)
+
+        Path(cache_dir).mkdir(parents=True, exist_ok=True)
+        jax.config.update("jax_compilation_cache_dir", cache_dir)
+
+        min_compile_time = os.getenv("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS")
+        if min_compile_time:
+            jax.config.update(
+                "jax_persistent_cache_min_compile_time_secs",
+                float(min_compile_time),
             )
-        _ensure_gcsfuse_mount(bucket_name, mount_path)
 
-    Path(cache_dir).mkdir(parents=True, exist_ok=True)
-    jax.config.update("jax_compilation_cache_dir", cache_dir)
+        min_entry_size = os.getenv("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES")
+        if min_entry_size:
+            jax.config.update(
+                "jax_persistent_cache_min_entry_size_bytes",
+                int(min_entry_size),
+            )
 
-    min_compile_time = os.getenv("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS")
-    if min_compile_time:
-        jax.config.update(
-            "jax_persistent_cache_min_compile_time_secs",
-            float(min_compile_time),
+        explain_misses = os.getenv("JAX_EXPLAIN_CACHE_MISSES")
+        if explain_misses:
+            jax.config.update(
+                "jax_explain_cache_misses",
+                explain_misses.strip().lower() in {"1", "true", "yes", "y"},
+            )
+
+        logging.info(
+            "Configured JAX persistent compilation cache: %s",
+            cache_dir,
+        )
+    except Exception as e:
+        logging.error(
+            "Failed to configure JAX persistent compilation cache: %s. "
+            "Proceeding without compilation cache.",
+            e,
+            exc_info=True,
         )
 
-    min_entry_size = os.getenv("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES")
-    if min_entry_size:
-        jax.config.update(
-            "jax_persistent_cache_min_entry_size_bytes",
-            int(min_entry_size),
-        )
 
-    explain_misses = os.getenv("JAX_EXPLAIN_CACHE_MISSES")
-    if explain_misses:
-        jax.config.update(
-            "jax_explain_cache_misses",
-            explain_misses.strip().lower() in {"1", "true", "yes", "y"},
-        )
-
-    logging.info(
-        "Configured JAX persistent compilation cache for process %s/%s: %s",
-        runtime.get("process_index", 0),
-        runtime.get("process_count", 1),
-        cache_dir,
-    )
 
 
 def _ensure_gcsfuse_for_path(path):
@@ -1313,8 +1321,13 @@ def main():
     date_f = args.date
 
     try:
+        _configure_jax_compilation_cache()
         runtime = initialize_jax_runtime()
-        _configure_jax_compilation_cache(runtime)
+        logging.info(
+            "JAX persistent compilation cache active for process %s/%s",
+            runtime.get("process_index", 0),
+            runtime.get("process_count", 1),
+        )
         run_model(date_f, runtime)
     except Exception as exc:
         _log_exception_summary(exc)
