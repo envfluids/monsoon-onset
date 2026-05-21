@@ -102,7 +102,7 @@ blend/
 
 ### Container Images
 
-All images are stored in a single **Artifact Registry** Docker repository (`monsoon-{env}-containers`) in the same region. The pipeline service account has `roles/artifactregistry.reader` on this repository. Images are referenced by tag (`latest`) - Terraform ignores image changes in the Cloud Run Job definitions so containers can be updated independently via `docker push` without a `tofu apply`.
+All images are stored in a single **Artifact Registry** Docker repository (`monsoon-{env}-containers`) in the same region. The pipeline service account has `roles/artifactregistry.reader` on this repository. Images are referenced by tag (`latest`) - Terraform ignores image changes in the Cloud Run Job definitions so containers can be updated independently via `docker push` without a `tofu apply`. Dev repositories delete old image versions after 7 days by default.
 
 ---
 
@@ -311,7 +311,7 @@ The workflow submits one queued resource per GenCast date, using a stable ID `ge
 - local device count per TPU VM: `4`
 - process count: `8`
 
-Only JAX process 0 publishes full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts. The TPU startup script passes `GENCAST_ZARR_MIRROR_TARGET=/mnt/disks/common/full_field/gencast/{date}/init_{date}.zarr` into the container. Process 0 mounts the common bucket inside the GenCast container with Cloud Storage FUSE, so full-field Zarr components are mirrored asynchronously while inference is still generating chunks. The GenCast utility code does not enable this mirror unless the cloud wrapper or an operator sets the mirror environment variable, preserving the HPC local-output workflow.
+Only JAX process 0 publishes full-field and region outputs; the other TPU hosts participate in the distributed run and skip duplicate Zarr writes. The TPU startup script passes `GENCAST_OUTPUT_DIR=/mnt/disks/common/full_field/gencast/{date}` into the container. Process 0 mounts the common bucket inside the GenCast container with Cloud Storage FUSE, so the full-field Zarr is written directly to the common bucket instead of filling the container overlay. Distributed TPU runs also set `JAX_COMPILATION_CACHE_DIR=/mnt/disks/common/jax-cache/gencast/v5p-64`; every TPU worker mounts the same common bucket before the first compile so later runs can reuse JAX persistent compilation cache entries. The GenCast utility code does not enable these FUSE-backed paths unless the cloud wrapper or an operator sets the relevant environment variables, preserving the HPC local-output workflow.
 
 ### 7. blend
 

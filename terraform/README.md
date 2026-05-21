@@ -336,8 +336,9 @@ Cloud Workflows (main pipeline)
   outputs, and each region's `latest.txt` marker.
 - **Weights bucket** (`monsoon-{env}-weights-{project_id}`): stores model weights. Versioning is
   always enabled; `force_destroy = false` even in dev.
-- **Artifact Registry** (`monsoon-{env}-containers`): Docker image registry for all pipeline
-  images. Dev environments apply a 30-day cleanup policy.
+- **Artifact Registry** (`monsoon-{env}-containers`): stores pipeline container images. Dev
+  repositories delete old image versions after `artifact_registry_cleanup_older_than`, which
+  defaults to 7 days.
 - **Pipeline service account** with `storage.objectAdmin` on the common and regional data buckets,
   `storage.objectViewer` on the weights bucket, and `artifactregistry.reader` on the registry.
 - **GCS folder structure**: common bucket paths are `raw/`, `raw_forecast/`, and `intermediate/`;

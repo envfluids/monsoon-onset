@@ -90,7 +90,8 @@ RENAME_DICT = {
 
 MODEL_PATH = BASE / "weights" / "GenCast 0p25deg Operational <2022.npz"
 STATS_DIR = BASE / "data"
-FCST_DIR = BASE / "raw" / "output"
+FCST_DIR = Path(os.getenv("GENCAST_OUTPUT_DIR", BASE / "raw" / "output"))
+METADATA_DIR = Path(os.getenv("GENCAST_METADATA_DIR", BASE / "raw" / "output"))
 SST_VAR = "sea_surface_temperature"
 LAND_SEA_MASK_VAR = "land_sea_mask"
 MAX_EXCEPTION_MESSAGE_CHARS = int(os.getenv("GENCAST_EXCEPTION_MESSAGE_CHARS", "4000"))
@@ -149,6 +150,10 @@ def _forecast_output_path(date_f):
     suffix = DEBUG_SUFFIX if DEBUG else ""
     final_path = FCST_DIR / f"init_{date_f}{suffix}.zarr"
     return final_path
+
+
+def _runtime_writes_outputs(runtime):
+    return int(runtime.get("process_index", 0)) == 0
 
 
 def _partial_temp_prefix(outfile):
@@ -337,6 +342,66 @@ def _ensure_gcsfuse_mount(bucket_name, mount_path):
         bucket_name,
         mount_path,
     )
+
+
+def _configure_jax_compilation_cache(runtime):
+    cache_dir = os.getenv("JAX_COMPILATION_CACHE_DIR", "").strip()
+    if not cache_dir:
+        logging.info("No JAX persistent compilation cache configured.")
+        return
+
+    mount_path = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", "/mnt/disks/common"))
+    bucket_name = os.getenv("GENCAST_GCSFUSE_BUCKET", "").strip()
+    if _path_is_relative_to(cache_dir, mount_path):
+        if not bucket_name:
+            raise RuntimeError(
+                "JAX_COMPILATION_CACHE_DIR is under GENCAST_GCSFUSE_MOUNT, "
+                "but GENCAST_GCSFUSE_BUCKET is not set."
+            )
+        _ensure_gcsfuse_mount(bucket_name, mount_path)
+
+    Path(cache_dir).mkdir(parents=True, exist_ok=True)
+    jax.config.update("jax_compilation_cache_dir", cache_dir)
+
+    min_compile_time = os.getenv("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS")
+    if min_compile_time:
+        jax.config.update(
+            "jax_persistent_cache_min_compile_time_secs",
+            float(min_compile_time),
+        )
+
+    min_entry_size = os.getenv("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES")
+    if min_entry_size:
+        jax.config.update(
+            "jax_persistent_cache_min_entry_size_bytes",
+            int(min_entry_size),
+        )
+
+    explain_misses = os.getenv("JAX_EXPLAIN_CACHE_MISSES")
+    if explain_misses:
+        jax.config.update(
+            "jax_explain_cache_misses",
+            explain_misses.strip().lower() in {"1", "true", "yes", "y"},
+        )
+
+    logging.info(
+        "Configured JAX persistent compilation cache for process %s/%s: %s",
+        runtime.get("process_index", 0),
+        runtime.get("process_count", 1),
+        cache_dir,
+    )
+
+
+def _ensure_gcsfuse_for_path(path):
+    mount_path = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", "/mnt/disks/common"))
+    bucket_name = os.getenv("GENCAST_GCSFUSE_BUCKET", "").strip()
+    if not _path_is_relative_to(path, mount_path):
+        return
+    if not bucket_name:
+        raise RuntimeError(
+            f"{path} is under GENCAST_GCSFUSE_MOUNT, but GENCAST_GCSFUSE_BUCKET is not set."
+        )
+    _ensure_gcsfuse_mount(bucket_name, mount_path)
 
 
 def _select_pmap_devices(num_samples):
@@ -649,16 +714,23 @@ class _AsyncPredictionWriter:
         sample_values,
         target_levels,
         mirror=None,
-        max_pending=2,
+        max_pending=None,
     ):
         self._partial_path = partial_path
         self._target_times = target_times
         self._sample_values = sample_values
         self._target_levels = target_levels
         self._mirror = mirror
-        self._max_pending = max_pending
+        self._max_pending = max_pending or int(
+            os.getenv("GENCAST_ASYNC_WRITER_MAX_PENDING", "2")
+        )
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._pending = []
+        logging.info(
+            "Initialized async GenCast prediction writer for %s with max_pending=%d.",
+            self._partial_path,
+            self._max_pending,
+        )
 
     def submit(self, chunk):
         self._drain_completed()
@@ -808,8 +880,8 @@ def initialize_jax_runtime() -> dict[str, object]:
 
 
 def write_run_metadata(date_f: str, runtime: dict[str, object]) -> None:
-    FCST_DIR.mkdir(parents=True, exist_ok=True)
-    metadata_path = FCST_DIR / f"run_metadata_{date_f}.json"
+    METADATA_DIR.mkdir(parents=True, exist_ok=True)
+    metadata_path = METADATA_DIR / f"run_metadata_{date_f}.json"
     with metadata_path.open("w") as f:
         json.dump(runtime, f, indent=2, sort_keys=True)
 
@@ -1011,7 +1083,9 @@ def import_ic(task_config, date):
 def run_model(date_f, runtime):
     run_started = time.perf_counter()
     run_status = "failed"
+    writes_outputs = _runtime_writes_outputs(runtime)
     mirror = _zarr_mirror_for_runtime(runtime)
+    outfile = None
     try:
         date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
         if DEBUG:
@@ -1019,18 +1093,38 @@ def run_model(date_f, runtime):
                 "Running in DEBUG mode with reduced ensemble members and days."
             )
         outfile = _forecast_output_path(date_f)
-        if outfile.exists():
-            logging.info(f"Output file {outfile} already exists. Skipping run.")
-            run_status = "skipped"
-            if mirror is not None:
-                logging.info("Reconciling existing GenCast Zarr store to configured mirror.")
-                mirror.enqueue_changed(outfile)
-                mirror.wait()
-            write_run_metadata(date_f, runtime)
-            return
+        if writes_outputs:
+            _ensure_gcsfuse_for_path(FCST_DIR)
+            logging.info("GenCast process 0 forecast output directory: %s", FCST_DIR)
+        else:
+            logging.info(
+                "GenCast JAX process %s/%s participates in distributed inference "
+                "without writing duplicate full-field Zarr outputs.",
+                runtime.get("process_index", 0),
+                runtime.get("process_count", 1),
+            )
+        if writes_outputs and outfile.exists():
+            try:
+                # Verify that the existing Zarr store is complete and readable
+                xr.open_zarr(outfile)
+                logging.info(f"Output file {outfile} already exists and is valid. Skipping run.")
+                run_status = "skipped"
+                if mirror is not None:
+                    logging.info("Reconciling existing GenCast Zarr store to configured mirror.")
+                    mirror.enqueue_changed(outfile)
+                    mirror.wait()
+                write_run_metadata(date_f, runtime)
+                return
+            except Exception as e:
+                logging.warning(
+                    f"Output directory {outfile} exists but is not a valid Zarr store ({e}). "
+                    "Removing corrupt/partial store to restart forecast generation."
+                )
+                _remove_store(outfile)
 
-        FCST_DIR.mkdir(parents=True, exist_ok=True)
-        _remove_stale_partial_temp_dirs(outfile)
+        if writes_outputs:
+            FCST_DIR.mkdir(parents=True, exist_ok=True)
+            _remove_stale_partial_temp_dirs(outfile)
         with _TimedOperation("get_model"):
             run_forward_pmap, task_config, min_by_level, rollout = get_model()
         with _TimedOperation("initial condition import"):
@@ -1091,75 +1185,110 @@ def run_model(date_f, runtime):
             len(pmap_devices),
         )
 
-        with tempfile.TemporaryDirectory(
-            prefix=_partial_temp_prefix(outfile),
-            dir=FCST_DIR,
-        ) as partial_temp_dir:
-            partial_outfile = Path(partial_temp_dir) / outfile.name
-            with _TimedOperation("partial Zarr initialization"):
-                _initialize_partial_zarr(
-                    partial_path=partial_outfile,
-                    targets_template=saved_targets_template_ds,
-                    num_samples=num_ensemble_members,
-                    sample_chunk=len(pmap_devices),
-                    time_chunk=num_steps_per_chunk,
-                )
-            if mirror is not None:
-                mirror.enqueue_changed(partial_outfile)
+        target_levels = (
+            saved_targets_template_ds.level.values
+            if "level" in saved_targets_template_ds.coords
+            else None
+        )
 
-            target_levels = (
-                saved_targets_template_ds.level.values
-                if "level" in saved_targets_template_ds.coords
-                else None
-            )
-            chunks_queued = 0
-            with _AsyncPredictionWriter(
-                partial_path=partial_outfile,
-                target_times=targets_template_ds.time.values,
-                sample_values=sample_values,
-                target_levels=target_levels,
-                mirror=mirror,
-            ) as writer:
-                chunk_wait_started = time.perf_counter()
-                for chunk in rollout.chunked_prediction_generator_multiple_runs(
-                    # Use pmapped version to parallelise across devices.
-                    predictor_fn=run_forward_pmap,
-                    rngs=rngs,
-                    inputs=ic,
-                    targets_template=targets_template_ds,
-                    forcings=forcings_ds,
-                    num_steps_per_chunk=num_steps_per_chunk,
-                    num_samples=num_ensemble_members,
-                    pmap_devices=pmap_devices,
-                ):
-                    chunk = _mask_sst_output(chunk, output_sst_land_mask)
-                    chunk_generation_seconds = time.perf_counter() - chunk_wait_started
-                    writer.submit(chunk)
-                    chunks_queued += 1
-                    logging.info(
-                        "Queued chunk %d/%d for async write to %s after %.2fs "
-                        "waiting for rollout chunk.",
-                        chunks_queued,
-                        total_chunks,
-                        partial_outfile,
-                        chunk_generation_seconds,
+        if writes_outputs:
+            with tempfile.TemporaryDirectory(
+                prefix=_partial_temp_prefix(outfile),
+                dir=FCST_DIR,
+            ) as partial_temp_dir:
+                partial_outfile = Path(partial_temp_dir) / outfile.name
+                with _TimedOperation("partial Zarr initialization"):
+                    _initialize_partial_zarr(
+                        partial_path=partial_outfile,
+                        targets_template=saved_targets_template_ds,
+                        num_samples=num_ensemble_members,
+                        sample_chunk=len(pmap_devices),
+                        time_chunk=num_steps_per_chunk,
                     )
-                    chunk_wait_started = time.perf_counter()
+                if mirror is not None:
+                    mirror.enqueue_changed(partial_outfile)
 
-            with _TimedOperation("Zarr metadata consolidation"):
-                zarr.consolidate_metadata(str(partial_outfile))
-            if mirror is not None:
-                logging.info("Reconciling consolidated GenCast partial Zarr to configured mirror.")
-                mirror.enqueue_changed(partial_outfile)
-                mirror.wait()
-            with _TimedOperation("final output rename"):
-                partial_outfile.rename(outfile)
-            if mirror is not None:
-                logging.info("Reconciling final GenCast Zarr store to configured mirror.")
-                mirror.enqueue_changed(outfile)
-                mirror.wait()
-        logging.info(f"Forecast written to {outfile}.")
+                chunks_queued = 0
+                with _AsyncPredictionWriter(
+                    partial_path=partial_outfile,
+                    target_times=targets_template_ds.time.values,
+                    sample_values=sample_values,
+                    target_levels=target_levels,
+                    mirror=mirror,
+                ) as writer:
+                    chunk_wait_started = time.perf_counter()
+                    for chunk in rollout.chunked_prediction_generator_multiple_runs(
+                        # Use pmapped version to parallelise across devices.
+                        predictor_fn=run_forward_pmap,
+                        rngs=rngs,
+                        inputs=ic,
+                        targets_template=targets_template_ds,
+                        forcings=forcings_ds,
+                        num_steps_per_chunk=num_steps_per_chunk,
+                        num_samples=num_ensemble_members,
+                        pmap_devices=pmap_devices,
+                    ):
+                        chunk = _mask_sst_output(chunk, output_sst_land_mask)
+                        chunk_generation_seconds = (
+                            time.perf_counter() - chunk_wait_started
+                        )
+                        writer.submit(chunk)
+                        chunks_queued += 1
+                        logging.info(
+                            "Queued chunk %d/%d for async write to %s after %.2fs "
+                            "waiting for rollout chunk.",
+                            chunks_queued,
+                            total_chunks,
+                            partial_outfile,
+                            chunk_generation_seconds,
+                        )
+                        chunk_wait_started = time.perf_counter()
+
+                with _TimedOperation("Zarr metadata consolidation"):
+                    zarr.consolidate_metadata(str(partial_outfile))
+                if mirror is not None:
+                    logging.info(
+                        "Reconciling consolidated GenCast partial Zarr to configured mirror."
+                    )
+                    mirror.enqueue_changed(partial_outfile)
+                    mirror.wait()
+                with _TimedOperation("final output rename"):
+                    partial_outfile.rename(outfile)
+                if mirror is not None:
+                    logging.info("Reconciling final GenCast Zarr store to configured mirror.")
+                    mirror.enqueue_changed(outfile)
+                    mirror.wait()
+            logging.info(f"Forecast written to {outfile}.")
+        else:
+            chunks_queued = 0
+            chunk_wait_started = time.perf_counter()
+            for chunk in rollout.chunked_prediction_generator_multiple_runs(
+                predictor_fn=run_forward_pmap,
+                rngs=rngs,
+                inputs=ic,
+                targets_template=targets_template_ds,
+                forcings=forcings_ds,
+                num_steps_per_chunk=num_steps_per_chunk,
+                num_samples=num_ensemble_members,
+                pmap_devices=pmap_devices,
+            ):
+                _ = _mask_sst_output(chunk, output_sst_land_mask)
+                chunks_queued += 1
+                logging.info(
+                    "Generated chunk %d/%d on non-writing process after %.2fs.",
+                    chunks_queued,
+                    total_chunks,
+                    time.perf_counter() - chunk_wait_started,
+                )
+                chunk_wait_started = time.perf_counter()
         run_status = "completed"
+    except Exception as exc:
+        if writes_outputs and outfile is not None and outfile.exists():
+            logging.warning(
+                f"GenCast run failed. Cleaning up partial output directory {outfile}."
+            )
+            _remove_store(outfile)
+        raise exc
     finally:
         if mirror is not None:
             mirror.close()
@@ -1185,6 +1314,7 @@ def main():
 
     try:
         runtime = initialize_jax_runtime()
+        _configure_jax_compilation_cache(runtime)
         run_model(date_f, runtime)
     except Exception as exc:
         _log_exception_summary(exc)

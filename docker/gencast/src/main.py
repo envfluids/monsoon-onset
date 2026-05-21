@@ -159,7 +159,7 @@ def _main(date, regions, common_bucket, region_buckets, upload_full_field, graph
             _gcs_fuse_mirror_target(date)
         )
         logger.info(
-            "GenCast full-field Zarr was mirrored during inference via "
+            "GenCast full-field Zarr was written during inference via "
             "Cloud Storage FUSE at %s (gs://%s/full_field/gencast/%s/init_%s.zarr/)",
             mirror_target,
             common_bucket,
@@ -233,13 +233,37 @@ def _run_inference(
     upload_full_field: bool,
 ) -> dict[str, object]:
     env = {**os.environ, "PYTHONPATH": str(GENCAST_UTILS)}
+    if _jax_compilation_cache_enabled(env):
+        env.setdefault("GENCAST_GCSFUSE_BUCKET", common_bucket)
+        env.setdefault("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT))
+        env.setdefault(
+            "JAX_COMPILATION_CACHE_DIR",
+            str(_jax_compilation_cache_dir()),
+        )
+        env.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "1")
+        logger.info(
+            "Using shared JAX compilation cache at %s via Cloud Storage FUSE bucket gs://%s.",
+            env["JAX_COMPILATION_CACHE_DIR"],
+            env["GENCAST_GCSFUSE_BUCKET"],
+        )
     if upload_full_field:
         env.setdefault("GENCAST_GCSFUSE_BUCKET", common_bucket)
         env.setdefault("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT))
+        env.setdefault("GENCAST_OUTPUT_DIR", str(_gcs_fuse_output_dir(date)))
+        os.environ.setdefault("GENCAST_GCSFUSE_BUCKET", env["GENCAST_GCSFUSE_BUCKET"])
+        os.environ.setdefault("GENCAST_GCSFUSE_MOUNT", env["GENCAST_GCSFUSE_MOUNT"])
+        os.environ.setdefault("GENCAST_OUTPUT_DIR", env["GENCAST_OUTPUT_DIR"])
         if env.get("GENCAST_ZARR_MIRROR_TARGET"):
             logger.info(
                 "Using preconfigured filesystem/Cloud Storage FUSE GenCast Zarr mirror target: %s",
                 env["GENCAST_ZARR_MIRROR_TARGET"],
+            )
+        elif _path_is_relative_to(env["GENCAST_OUTPUT_DIR"], env["GENCAST_GCSFUSE_MOUNT"]):
+            logger.info(
+                "Writing GenCast full-field Zarr directly to container-mounted "
+                "Cloud Storage FUSE output directory: %s (bucket=gs://%s)",
+                env["GENCAST_OUTPUT_DIR"],
+                common_bucket,
             )
         else:
             env["GENCAST_ZARR_MIRROR_TARGET"] = str(_gcs_fuse_mirror_target(date))
@@ -262,6 +286,36 @@ def _run_inference(
 def _gcs_fuse_mirror_target(date: str) -> Path:
     mount = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT)))
     return mount / "full_field" / "gencast" / date / f"init_{date}.zarr"
+
+
+def _gcs_fuse_output_dir(date: str) -> Path:
+    mount = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT)))
+    return mount / "full_field" / "gencast" / date
+
+
+def _path_is_relative_to(path: str | Path, root: str | Path) -> bool:
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _jax_compilation_cache_dir() -> Path:
+    mount = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT)))
+    return mount / "jax-cache" / "gencast" / "v5p-64"
+
+
+def _jax_compilation_cache_enabled(env: dict[str, str]) -> bool:
+    value = env.get("GENCAST_ENABLE_JAX_COMPILATION_CACHE")
+    if value is not None:
+        return value.strip().lower() in {"1", "true", "yes", "y"}
+    return env.get("GENCAST_JAX_DISTRIBUTED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+    }
 
 
 def _run_post_process(date: str, region: str) -> None:

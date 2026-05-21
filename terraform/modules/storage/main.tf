@@ -45,11 +45,11 @@ resource "google_storage_bucket" "common" {
     }
   }
 
-  # Delete ic/ and intermediate/ after retention_days
+  # Delete ic/, intermediate/, and JAX compilation cache objects after retention_days
   lifecycle_rule {
     condition {
       age            = var.retention_days
-      matches_prefix = ["ic/", "intermediate/"]
+      matches_prefix = ["ic/", "intermediate/", "jax-cache/"]
     }
     action {
       type = "Delete"
@@ -131,6 +131,7 @@ resource "google_storage_bucket_object" "common_folders" {
     "ic/.keep",
     "full_field/.keep",
     "intermediate/.keep",
+    "jax-cache/.keep",
   ])
 
   bucket  = google_storage_bucket.common.name
@@ -167,7 +168,7 @@ resource "google_artifact_registry_repository" "containers" {
       id     = "delete-old-images"
       action = "DELETE"
       condition {
-        older_than = "2592000s" # 30 days
+        older_than = var.artifact_registry_cleanup_older_than
       }
     }
   }

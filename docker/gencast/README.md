@@ -29,8 +29,13 @@ Optional environment variables:
 - `GENCAST_EXPECTED_LOCAL_DEVICES`: defaults to Terraform's v5p host expectation of `4`
 - `GENCAST_EXPECTED_PROCESS_COUNT`: defaults to Terraform's v5p-64 host count of `8`
 - `GENCAST_ENSEMBLE_MEMBERS`: set to `32` by the workflow so the pmap axis matches the TPU devices
-- `GENCAST_ZARR_MIRROR_TARGET`: optional filesystem or Cloud Storage FUSE target for streaming full-field Zarr components during inference; the TPU dispatcher sets this to `/mnt/disks/common/full_field/gencast/$DATE/init_$DATE.zarr`
-- `GENCAST_GCSFUSE_BUCKET`: bucket to mount inside the GenCast container when the mirror target is under `GENCAST_GCSFUSE_MOUNT`; defaults to `GCS_COMMON_BUCKET` in the wrapper
+- `GENCAST_OUTPUT_DIR`: forecast output directory; the TPU dispatcher sets this to `/mnt/disks/common/full_field/gencast/$DATE` so the full-field Zarr is written directly through Cloud Storage FUSE instead of the container overlay
+- `GENCAST_ZARR_MIRROR_TARGET`: optional filesystem or Cloud Storage FUSE target for mirroring local full-field Zarr components during inference when `GENCAST_OUTPUT_DIR` is local
+- `GENCAST_GCSFUSE_BUCKET`: bucket to mount inside the GenCast container when output/cache/mirror paths are under `GENCAST_GCSFUSE_MOUNT`; defaults to `GCS_COMMON_BUCKET` in the wrapper
 - `GENCAST_GCSFUSE_MOUNT`: container-side Cloud Storage FUSE mount point; defaults to `/mnt/disks/common`
 - `GENCAST_GCSFUSE_PROFILE`: Cloud Storage FUSE profile; defaults to `aiml-checkpointing`
+- `GENCAST_ENABLE_JAX_COMPILATION_CACHE`: enables the shared FUSE-backed JAX persistent compilation cache on distributed TPU runs; defaults to `true` when `GENCAST_JAX_DISTRIBUTED=true`
+- `JAX_COMPILATION_CACHE_DIR`: shared JAX compilation cache path; the TPU dispatcher sets this to `/mnt/disks/common/jax-cache/gencast/v5p-64`
+- `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS`: minimum compile time to cache; the TPU dispatcher sets this to `1`
+- `GENCAST_ASYNC_WRITER_MAX_PENDING`: maximum queued Zarr chunk writes before generation backpressure; defaults to `2`, and the TPU dispatcher sets it to `8`
 - `GENCAST_ZARR_MIRROR_WORKERS`: number of worker threads process 0 uses to stream changed full-field Zarr components through the mirror during inference; defaults to `16`

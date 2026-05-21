@@ -46,3 +46,9 @@ variable "archive_after_days" {
   type        = number
   default     = null
 }
+
+variable "artifact_registry_cleanup_older_than" {
+  description = "Artifact Registry cleanup threshold for old container image versions in dev. Duration string such as 604800s for 7 days."
+  type        = string
+  default     = "604800s"
+}

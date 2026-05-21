@@ -1,5 +1,6 @@
 import argparse
 import logging
+import os
 from pathlib import Path
 
 import numpy as np
@@ -14,6 +15,7 @@ logging.basicConfig(
 )
 
 BASE = Path(__file__).parent.parent
+FCST_DIR = Path(os.getenv("GENCAST_OUTPUT_DIR", BASE / "raw" / "output"))
 
 
 def subset_ethiopia(ds):
@@ -75,7 +77,7 @@ REGION_HANDLERS = {
 
 
 def _load_model_dataset(date):
-    fcst_path = BASE / "raw" / "output" / f"init_{date}.zarr"
+    fcst_path = FCST_DIR / f"init_{date}.zarr"
     if not fcst_path.exists():
         raise FileNotFoundError(f"Forecast dataset not found at {fcst_path}")
     logging.info(f"Loading forecast dataset from {fcst_path}")
