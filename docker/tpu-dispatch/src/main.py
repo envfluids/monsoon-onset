@@ -51,7 +51,7 @@ class DispatchConfig:
     common_bucket: str
     region_buckets: str
     tpu_zone: str
-    tpu_accelerator_type: str = "v5p-32"
+    tpu_accelerator_type: str = "v5p-64"
     tpu_runtime_version: str = "v2-alpha-tpuv5"
     tpu_spot: bool = True
     tpu_network: str = ""
@@ -65,10 +65,10 @@ class DispatchConfig:
     request_valid_duration: str = "14400s"
     retry_on_workload_failure: bool = False
     success_grace_seconds: int = 30
-    expected_global_devices: str = "16"
+    expected_global_devices: str = "32"
     expected_local_devices: str = "4"
-    expected_process_count: str = "4"
-    ensemble_members: str = "16"
+    expected_process_count: str = "8"
+    ensemble_members: str = "32"
 
     @property
     def status_prefix(self) -> str:
@@ -107,7 +107,7 @@ class DispatchConfig:
             common_bucket=required_env("GCS_COMMON_BUCKET"),
             region_buckets=required_env("GCS_REGION_BUCKETS"),
             tpu_zone=os.getenv("TPU_ZONE", "us-central1-a"),
-            tpu_accelerator_type=os.getenv("TPU_ACCELERATOR_TYPE", "v5p-32"),
+            tpu_accelerator_type=os.getenv("TPU_ACCELERATOR_TYPE", "v5p-64"),
             tpu_runtime_version=os.getenv("TPU_RUNTIME_VERSION", "v2-alpha-tpuv5"),
             tpu_spot=env_bool("TPU_SPOT", True),
             tpu_network=os.getenv("TPU_NETWORK", ""),
@@ -121,10 +121,10 @@ class DispatchConfig:
             request_valid_duration=os.getenv("REQUEST_VALID_DURATION", "14400s"),
             retry_on_workload_failure=env_bool("RETRY_ON_WORKLOAD_FAILURE", False),
             success_grace_seconds=env_int("SUCCESS_GRACE_SECONDS", 30),
-            expected_global_devices=os.getenv("GENCAST_EXPECTED_GLOBAL_DEVICES", "16"),
+            expected_global_devices=os.getenv("GENCAST_EXPECTED_GLOBAL_DEVICES", "32"),
             expected_local_devices=os.getenv("GENCAST_EXPECTED_LOCAL_DEVICES", "4"),
-            expected_process_count=os.getenv("GENCAST_EXPECTED_PROCESS_COUNT", "4"),
-            ensemble_members=os.getenv("GENCAST_ENSEMBLE_MEMBERS", "16"),
+            expected_process_count=os.getenv("GENCAST_EXPECTED_PROCESS_COUNT", "8"),
+            ensemble_members=os.getenv("GENCAST_ENSEMBLE_MEMBERS", "32"),
         )
 
     @property
@@ -574,10 +574,17 @@ set -uo pipefail
 
 LOG_FILE=/var/log/monsoon-tpu-dispatch-startup.log
 WORKLOAD_LOG_FILE=/var/log/monsoon-tpu-workload.log
-exec >> "$LOG_FILE" 2>&1
 
 metadata() {
   curl -fsH "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/$1"
+}
+
+metadata_instance() {
+  curl -fsH "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/$1"
+}
+
+metadata_project() {
+  curl -fsH "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/$1"
 }
 
 WORKLOAD_NAME=$(metadata workload-name)
@@ -602,6 +609,155 @@ EXPECTED_GLOBAL_DEVICES=$(metadata expected-global-devices)
 EXPECTED_LOCAL_DEVICES=$(metadata expected-local-devices)
 EXPECTED_PROCESS_COUNT=$(metadata expected-process-count)
 ENSEMBLE_MEMBERS=$(metadata ensemble-members)
+PROJECT_ID=$(metadata_project project-id)
+INSTANCE_ID=$(metadata_instance id)
+TPU_WORKER_HOSTNAME=$(hostname)
+
+LOG_FORWARDER=/tmp/monsoon-cloud-logging-forwarder.py
+cat > "$LOG_FORWARDER" <<'PY'
+import datetime as dt
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+
+STREAM = sys.argv[1]
+LOCAL_LOG_FILE = sys.argv[2]
+PROJECT_ID = os.environ.get("PROJECT_ID", "")
+INSTANCE_ID = os.environ.get("INSTANCE_ID", "")
+ZONE = os.environ.get("ZONE", "")
+TOKEN = ""
+TOKEN_EXPIRES_AT = 0.0
+DISABLED_UNTIL = 0.0
+
+COMMON_LABELS = {
+    "workload": os.environ.get("WORKLOAD_NAME", ""),
+    "run_id": os.environ.get("RUN_ID", ""),
+    "attempt": os.environ.get("ATTEMPT", ""),
+    "date": os.environ.get("DATE", ""),
+    "queued_resource_id": os.environ.get("QUEUED_RESOURCE_ID", ""),
+    "node_id": os.environ.get("NODE_ID", ""),
+    "worker_hostname": os.environ.get("TPU_WORKER_HOSTNAME", ""),
+    "stream": STREAM,
+}
+COMMON_LABELS = {key: value for key, value in COMMON_LABELS.items() if value}
+
+
+def timestamp():
+    return dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def severity_for(message):
+    upper = message.upper()
+    if "CRITICAL" in upper or "FATAL" in upper:
+        return "CRITICAL"
+    if "ERROR" in upper or "FAILED" in upper or "TRACEBACK" in upper:
+        return "ERROR"
+    if "WARNING" in upper or "WARN" in upper:
+        return "WARNING"
+    return "INFO"
+
+
+def access_token():
+    global TOKEN, TOKEN_EXPIRES_AT
+    now = time.time()
+    if TOKEN and now < TOKEN_EXPIRES_AT - 60:
+        return TOKEN
+    request = urllib.request.Request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    TOKEN = payload["access_token"]
+    TOKEN_EXPIRES_AT = now + int(payload.get("expires_in", 300))
+    return TOKEN
+
+
+def write_entries(entries, local_log):
+    global DISABLED_UNTIL
+    if not PROJECT_ID or not INSTANCE_ID or not entries:
+        return
+    now = time.time()
+    if now < DISABLED_UNTIL:
+        return
+
+    body = {
+        "logName": f"projects/{PROJECT_ID}/logs/monsoon-tpu-vm",
+        "resource": {
+            "type": "gce_instance",
+            "labels": {
+                "project_id": PROJECT_ID,
+                "instance_id": INSTANCE_ID,
+                "zone": ZONE,
+            },
+        },
+        "labels": COMMON_LABELS,
+        "entries": entries,
+    }
+    try:
+        request = urllib.request.Request(
+            "https://logging.googleapis.com/v2/entries:write",
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {access_token()}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=3):
+            return
+    except Exception as exc:
+        DISABLED_UNTIL = time.time() + 60
+        local_log.write(
+            f"{timestamp()} cloud_logging_forwarder stream={STREAM} disabled_for=60s error={exc}\n"
+        )
+
+
+def main():
+    batch = []
+    last_flush = time.monotonic()
+    with open(LOCAL_LOG_FILE, "a", buffering=1) as local_log:
+        for line in sys.stdin:
+            local_log.write(line)
+            message = line.rstrip("\n")
+            if message:
+                batch.append(
+                    {
+                        "timestamp": timestamp(),
+                        "severity": severity_for(message),
+                        "jsonPayload": {
+                            "message": message,
+                            "stream": STREAM,
+                            "worker_hostname": COMMON_LABELS.get("worker_hostname", ""),
+                            "node_id": COMMON_LABELS.get("node_id", ""),
+                            "queued_resource_id": COMMON_LABELS.get("queued_resource_id", ""),
+                            "attempt": COMMON_LABELS.get("attempt", ""),
+                        },
+                    }
+                )
+            if len(batch) >= 50 or time.monotonic() - last_flush >= 5:
+                write_entries(batch, local_log)
+                batch = []
+                last_flush = time.monotonic()
+        write_entries(batch, local_log)
+
+
+if __name__ == "__main__":
+    main()
+PY
+
+forward_log_stream() {
+  local stream="$1"
+  local local_log_file="$2"
+  python3 "$LOG_FORWARDER" "$stream" "$local_log_file" 2>> "$local_log_file"
+}
+
+export PROJECT_ID INSTANCE_ID TPU_WORKER_HOSTNAME
+export WORKLOAD_NAME RUN_ID ATTEMPT DATE QUEUED_RESOURCE_ID NODE_ID ZONE
+exec > >(forward_log_stream startup-stdout "$LOG_FILE") 2> >(forward_log_stream startup-stderr "$LOG_FILE")
 
 write_status() {
   local state="$1"
@@ -650,10 +806,12 @@ upload_logs() {
 
 NODE_WORKLOAD_LOG_URI="gs://${COMMON_BUCKET}/${NODE_WORKLOAD_LOG_PATH}"
 NODE_STARTUP_LOG_URI="gs://${COMMON_BUCKET}/${NODE_STARTUP_LOG_PATH}"
-export WORKLOAD_NAME RUN_ID ATTEMPT DATE QUEUED_RESOURCE_ID NODE_ID ZONE
 export NODE_WORKLOAD_LOG_URI NODE_STARTUP_LOG_URI
 STARTED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 export STARTED_AT
+COMMON_BUCKET_MOUNT=/mnt/disks/common
+GENCAST_ZARR_MIRROR_TARGET="${COMMON_BUCKET_MOUNT}/full_field/gencast/${DATE}/init_${DATE}.zarr"
+GENCAST_ZARR_MIRROR_WORKERS=16
 
 on_interrupt() {
   status=$?
@@ -667,17 +825,59 @@ echo "Starting TPU workload ${WORKLOAD_NAME} date=${DATE} image=${WORKLOAD_IMAGE
 echo "Workload log will be uploaded to ${NODE_WORKLOAD_LOG_URI}"
 write_status "RUNNING" "" "TPU VM startup running on $(hostname)" "$NODE_STATUS_PATH"
 
+ensure_gcsfuse() {
+  if command -v gcsfuse >/dev/null 2>&1; then
+    echo "Cloud Storage FUSE already installed: $(gcsfuse --version)"
+    if gcsfuse --help 2>&1 | grep -q -- "--profile"; then
+      return
+    fi
+    echo "Installed Cloud Storage FUSE does not support --profile; upgrading."
+  fi
+
+  echo "Installing Cloud Storage FUSE for GenCast full-field mirroring."
+  apt-get update
+  apt-get install -y curl lsb-release
+  GCSFUSE_REPO="gcsfuse-$(lsb_release -c -s)"
+  echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt ${GCSFUSE_REPO} main" > /etc/apt/sources.list.d/gcsfuse.list
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg > /usr/share/keyrings/cloud.google.asc
+  apt-get update
+  apt-get install -y gcsfuse
+  echo "Installed Cloud Storage FUSE: $(gcsfuse --version)"
+}
+
+mount_common_bucket() {
+  mkdir -p "$COMMON_BUCKET_MOUNT"
+  if mountpoint -q "$COMMON_BUCKET_MOUNT"; then
+    echo "Cloud Storage FUSE mount already active at ${COMMON_BUCKET_MOUNT}."
+    return
+  fi
+
+  echo "Mounting gs://${COMMON_BUCKET} at ${COMMON_BUCKET_MOUNT} with Cloud Storage FUSE for GenCast full-field mirroring."
+  gcsfuse --implicit-dirs --profile=aiml-checkpointing "$COMMON_BUCKET" "$COMMON_BUCKET_MOUNT"
+  if ! mountpoint -q "$COMMON_BUCKET_MOUNT"; then
+    echo "Cloud Storage FUSE mount failed at ${COMMON_BUCKET_MOUNT}."
+    exit 1
+  fi
+  echo "Cloud Storage FUSE active: gs://${COMMON_BUCKET} -> ${COMMON_BUCKET_MOUNT}; mirror target ${GENCAST_ZARR_MIRROR_TARGET}"
+}
+
+ensure_gcsfuse
+mount_common_bucket
+
 systemctl start docker
 gcloud auth configure-docker "$ARTIFACT_REGISTRY_HOST" --quiet
 docker pull "$WORKLOAD_IMAGE"
 
 echo "Starting workload container; capturing stdout/stderr to ${WORKLOAD_LOG_FILE}."
 docker run --rm --privileged --net=host --name "monsoon-${WORKLOAD_NAME}-${DATE}" \
+  -v "${COMMON_BUCKET_MOUNT}:${COMMON_BUCKET_MOUNT}" \
   -e DATE="$DATE" \
   -e FORECAST_REGIONS="$FORECAST_REGIONS" \
   -e GCS_COMMON_BUCKET="$COMMON_BUCKET" \
   -e GCS_REGION_BUCKETS="$REGION_BUCKETS" \
   -e UPLOAD_FULL_FIELD="true" \
+  -e GENCAST_ZARR_MIRROR_TARGET="$GENCAST_ZARR_MIRROR_TARGET" \
+  -e GENCAST_ZARR_MIRROR_WORKERS="$GENCAST_ZARR_MIRROR_WORKERS" \
   -e GENCAST_JAX_DISTRIBUTED="true" \
   -e GENCAST_EXPECTED_GLOBAL_DEVICES="$EXPECTED_GLOBAL_DEVICES" \
   -e GENCAST_EXPECTED_LOCAL_DEVICES="$EXPECTED_LOCAL_DEVICES" \
@@ -689,7 +889,7 @@ docker run --rm --privileged --net=host --name "monsoon-${WORKLOAD_NAME}-${DATE}
   -e TPU_DISPATCH_QUEUED_RESOURCE_ID="$QUEUED_RESOURCE_ID" \
   -e TPU_DISPATCH_NODE_ID="$NODE_ID" \
   -e TPU_DISPATCH_ZONE="$ZONE" \
-  "$WORKLOAD_IMAGE" >> "$WORKLOAD_LOG_FILE" 2>&1
+  "$WORKLOAD_IMAGE" > >(forward_log_stream workload-stdout "$WORKLOAD_LOG_FILE") 2> >(forward_log_stream workload-stderr "$WORKLOAD_LOG_FILE")
 exit_code=$?
 
 if [[ "$exit_code" -eq 0 ]]; then

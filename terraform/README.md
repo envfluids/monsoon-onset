@@ -264,13 +264,12 @@ gcloud storage cp ensemble_outputs_clim_2025_mok.csv \
 
 ## Container Images
 
-The pipeline uses six container images, all built from the `docker/` directory at the repo root.
+The pipeline images are built from the `docker/` directory at the repo root.
 Cloud Build builds them in parallel using `cloudbuild.yaml`.
 
 | Image | Dockerfile | Target | Description |
 |---|---|---|---|
 | `monsoon-downloader` | `docker/downloader/Dockerfile` | Cloud Run Job | Downloads ECMWF and NCEP/GDAS initial conditions |
-| `monsoon-postprocess` | `docker/postprocess/Dockerfile` | Cloud Run Job | Post-processes raw model output (CDO/NCL operations) |
 | `monsoon-blend` | `docker/blend/Dockerfile` | Cloud Run Job | Blends model outputs, applies logistic regression, generates visualizations |
 | `monsoon-sync` | `docker/sync/Dockerfile` | Cloud Run Job | Syncs final outputs to the operational web repository |
 | `monsoon-aifs` | `docker/aifs/Dockerfile` | Cloud Batch | Runs AIFS GPU inference |
@@ -314,9 +313,8 @@ Cloud Workflows (main pipeline)
     │
     ├── Cloud Batch Job: aifs       (GPU inference, parallel with neuralgcm)
     ├── Cloud Batch Job: neuralgcm  (GPU inference, parallel with aifs)
-    ├── TPU queued resource: gencast (v5p-32, parallel with GPU models)
+    ├── TPU queued resource: gencast (v5p-64, parallel with GPU models)
     │
-    ├── Cloud Run Job: postprocess  (sequential)
     ├── Cloud Run Job: blend        (sequential)
     └── Cloud Run Job: sync         (sequential)
 ```
@@ -352,7 +350,6 @@ Creates Cloud Run v2 Jobs (not Services — these are batch workloads, not HTTP 
 | Job | Memory | CPU | Timeout |
 |---|---|---|---|
 | downloader | 2 Gi | 2 | 15 min |
-| postprocess | 16 Gi | 4 | 30 min |
 | blend | 8 Gi | 4 | 30 min |
 | sync | 1 Gi | 1 | 10 min |
 
@@ -363,7 +360,7 @@ All Cloud Run Jobs:
 
 GPU inference (AIFS and NeuralGCM) runs on **Cloud Batch**, not Cloud Run, because model
 execution requires accelerators. GenCast runs separately on a **Cloud TPU queued resource**
-using TPU v5p-32 (`2x2x4`) and the `ct5p-hightpu-4t` TPU VM host type.
+using TPU v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
 
 ### Orchestration (`modules/orchestration`)
 
@@ -374,7 +371,7 @@ using TPU v5p-32 (`2x2x4`) and the `ct5p-hightpu-4t` TPU VM host type.
   - Downloads missing ECMWF and NCEP ICs inside the relevant model branches
   - Runs deterministic AIFS, AIFS-ENS, and NeuralGCM as separate Cloud Batch jobs, polling every 60-120 seconds
   - Runs GenCast as a TPU queued resource with a stable `gencast-{date}` ID and deletes the queued resource after expected outputs appear
-  - Runs postprocess → blend → sync sequentially
+  - Runs blend → sync sequentially after pipeline-state confirms blend inputs
 - **Cloud Scheduler jobs** (one per `forecast_regions` entry): trigger the Workflow on
   `pipeline_schedule` (default every 6 hours in dev, configurable in prod)
 - **Pub/Sub topics**: `pipeline-triggers`, `pipeline-completions`, and `dead-letter` for event

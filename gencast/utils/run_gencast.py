@@ -25,7 +25,6 @@ from graphcast import (
     gencast,
     nan_cleaning,
     normalization,
-    rollout,
     xarray_jax,
 )
 from preprocess_ic import get_ic
@@ -93,9 +92,7 @@ STATS_DIR = BASE / "data"
 FCST_DIR = BASE / "raw" / "output"
 SST_VAR = "sea_surface_temperature"
 LAND_SEA_MASK_VAR = "land_sea_mask"
-MAX_EXCEPTION_MESSAGE_CHARS = int(
-    os.getenv("GENCAST_EXCEPTION_MESSAGE_CHARS", "4000")
-)
+MAX_EXCEPTION_MESSAGE_CHARS = int(os.getenv("GENCAST_EXCEPTION_MESSAGE_CHARS", "4000"))
 
 
 def _truncate_text(text, limit=MAX_EXCEPTION_MESSAGE_CHARS):
@@ -171,6 +168,125 @@ def _remove_store(path):
         path.unlink()
 
 
+class FilesystemZarrMirror:
+    def __init__(self, target_root, max_workers):
+        self.target_root = Path(target_root)
+        self.executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="filesystem-zarr-mirror",
+        )
+        self.queued_signatures = {}
+        self.futures = []
+
+    def enqueue_changed(self, source_root):
+        source_root = Path(source_root)
+        for local_file in source_root.rglob("*"):
+            if not local_file.is_file():
+                continue
+            relative = local_file.relative_to(source_root)
+            try:
+                stat = local_file.stat()
+            except FileNotFoundError:
+                continue
+            signature = (stat.st_size, stat.st_mtime_ns)
+            if self.queued_signatures.get(relative) == signature:
+                continue
+            self.queued_signatures[relative] = signature
+            self.futures.append(
+                self.executor.submit(self._copy_file, local_file, relative)
+            )
+
+    def wait(self):
+        errors = []
+        try:
+            for future in concurrent.futures.as_completed(self.futures):
+                try:
+                    future.result()
+                except BaseException as exc:
+                    errors.append(exc)
+            self.futures.clear()
+        finally:
+            if errors:
+                raise RuntimeError(
+                    "Filesystem Zarr mirror failed for one or more component files: "
+                    + "; ".join(str(error) for error in errors[:5])
+                )
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=False)
+
+    def _copy_file(self, local_file, relative):
+        target_file = self.target_root / relative
+        target_file.parent.mkdir(parents=True, exist_ok=True)
+        for attempt in range(1, 4):
+            try:
+                shutil.copyfile(local_file, target_file)
+                break
+            except OSError:
+                if attempt == 3:
+                    raise
+                time.sleep(attempt)
+        logging.info("Mirrored %s to %s", local_file, target_file)
+
+
+class GcsZarrMirror:
+    def __init__(self, source_root, bucket_name, gcs_prefix, max_workers):
+        from google.cloud import storage
+
+        self.source_root = Path(source_root)
+        self.bucket_name = bucket_name
+        self.bucket = storage.Client().bucket(bucket_name)
+        self.gcs_prefix = gcs_prefix.strip("/")
+        self.executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="gcs-zarr-mirror",
+        )
+        self.queued_signatures = {}
+        self.futures = []
+
+    def enqueue_changed(self, source_root=None):
+        source_root = Path(source_root or self.source_root)
+        for local_file in source_root.rglob("*"):
+            if not local_file.is_file():
+                continue
+            relative = local_file.relative_to(source_root)
+            try:
+                stat = local_file.stat()
+            except FileNotFoundError:
+                continue
+            signature = (stat.st_size, stat.st_mtime_ns)
+            if self.queued_signatures.get(relative) == signature:
+                continue
+            self.queued_signatures[relative] = signature
+            self.futures.append(
+                self.executor.submit(self._upload_file, local_file, relative)
+            )
+
+    def wait(self):
+        errors = []
+        try:
+            for future in concurrent.futures.as_completed(self.futures):
+                try:
+                    future.result()
+                except BaseException as exc:
+                    errors.append(exc)
+            self.futures.clear()
+        finally:
+            if errors:
+                raise RuntimeError(
+                    "GCS Zarr mirror failed for one or more component files: "
+                    + "; ".join(str(error) for error in errors[:5])
+                )
+
+    def close(self):
+        self.executor.shutdown(wait=True, cancel_futures=False)
+
+    def _upload_file(self, local_file, relative):
+        gcs_path = f"{self.gcs_prefix}/{relative.as_posix()}"
+        self.bucket.blob(gcs_path).upload_from_filename(str(local_file))
+        logging.info("Mirrored %s to gs://%s/%s", local_file, self.bucket_name, gcs_path)
+
+
 def _select_pmap_devices(num_samples):
     devices = (
         jax.devices() if _env_bool("GENCAST_JAX_DISTRIBUTED") else jax.local_devices()
@@ -223,9 +339,7 @@ def _log_multihost_dataset_differences(dataset, label):
     mismatches = []
     for name, array in _dataset_host_arrays(dataset):
         digest = np.asarray(_array_crc32(array), dtype=np.uint32)
-        all_digests = np.asarray(multihost_utils.process_allgather(digest)).reshape(
-            -1
-        )
+        all_digests = np.asarray(multihost_utils.process_allgather(digest)).reshape(-1)
         if len(set(all_digests.tolist())) > 1:
             mismatches.append(f"{name}={all_digests.tolist()}")
 
@@ -482,12 +596,14 @@ class _AsyncPredictionWriter:
         target_times,
         sample_values,
         target_levels,
+        mirror=None,
         max_pending=2,
     ):
         self._partial_path = partial_path
         self._target_times = target_times
         self._sample_values = sample_values
         self._target_levels = target_levels
+        self._mirror = mirror
         self._max_pending = max_pending
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         self._pending = []
@@ -551,6 +667,8 @@ class _AsyncPredictionWriter:
                     region["sample"],
                     region["time"],
                 )
+                if self._mirror is not None:
+                    self._mirror.enqueue_changed(self._partial_path)
             else:
                 remaining.append(future)
         self._pending = remaining
@@ -565,6 +683,8 @@ class _AsyncPredictionWriter:
             region["sample"],
             region["time"],
         )
+        if self._mirror is not None:
+            self._mirror.enqueue_changed(self._partial_path)
 
 
 def _env_bool(name: str, default: bool = False) -> bool:
@@ -575,6 +695,7 @@ def _env_bool(name: str, default: bool = False) -> bool:
 
 
 def initialize_jax_runtime() -> dict[str, object]:
+    logging.info("Initializing JAX runtime.")
     batch_task_index = os.getenv("BATCH_TASK_INDEX")
     batch_task_count = os.getenv("BATCH_TASK_COUNT")
     batch_job_id = os.getenv("BATCH_JOB_ID")
@@ -641,6 +762,48 @@ def write_run_metadata(date_f: str, runtime: dict[str, object]) -> None:
         json.dump(runtime, f, indent=2, sort_keys=True)
 
 
+def _zarr_mirror_for_runtime(
+    runtime: dict[str, object],
+) -> FilesystemZarrMirror | GcsZarrMirror | None:
+    if int(runtime.get("process_index", 0)) != 0:
+        return None
+
+    target = os.getenv("GENCAST_ZARR_MIRROR_TARGET", "").strip()
+    if target:
+        workers = int(os.getenv("GENCAST_ZARR_MIRROR_WORKERS", "16"))
+        logging.info(
+            "Using filesystem/Cloud Storage FUSE GenCast Zarr mirror target %s with %d workers. "
+            "Set only by cloud wrappers or operators; absent in the HPC workflow.",
+            target,
+            workers,
+        )
+        return FilesystemZarrMirror(target_root=target, max_workers=workers)
+
+    bucket_name = os.getenv("GENCAST_ZARR_MIRROR_BUCKET", "").strip()
+    gcs_prefix = os.getenv("GENCAST_ZARR_MIRROR_PREFIX", "").strip("/")
+    if not bucket_name or not gcs_prefix:
+        logging.info(
+            "No GenCast Zarr mirror configured; writing full-field forecast only "
+            "to the local output directory."
+        )
+        return None
+
+    workers = int(os.getenv("GENCAST_ZARR_MIRROR_WORKERS", "16"))
+    logging.info(
+        "Using direct GCS API GenCast Zarr mirror to gs://%s/%s with %d workers. "
+        "GCS-FUSE is not in use for this run.",
+        bucket_name,
+        gcs_prefix,
+        workers,
+    )
+    return GcsZarrMirror(
+        source_root=FCST_DIR,
+        bucket_name=bucket_name,
+        gcs_prefix=gcs_prefix,
+        max_workers=workers,
+    )
+
+
 def get_model():
     with open(MODEL_PATH, "rb") as f:
         ckpt = checkpoint.load(f, gencast.CheckPoint)
@@ -653,6 +816,9 @@ def get_model():
                 "triblockdiag_mha"
             )
             denoiser_architecture_config.sparse_transformer_config.mask_type = "full"
+            from graphcast import rollout
+        else:
+            import rollout_patched as rollout
     params = ckpt.params
     state = {}
 
@@ -706,7 +872,7 @@ def get_model():
     # We also produce a pmapped version for running in parallel.
     run_forward_pmap = xarray_jax.pmap(run_forward_jitted, dim="sample")
 
-    return run_forward_pmap, task_config, min_by_level
+    return run_forward_pmap, task_config, min_by_level, rollout
 
 
 def get_forcings_targets(task_config, date, lt, lat, lon, level):
@@ -784,6 +950,7 @@ def import_ic(task_config, date):
 def run_model(date_f, runtime):
     run_started = time.perf_counter()
     run_status = "failed"
+    mirror = _zarr_mirror_for_runtime(runtime)
     try:
         date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
         if DEBUG:
@@ -794,13 +961,17 @@ def run_model(date_f, runtime):
         if outfile.exists():
             logging.info(f"Output file {outfile} already exists. Skipping run.")
             run_status = "skipped"
+            if mirror is not None:
+                logging.info("Reconciling existing GenCast Zarr store to configured mirror.")
+                mirror.enqueue_changed(outfile)
+                mirror.wait()
             write_run_metadata(date_f, runtime)
             return
 
         FCST_DIR.mkdir(parents=True, exist_ok=True)
         _remove_stale_partial_temp_dirs(outfile)
         with _TimedOperation("get_model"):
-            run_forward_pmap, task_config, min_by_level = get_model()
+            run_forward_pmap, task_config, min_by_level, rollout = get_model()
         with _TimedOperation("initial condition import"):
             ic = import_ic(task_config, date)
         output_sst_land_mask = _sst_land_mask(ic)
@@ -849,6 +1020,16 @@ def run_model(date_f, runtime):
         pmap_devices = _select_pmap_devices(num_ensemble_members)
         total_chunks = total_steps * (num_ensemble_members // len(pmap_devices))
 
+        logging.info(
+            "Starting forecast generation: %d total steps, %d ensemble members, "
+            "%d steps per chunk, %d total chunks, %d pmap devices.",
+            total_steps,
+            num_ensemble_members,
+            num_steps_per_chunk,
+            total_chunks,
+            len(pmap_devices),
+        )
+
         with tempfile.TemporaryDirectory(
             prefix=_partial_temp_prefix(outfile),
             dir=FCST_DIR,
@@ -862,6 +1043,8 @@ def run_model(date_f, runtime):
                     sample_chunk=len(pmap_devices),
                     time_chunk=num_steps_per_chunk,
                 )
+            if mirror is not None:
+                mirror.enqueue_changed(partial_outfile)
 
             target_levels = (
                 saved_targets_template_ds.level.values
@@ -874,6 +1057,7 @@ def run_model(date_f, runtime):
                 target_times=targets_template_ds.time.values,
                 sample_values=sample_values,
                 target_levels=target_levels,
+                mirror=mirror,
             ) as writer:
                 chunk_wait_started = time.perf_counter()
                 for chunk in rollout.chunked_prediction_generator_multiple_runs(
@@ -903,11 +1087,21 @@ def run_model(date_f, runtime):
 
             with _TimedOperation("Zarr metadata consolidation"):
                 zarr.consolidate_metadata(str(partial_outfile))
+            if mirror is not None:
+                logging.info("Reconciling consolidated GenCast partial Zarr to configured mirror.")
+                mirror.enqueue_changed(partial_outfile)
+                mirror.wait()
             with _TimedOperation("final output rename"):
                 partial_outfile.rename(outfile)
+            if mirror is not None:
+                logging.info("Reconciling final GenCast Zarr store to configured mirror.")
+                mirror.enqueue_changed(outfile)
+                mirror.wait()
         logging.info(f"Forecast written to {outfile}.")
         run_status = "completed"
     finally:
+        if mirror is not None:
+            mirror.close()
         logging.info(
             "run_model(%s) %s in %.2fs.",
             date_f,

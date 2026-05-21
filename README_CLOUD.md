@@ -10,7 +10,7 @@ End-to-end reference for the GCP-based monsoon onset forecast pipeline. Covers e
 |---------|------|
 | Cloud Scheduler | Cron trigger - fires the workflow on a schedule |
 | Cloud Workflows | Orchestrator - sequences and conditionally branches all pipeline stages |
-| Cloud Run Jobs | Lightweight compute for downloader, postprocess, blend, sync |
+| Cloud Run Jobs | Lightweight compute for downloader, blend, sync |
 | Cloud Batch | GPU compute for AIFS and NeuralGCM inference |
 | Cloud Storage (GCS) | Data lake - raw inputs, intermediate state, model outputs, weights |
 | Artifact Registry | Container image registry for all pipeline images |
@@ -191,7 +191,7 @@ The state response drives the rest of the workflow:
 
 - `models.aifs` and `models.aifs_ens`: ECMWF IC date, IC presence in the common bucket, and forecast completeness in the regional bucket
 - `models.neuralgcm`: NCEP IC date, IC presence in the common bucket, and forecast completeness in the regional bucket
-- `blend`: latest date where required regional model outputs exist and blend output is missing
+- `blend`: latest date where the inputs configured in `blend/utils/main.py` exist and blend output is missing
 - `sync`: latest blended date that has not been marked complete in the regional bucket
 
 ### 4. check_action
@@ -304,42 +304,34 @@ The workflow polls every 120 seconds (longer than AIFS because NeuralGCM takes m
 
 **GenCast TPU queued resource:**
 
-GenCast runs on a TPU v5p-32 slice with topology `2x2x4`. The default zone is `us-central1-a`; set `gencast_tpu_zone = "us-east5-a"` to move TPU capacity east. If the TPU zone is outside the primary region, Terraform creates a matching regional subnet and NAT on the existing VPC.
+GenCast runs on a TPU v5p-64 slice with topology `2x4x4` (32 chips across 8 `ct5p-hightpu-4t` hosts). The default zone is `us-central1-a`; set `gencast_tpu_zone = "us-east5-a"` to move TPU capacity east. If the TPU zone is outside the primary region, Terraform creates a matching regional subnet and NAT on the existing VPC.
 
 The workflow submits one queued resource per GenCast date, using a stable ID `gencast-{date}`. Duplicate submissions poll the existing queued resource. The startup script runs the GenCast container on every TPU VM host with JAX distributed initialization enabled. `run_gencast.py` logs and validates:
-- global device count: `16`
+- global device count: `32`
 - local device count per TPU VM: `4`
-- process count: `4`
+- process count: `8`
 
-Only JAX process 0 uploads full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts.
+Only JAX process 0 publishes full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts. The TPU startup script mounts the common bucket at `/mnt/disks/common` with Cloud Storage FUSE and passes `GENCAST_ZARR_MIRROR_TARGET=/mnt/disks/common/full_field/gencast/{date}/init_{date}.zarr` into the container, so full-field Zarr components are mirrored asynchronously while inference is still generating chunks. The GenCast utility code does not enable this mirror unless the cloud wrapper or an operator sets the mirror environment variable, preserving the HPC local-output workflow.
 
-### 7. postprocess
-
-**Service: Cloud Run Jobs** (`monsoon-{env}-postprocess`)
-
-16 GiB RAM, 4 vCPU, 30-minute timeout.
-
-This is a verification gate, not a processing step. The actual post-processing happens inside the model containers. This step checks that the configured blend inputs exist in GCS before allowing the blend to proceed:
-
-The ECMWF date is read from `latest_ecmwf_date.txt`. The verification gate checks the configured blend inputs for the requested region, such as AIFS+AIFS-ENS for Ethiopia or AIFS+NCUM for India. If any required blend input is missing, the container raises a `RuntimeError` and the Cloud Run Job fails, which fails the workflow.
-
-### 8. blend
+### 7. blend
 
 **Service: Cloud Run Jobs** (`monsoon-{env}-blend`)
 
 8 GiB RAM, 4 vCPU, 30-minute timeout.
 
+The actual model post-processing happens inside the model containers, and `pipeline-state` performs the blend-readiness gate by importing the lightweight configuration in `blend/utils/main.py`.
+
 The blend container (`docker/blend/src/main.py`) does:
-1. Downloads available model output prefixes from GCS into the repo-shaped paths expected by `blend/utils/main.py`
-2. Checks the configured blend inputs for the requested region
-3. Downloads climatology CSVs from the weights bucket (`blend/support/large/`)
-4. Runs `blend/utils/main.py --date {date} --region {region}` - this is the original science script unmodified:
+1. Selects the configured blends for the requested region from `blend/utils/main.py`
+2. Downloads each configured input from GCS into the repo-shaped path expected by the science script
+3. Downloads region blend support/coefficient files from `weights/blend/{region}/` into `/app/blend/data/`
+4. Runs `blend/utils/main.py --date {date} --region {region}`:
    - Reads multinomial logistic regression coefficients from `blend/data/support/multinom_coefs_full.csv`
    - Computes onset probability for each 2-degree grid cell across bins: week1, week2, week3, week4, later
    - Generates `blend_output_summary.csv` and forecast maps
 5. Uploads all outputs to `gs://{region_bucket}/output/blend/{date}/`
 
-### 9. sync
+### 8. sync
 
 **Service: Cloud Run Jobs** (`monsoon-{env}-sync`)
 
@@ -404,13 +396,9 @@ Cloud Workflows: monsoon-{env}-pipeline
         +-- pipeline-state
         |     finds latest blendable date
         |
-        +-- postprocess
-        |     Cloud Run Job: postprocess
-        |     verifies configured blend inputs exist in the regional bucket
-        |
         +-- blend
         |     Cloud Run Job: blend
-        |     downloads regional model outputs, runs eligible blends, uploads output/blend/{date}/
+        |     downloads configured inputs, runs eligible blends, uploads output/blend/{date}/
         |
         +-- sync
         |     Cloud Run Job: sync
@@ -443,4 +431,5 @@ Cloud Workflows: monsoon-{env}-pipeline
 | Workflow step execution, variable values | Cloud Logging: resource type `workflows.googleapis.com/Workflow` (dev only - requires `LOG_ALL_CALLS`) |
 | Cloud Run Job container stdout/stderr | Cloud Logging: resource type `run.googleapis.com/CloudRunJob` |
 | Cloud Batch job container stdout/stderr | Cloud Logging: resource type `batch.googleapis.com/Job` |
+| GenCast TPU VM startup and container stdout/stderr | Cloud Logging: log `monsoon-tpu-vm`, labels include `worker_hostname`, `node_id`, `queued_resource_id`, `attempt`, and `stream`; full log files are also uploaded under `intermediate/tpu-dispatch/.../logs/` |
 | Workflow execution history | Cloud Workflows console -> Executions tab |

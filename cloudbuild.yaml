@@ -114,16 +114,6 @@ steps:
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest || true
     waitFor: [detect-targets]
 
-  - id: pull-cache-postprocess
-    name: gcr.io/cloud-builders/docker
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        grep -qx postprocess targets || { echo "skip"; exit 0; }
-        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest || true
-    waitFor: [detect-targets]
-
   - id: pull-cache-aifs
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
@@ -238,22 +228,6 @@ steps:
           -f docker/blend/Dockerfile .
     waitFor: [pull-cache-blend]
 
-  - id: build-postprocess
-    name: gcr.io/cloud-builders/docker
-    entrypoint: bash
-    env: ["DOCKER_BUILDKIT=1"]
-    args:
-      - -c
-      - |
-        grep -qx postprocess targets || { echo "skip"; exit 0; }
-        docker build \
-          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest \
-          --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:${_SHORT_SHA} \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:latest \
-          -f docker/postprocess/Dockerfile .
-    waitFor: [pull-cache-postprocess]
-
   - id: build-aifs
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
@@ -356,16 +330,6 @@ steps:
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend
     waitFor: [build-blend]
 
-  - id: push-postprocess
-    name: gcr.io/cloud-builders/docker
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        grep -qx postprocess targets || { echo "skip"; exit 0; }
-        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess
-    waitFor: [build-postprocess]
-
   - id: push-aifs
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
@@ -463,17 +427,5 @@ steps:
           --project=${PROJECT_ID} --region=${_REGION} \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}
     waitFor: [push-blend]
-
-  - id: deploy-postprocess
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        grep -qx postprocess targets || { echo "skip"; exit 0; }
-        gcloud run jobs update monsoon-${_ENV}-postprocess \
-          --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-postprocess:${_SHORT_SHA}
-    waitFor: [push-postprocess]
 
 timeout: 3600s

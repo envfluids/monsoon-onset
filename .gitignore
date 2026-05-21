@@ -18,6 +18,7 @@ __pycache__/
 
 /blend/data/
 /gencast/data/*_by_level.nc
+/debug/
 
 .terraform
 .gcloudignore

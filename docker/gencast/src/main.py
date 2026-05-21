@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 GENCAST_UTILS = Path("/app/gencast/utils")
 AIFS_GRIB_DIR = Path("/app/AIFS/raw/ifs_ic/grib")
+COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
 
 GRAPHCAST_BUCKET = "dm_graphcast"
 MODEL_NAME = "GenCast 0p25deg Operational <2022.npz"
@@ -64,16 +65,6 @@ def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None
     local_path.parent.mkdir(parents=True, exist_ok=True)
     _client().bucket(bucket_name).blob(gcs_path).download_to_filename(str(local_path))
     logger.info("Downloaded gs://%s/%s -> %s", bucket_name, gcs_path, local_path)
-
-
-def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None:
-    bucket = _client().bucket(bucket_name)
-    for local_file in local_dir.rglob("*"):
-        if local_file.is_file():
-            relative = local_file.relative_to(local_dir)
-            gcs_path = f"{gcs_prefix}/{relative}"
-            bucket.blob(gcs_path).upload_from_filename(str(local_file))
-            logger.info("Uploaded %s -> gs://%s/%s", local_file, bucket_name, gcs_path)
 
 
 def upload_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
@@ -151,7 +142,7 @@ def _main(date, regions, common_bucket, region_buckets, upload_full_field, graph
     _setup_directories()
     _download_static_assets(graphcast_bucket)
     _download_inputs(date, common_bucket)
-    run_metadata = _run_inference(date)
+    run_metadata = _run_inference(date, common_bucket, upload_full_field)
 
     process_index = int(run_metadata.get("process_index", 0))
     process_count = int(run_metadata.get("process_count", 1))
@@ -164,7 +155,17 @@ def _main(date, regions, common_bucket, region_buckets, upload_full_field, graph
         return
 
     if upload_full_field:
-        _upload_full_field(date, common_bucket)
+        mirror_target = os.getenv("GENCAST_ZARR_MIRROR_TARGET") or str(
+            _gcs_fuse_mirror_target(date)
+        )
+        logger.info(
+            "GenCast full-field Zarr was mirrored during inference via "
+            "Cloud Storage FUSE at %s (gs://%s/full_field/gencast/%s/init_%s.zarr/)",
+            mirror_target,
+            common_bucket,
+            date,
+            date,
+        )
     else:
         logger.info("UPLOAD_FULL_FIELD=false — skipping GenCast full-field upload")
 
@@ -226,8 +227,34 @@ def _expected_ecmwf_grib_names(date: str) -> list[str]:
     return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
 
 
-def _run_inference(date: str) -> dict[str, object]:
+def _run_inference(
+    date: str,
+    common_bucket: str,
+    upload_full_field: bool,
+) -> dict[str, object]:
     env = {**os.environ, "PYTHONPATH": str(GENCAST_UTILS)}
+    if upload_full_field:
+        if env.get("GENCAST_ZARR_MIRROR_TARGET"):
+            logger.info(
+                "Using preconfigured filesystem/Cloud Storage FUSE GenCast Zarr mirror target: %s",
+                env["GENCAST_ZARR_MIRROR_TARGET"],
+            )
+        else:
+            if not COMMON_BUCKET_MOUNT.is_dir():
+                raise RuntimeError(
+                    "UPLOAD_FULL_FIELD=true requires Cloud Storage FUSE at "
+                    f"{COMMON_BUCKET_MOUNT}. The TPU dispatcher mounts "
+                    f"gs://{common_bucket} there before starting this container."
+                )
+            env["GENCAST_ZARR_MIRROR_TARGET"] = str(_gcs_fuse_mirror_target(date))
+            logger.info(
+                "Using Cloud Storage FUSE GenCast Zarr mirror target: %s "
+                "(gs://%s/full_field/gencast/%s/init_%s.zarr/)",
+                env["GENCAST_ZARR_MIRROR_TARGET"],
+                common_bucket,
+                date,
+                date,
+            )
     logger.info("Running GenCast run_gencast.py for %s", date)
     _log_jax_runtime(env)
     subprocess.run(
@@ -235,6 +262,10 @@ def _run_inference(date: str) -> dict[str, object]:
         cwd=GENCAST_UTILS, check=True, env=env,
     )
     return _read_run_metadata(date)
+
+
+def _gcs_fuse_mirror_target(date: str) -> Path:
+    return COMMON_BUCKET_MOUNT / "full_field" / "gencast" / date / f"init_{date}.zarr"
 
 
 def _run_post_process(date: str, region: str) -> None:
@@ -276,13 +307,6 @@ def _read_run_metadata(date: str) -> dict[str, object]:
         metadata = json.load(f)
     logger.info("GenCast run metadata: %s", metadata)
     return metadata
-
-
-def _upload_full_field(date: str, common_bucket: str) -> None:
-    raw_path = GENCAST_UTILS.parent / "raw" / "output" / f"init_{date}.zarr"
-    if not raw_path.exists():
-        raise RuntimeError(f"Expected raw GenCast forecast is missing: {raw_path}")
-    upload_directory(common_bucket, raw_path, f"full_field/gencast/{date}/init_{date}.zarr")
 
 
 def _upload_region_outputs(date: str, region: str, region_bucket: str) -> None:

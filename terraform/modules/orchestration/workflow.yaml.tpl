@@ -447,21 +447,7 @@ main:
                   - condition: $${blend_action.date == ""}
                     next: end_blend_iteration
                   - condition: true
-                    next: verify_before_blend
-            - verify_before_blend:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.postprocess.name}"
-                  body:
-                    overrides:
-                      containerOverrides:
-                        - env:
-                            - name: DATE
-                              value: $${blend_action.date}
-                            - name: FORECAST_REGION
-                              value: $${region_name}
-                            - name: GCS_COMMON_BUCKET
-                              value: $${common_bucket}
+                    next: run_blend
             - run_blend:
                 call: googleapis.run.v2.projects.locations.jobs.run
                 args:

@@ -18,6 +18,7 @@ images:
 
   pipeline-state:
     - docker/pipeline-state/
+    - blend/utils/main.py
 
   tpu-dispatch:
     - docker/tpu-dispatch/
@@ -30,9 +31,6 @@ images:
   blend:
     - docker/blend/
     - blend/utils/
-
-  postprocess:
-    - docker/postprocess/
 
   aifs:
     - docker/aifs/

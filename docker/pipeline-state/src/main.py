@@ -55,6 +55,7 @@ import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
+from pathlib import PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlparse
@@ -62,6 +63,8 @@ from urllib.request import Request, urlopen
 
 from google.api_core.exceptions import NotFound
 from google.cloud import storage
+
+from blend.utils.main import BLENDS, BlendConfig, ForecastInput
 
 
 class CloudLoggingFormatter(logging.Formatter):
@@ -98,6 +101,15 @@ MODEL_IC_SOURCE = {
     "aifs_ens":  "ecmwf",
     "gencast":   "ecmwf",
     "neuralgcm": "ncep",
+}
+
+BLEND_MODEL_TO_PIPELINE_MODEL = {
+    "AIFS": "aifs",
+    "AIFS_ENS": "aifs_ens",
+    "GENCAST": "gencast",
+    "NCUM": "ncum",
+    "NGCM": "neuralgcm",
+    "NEURALGCM": "neuralgcm",
 }
 
 
@@ -306,6 +318,59 @@ def blend_present(region: str, date: str) -> bool:
     return gcs_prefix_has_objects(bucket, f"output/blend/{date}/")
 
 
+def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
+    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model.lower())
+
+
+def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:
+    """Translate a blend-local input path into the region-bucket object path.
+
+    blend/utils/main.py is the source of truth for local paths. Cloud model
+    shims upload the same repo-shaped products under output/{model}/{date}/,
+    with the leading model/output[/region] segments removed.
+    """
+    model = _pipeline_model_for_blend_input(input_)
+    parts = PurePosixPath(input_.path_template.format(date=date)).parts
+    if len(parts) < 3 or parts[1] != "output":
+        raise ValueError(
+            f"Unsupported blend input path for {input_.model}: {input_.path_template}"
+        )
+
+    if len(parts) >= 4 and parts[2] == region:
+        relative_parts = parts[3:]
+    else:
+        relative_parts = parts[2:]
+
+    return "/".join(("output", model, date, *relative_parts))
+
+
+def _blend_input_state(
+    region: str,
+    blend: BlendConfig,
+    date: str,
+    models_state: dict,
+) -> list[dict]:
+    bucket = REGION_BUCKETS.get(region, "")
+    states = []
+    for input_ in blend.inputs:
+        model = _pipeline_model_for_blend_input(input_)
+        path = _blend_input_bucket_path(region, input_, date)
+        output_present = bool(bucket) and gcs_object_exists(bucket, path)
+        marker_present = (
+            model not in models_state
+            or gcs_object_exists(GCS_COMMON_BUCKET, model_marker_path(model, region, date))
+        )
+        states.append({
+            "model": model,
+            "role": input_.role,
+            "path": f"gs://{bucket}/{path}" if bucket else path,
+            "output_present": output_present,
+            "marker_present": marker_present,
+            "present": output_present and marker_present,
+        })
+    return states
+
+
 def latest_synced(region: str) -> str:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
@@ -406,11 +471,7 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
         block: dict = {}
         stages = cfg.get("stages", [])
         if "blend" in stages:
-            blend_date_for_region = _blend_date_for_region(region, models_state)
-            block["blend"] = {
-                "date": blend_date_for_region,
-                "present": bool(blend_date_for_region) and blend_present(region, blend_date_for_region),
-            }
+            block["blend"] = _blend_state_for_region(region, models_state, primary_date)
         if "sync" in stages:
             sync_target = _sync_date_for_region(region, cfg, models_state, per_region_block=block)
             latest = latest_synced(region)
@@ -447,25 +508,67 @@ def _missing_ic_paths(source: str, date: str) -> list[str]:
     return [p for p in paths if not gcs_object_exists(GCS_COMMON_BUCKET, p)]
 
 
-def _blend_date_for_region(region: str, models_state: dict) -> str:
-    """Blend is ready when ALL of the region's models have a per-region marker
-    for the same date. Today only india uses blend with aifs + neuralgcm at the
-    same calendar date."""
-    region_models = REGIONS[region].get("models", [])
-    candidate_dates: list[str] = []
-    for model in region_models:
-        date_for_model = models_state.get(model, {}).get("date", "")
-        if not date_for_model:
+def _blend_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
+    """Blend readiness follows the configured blend/utils/main.py inputs."""
+    configured = [blend for blend in BLENDS if blend.region == region]
+    if not configured:
+        return {
+            "date": "",
+            "present": False,
+            "configured": False,
+            "inputs": [],
+            "missing": [],
+        }
+
+    for blend in configured:
+        candidate_date = _candidate_date_for_blend(blend, models_state, fallback_date)
+        if not candidate_date:
+            continue
+        input_states = _blend_input_state(region, blend, candidate_date, models_state)
+        missing = [state for state in input_states if not state["present"]]
+        if missing:
+            continue
+        return {
+            "date": candidate_date,
+            "present": blend_present(region, candidate_date),
+            "configured": True,
+            "name": blend.name,
+            "inputs": input_states,
+            "missing": [],
+        }
+
+    candidate = _candidate_date_for_blend(configured[0], models_state, fallback_date)
+    input_states = (
+        _blend_input_state(region, configured[0], candidate, models_state)
+        if candidate
+        else []
+    )
+    return {
+        "date": "",
+        "present": False,
+        "configured": True,
+        "name": configured[0].name,
+        "inputs": input_states,
+        "missing": [state for state in input_states if not state["present"]],
+    }
+
+
+def _candidate_date_for_blend(
+    blend: BlendConfig,
+    models_state: dict,
+    fallback_date: str,
+) -> str:
+    known_dates = []
+    for input_ in blend.inputs:
+        model = _pipeline_model_for_blend_input(input_)
+        model_date = models_state.get(model, {}).get("date", "")
+        if model_date:
+            known_dates.append(model_date)
+    if known_dates:
+        if len(set(known_dates)) != 1:
             return ""
-        candidate_dates.append(date_for_model)
-    # All models must align on the same date for the blend to be valid.
-    if len(set(candidate_dates)) != 1:
-        return ""
-    date = candidate_dates[0]
-    for model in region_models:
-        if not model_region_done(model, region, date):
-            return ""
-    return date
+        return known_dates[0]
+    return fallback_date
 
 
 def _sync_date_for_region(
@@ -549,6 +652,14 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
         if "blend" in block and block["blend"].get("date") and not block["blend"].get("present"):
             action = {"region": region, "date": block["blend"]["date"]}
             regions_to_blend.append(action)
+        elif "blend" in block and block["blend"].get("configured") and block["blend"].get("missing"):
+            blocked.append({
+                "type": "blend_blocked",
+                "region": region,
+                "blend": block["blend"].get("name", ""),
+                "reason": "inputs_missing",
+                "missing": block["blend"].get("missing", []),
+            })
         regions_to_blend_by_region[region] = action
 
     regions_to_sync = []

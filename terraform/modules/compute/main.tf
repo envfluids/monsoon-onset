@@ -95,7 +95,7 @@ locals {
     }
   }
 
-  # JSON-encoded summary of {region: models} consumed by postprocess and pipeline-state.
+  # JSON-encoded summary of {region: models} consumed by pipeline-state.
   region_models = jsonencode({ for k, v in var.regions : k => v.models })
 
   # Full regions map, JSON-encoded — pipeline-state needs the entire object.
@@ -114,15 +114,6 @@ locals {
       # Optional env-var names to mount from Secret Manager when supplied in
       # var.external_api_secrets.
       secrets = ["ECMWF_API_KEY", "ECMWF_API_URL", "ECMWF_API_EMAIL"]
-    }
-    postprocess = {
-      name    = "${var.name_prefix}-${var.environment}-postprocess"
-      image   = var.postprocess_image
-      memory  = "16Gi"
-      cpu     = "4"
-      timeout = "1800s"
-      retries = 2
-      secrets = []
     }
     blend = {
       name    = "${var.name_prefix}-${var.environment}-blend"

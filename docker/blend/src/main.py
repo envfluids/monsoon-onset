@@ -2,21 +2,13 @@
 Monsoon Blend — GCS Shim Wrapper
 
 Downloads per-region model post-processed outputs from the REGION bucket and
-large blend support files from the COMMON bucket, runs the configured blend
-(india uses AIFS + NeuralGCM via blend/utils/india2025/main.py), then uploads
-blend outputs back to the region bucket.
-
-Date convention:
-  DATE = blend date (both AIFS and NeuralGCM produced outputs keyed on this
-         same date; pipeline-state only declares blend ready when markers for
-         both models at this date exist).
-The shim renames the AIFS file locally from tp_2p0_{date}.nc to tp_{date}.nc
-to satisfy the single-date blend scripts in blend/utils/ unchanged.
+blend support files from the COMMON bucket, runs the configured blend through
+blend/utils/main.py, then uploads blend outputs back to the region bucket.
 
 Environment Variables:
-    DATE              : NeuralGCM-paced forecast date YYYYMMDDTHH
+    DATE              : Blend forecast date YYYYMMDDTHH
     FORECAST_REGION   : Region whose blend to run
-    GCS_COMMON_BUCKET : Common bucket (large blend supports under weights/blend/{region}/...)
+    GCS_COMMON_BUCKET : Common bucket (blend supports under weights/blend/{region}/...)
     GCS_REGION_BUCKETS: JSON map {region: bucket} for model outputs and blend output
 """
 
@@ -25,10 +17,12 @@ import logging
 import os
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import click
 from google.cloud import storage
+
+from blend.utils.main import BLENDS, BlendConfig, ForecastInput
 
 LOG_FORMAT = (
     "%(asctime)s - %(levelname)s - %(name)s - "
@@ -41,11 +35,17 @@ logger = logging.getLogger(__name__)
 REPO_ROOT   = Path("/app")
 BLEND_UTILS = REPO_ROOT / "blend" / "utils"
 
-# Local layout that the india2025 blend scripts expect
-LOCAL_AIFS_TP = REPO_ROOT / "AIFS" / "output" / "tp"
-LOCAL_NGCM_TP = REPO_ROOT / "NeuralGCM" / "output" / "tp"
 LOCAL_BLEND_OUT_BASE = REPO_ROOT / "blend" / "output"
-LOCAL_SUPPORT_LARGE = REPO_ROOT / "blend" / "data" / "support" / "large"
+LOCAL_BLEND_DATA = REPO_ROOT / "blend" / "data"
+
+BLEND_MODEL_TO_PIPELINE_MODEL = {
+    "AIFS": "aifs",
+    "AIFS_ENS": "aifs_ens",
+    "GENCAST": "gencast",
+    "NCUM": "ncum",
+    "NGCM": "neuralgcm",
+    "NEURALGCM": "neuralgcm",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -110,23 +110,27 @@ def main(date, region, common_bucket, region_buckets):
 
     logger.info(f"Blend shim: region={region} date={date}")
 
-    if region != "india":
-        raise click.ClickException(f"Blend is not configured for region {region!r}")
+    blends = _select_blends(region)
 
-    _setup_directories()
-    _download_inputs(date, region, region_bucket, common_bucket)
+    _setup_directories(blends, date)
+    _download_inputs(date, region, region_bucket, common_bucket, blends)
     _run_blend(date, region)
     _upload_outputs(date, region, region_bucket)
 
 
-def _setup_directories() -> None:
-    for d in [
-        LOCAL_AIFS_TP,
-        LOCAL_NGCM_TP,
-        LOCAL_BLEND_OUT_BASE,
-        LOCAL_SUPPORT_LARGE,
-    ]:
-        d.mkdir(parents=True, exist_ok=True)
+def _select_blends(region: str) -> list[BlendConfig]:
+    blends = [blend for blend in BLENDS if blend.region == region]
+    if not blends:
+        raise click.ClickException(f"Blend is not configured for region {region!r}")
+    return blends
+
+
+def _setup_directories(blends: list[BlendConfig], date: str) -> None:
+    LOCAL_BLEND_OUT_BASE.mkdir(parents=True, exist_ok=True)
+    LOCAL_BLEND_DATA.mkdir(parents=True, exist_ok=True)
+    for blend in blends:
+        for input_ in blend.inputs:
+            input_.path(date).parent.mkdir(parents=True, exist_ok=True)
 
 
 def _download_inputs(
@@ -134,33 +138,50 @@ def _download_inputs(
     region: str,
     region_bucket: str,
     common_bucket: str,
+    blends: list[BlendConfig],
 ) -> None:
-    # AIFS 2-degree TP — rename tp_2p0_{date}.nc to tp_{date}.nc to satisfy blend
-    download_gcs_file(
-        region_bucket,
-        f"output/aifs/{date}/tp/tp_2p0_{date}.nc",
-        LOCAL_AIFS_TP / f"tp_{date}.nc",
-    )
+    for blend in blends:
+        for input_ in blend.inputs:
+            download_gcs_file(
+                region_bucket,
+                _blend_input_bucket_path(region, input_, date),
+                input_.path(date),
+            )
 
-    # NeuralGCM 2-degree TP
-    download_gcs_file(
-        region_bucket,
-        f"output/neuralgcm/{date}/tp/tp_2p0_{date}.nc",
-        LOCAL_NGCM_TP / f"tp_{date}.nc",
-    )
-
-    # Large blend support files (ensemble climatology, gitignored due to size)
+    # Blend support/coefficient files are gitignored when too large or
+    # environment-specific. Preserve the object layout below weights/blend/{region}
+    # under /app/blend/data so science scripts can use their repo-local paths.
     downloaded = download_gcs_prefix(
         common_bucket,
-        f"weights/blend/{region}/support/large/",
-        LOCAL_SUPPORT_LARGE,
+        f"weights/blend/{region}/",
+        LOCAL_BLEND_DATA,
     )
     if downloaded == 0:
         logger.warning(
-            "No large blend supports found at gs://%s/weights/blend/%s/support/large/ — "
+            "No blend support files found at gs://%s/weights/blend/%s/ — "
             "blend will fail if it needs these files",
             common_bucket, region,
         )
+
+
+def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
+    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model.lower())
+
+
+def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:
+    model = _pipeline_model_for_blend_input(input_)
+    parts = PurePosixPath(input_.path_template.format(date=date)).parts
+    if len(parts) < 3 or parts[1] != "output":
+        raise click.ClickException(
+            f"Unsupported blend input path for {input_.model}: {input_.path_template}"
+        )
+
+    if len(parts) >= 4 and parts[2] == region:
+        relative_parts = parts[3:]
+    else:
+        relative_parts = parts[2:]
+
+    return "/".join(("output", model, date, *relative_parts))
 
 
 def _run_blend(date: str, region: str) -> None:

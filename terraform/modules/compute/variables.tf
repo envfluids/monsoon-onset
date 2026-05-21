@@ -103,11 +103,6 @@ variable "pipeline_state_image" {
   type        = string
 }
 
-variable "postprocess_image" {
-  description = "Container image for post-processing service"
-  type        = string
-}
-
 variable "blend_image" {
   description = "Container image for blend service"
   type        = string
@@ -252,7 +247,7 @@ variable "gencast_tpu_zone" {
 variable "gencast_tpu_global_device_count" {
   description = "Expected global TPU devices visible to GenCast after JAX distributed initialization."
   type        = number
-  default     = 16
+  default     = 32
 }
 
 variable "gencast_tpu_local_device_count" {
@@ -264,7 +259,7 @@ variable "gencast_tpu_local_device_count" {
 variable "gencast_tpu_process_count" {
   description = "Expected number of TPU VM hosts for the GenCast v5p slice (chip count / 4)"
   type        = number
-  default     = 4
+  default     = 8
 }
 
 variable "gencast_tpu_poll_interval_seconds" {
@@ -282,11 +277,11 @@ variable "gencast_tpu_runtime_version" {
 variable "gencast_tpu_accelerator_type" {
   description = "GenCast TPU accelerator slice"
   type        = string
-  default     = "v5p-32"
+  default     = "v5p-64"
 
   validation {
-    condition     = var.gencast_tpu_accelerator_type == "v5p-32"
-    error_message = "GenCast is configured for v5p-32 TPU slices."
+    condition     = var.gencast_tpu_accelerator_type == "v5p-64"
+    error_message = "GenCast is configured for v5p-64 TPU slices."
   }
 }
 

@@ -184,7 +184,6 @@ module "compute" {
   # Container images — pulled from Artifact Registry created by storage module
   downloader_image     = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
   pipeline_state_image = "${module.storage.artifact_registry_url}/monsoon-pipeline-state:latest"
-  postprocess_image    = "${module.storage.artifact_registry_url}/monsoon-postprocess:latest"
   blend_image          = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
   sync_image           = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
   aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
