@@ -30,4 +30,7 @@ Optional environment variables:
 - `GENCAST_EXPECTED_PROCESS_COUNT`: defaults to Terraform's v5p-64 host count of `8`
 - `GENCAST_ENSEMBLE_MEMBERS`: set to `32` by the workflow so the pmap axis matches the TPU devices
 - `GENCAST_ZARR_MIRROR_TARGET`: optional filesystem or Cloud Storage FUSE target for streaming full-field Zarr components during inference; the TPU dispatcher sets this to `/mnt/disks/common/full_field/gencast/$DATE/init_$DATE.zarr`
+- `GENCAST_GCSFUSE_BUCKET`: bucket to mount inside the GenCast container when the mirror target is under `GENCAST_GCSFUSE_MOUNT`; defaults to `GCS_COMMON_BUCKET` in the wrapper
+- `GENCAST_GCSFUSE_MOUNT`: container-side Cloud Storage FUSE mount point; defaults to `/mnt/disks/common`
+- `GENCAST_GCSFUSE_PROFILE`: Cloud Storage FUSE profile; defaults to `aiml-checkpointing`
 - `GENCAST_ZARR_MIRROR_WORKERS`: number of worker threads process 0 uses to stream changed full-field Zarr components through the mirror during inference; defaults to `16`

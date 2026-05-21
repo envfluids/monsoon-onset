@@ -825,52 +825,12 @@ echo "Starting TPU workload ${WORKLOAD_NAME} date=${DATE} image=${WORKLOAD_IMAGE
 echo "Workload log will be uploaded to ${NODE_WORKLOAD_LOG_URI}"
 write_status "RUNNING" "" "TPU VM startup running on $(hostname)" "$NODE_STATUS_PATH"
 
-ensure_gcsfuse() {
-  if command -v gcsfuse >/dev/null 2>&1; then
-    echo "Cloud Storage FUSE already installed: $(gcsfuse --version)"
-    if gcsfuse --help 2>&1 | grep -q -- "--profile"; then
-      return
-    fi
-    echo "Installed Cloud Storage FUSE does not support --profile; upgrading."
-  fi
-
-  echo "Installing Cloud Storage FUSE for GenCast full-field mirroring."
-  apt-get update
-  apt-get install -y curl lsb-release
-  GCSFUSE_REPO="gcsfuse-$(lsb_release -c -s)"
-  echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt ${GCSFUSE_REPO} main" > /etc/apt/sources.list.d/gcsfuse.list
-  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg > /usr/share/keyrings/cloud.google.asc
-  apt-get update
-  apt-get install -y gcsfuse
-  echo "Installed Cloud Storage FUSE: $(gcsfuse --version)"
-}
-
-mount_common_bucket() {
-  mkdir -p "$COMMON_BUCKET_MOUNT"
-  if mountpoint -q "$COMMON_BUCKET_MOUNT"; then
-    echo "Cloud Storage FUSE mount already active at ${COMMON_BUCKET_MOUNT}."
-    return
-  fi
-
-  echo "Mounting gs://${COMMON_BUCKET} at ${COMMON_BUCKET_MOUNT} with Cloud Storage FUSE for GenCast full-field mirroring."
-  gcsfuse --implicit-dirs --profile=aiml-checkpointing "$COMMON_BUCKET" "$COMMON_BUCKET_MOUNT"
-  if ! mountpoint -q "$COMMON_BUCKET_MOUNT"; then
-    echo "Cloud Storage FUSE mount failed at ${COMMON_BUCKET_MOUNT}."
-    exit 1
-  fi
-  echo "Cloud Storage FUSE active: gs://${COMMON_BUCKET} -> ${COMMON_BUCKET_MOUNT}; mirror target ${GENCAST_ZARR_MIRROR_TARGET}"
-}
-
-ensure_gcsfuse
-mount_common_bucket
-
 systemctl start docker
 gcloud auth configure-docker "$ARTIFACT_REGISTRY_HOST" --quiet
 docker pull "$WORKLOAD_IMAGE"
 
 echo "Starting workload container; capturing stdout/stderr to ${WORKLOAD_LOG_FILE}."
 docker run --rm --privileged --net=host --name "monsoon-${WORKLOAD_NAME}-${DATE}" \
-  -v "${COMMON_BUCKET_MOUNT}:${COMMON_BUCKET_MOUNT}" \
   -e DATE="$DATE" \
   -e FORECAST_REGIONS="$FORECAST_REGIONS" \
   -e GCS_COMMON_BUCKET="$COMMON_BUCKET" \

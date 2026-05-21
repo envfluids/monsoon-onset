@@ -136,10 +136,9 @@ class TpuDispatchTest(unittest.TestCase):
 
         self.assertIn("WORKLOAD_LOG_FILE=/var/log/monsoon-tpu-workload.log", script)
         self.assertIn("metadata node-workload-log-path", script)
-        self.assertIn("gcsfuse --implicit-dirs --profile=aiml-checkpointing", script)
-        self.assertIn("Cloud Storage FUSE active", script)
-        self.assertIn("-v \"${COMMON_BUCKET_MOUNT}:${COMMON_BUCKET_MOUNT}\"", script)
         self.assertIn("-e GENCAST_ZARR_MIRROR_TARGET=\"$GENCAST_ZARR_MIRROR_TARGET\"", script)
+        self.assertNotIn("apt-get install -y gcsfuse", script)
+        self.assertNotIn("-v \"${COMMON_BUCKET_MOUNT}:${COMMON_BUCKET_MOUNT}\"", script)
         self.assertIn("monsoon-tpu-vm", script)
         self.assertIn("worker_hostname", script)
         self.assertIn('workload-stdout "$WORKLOAD_LOG_FILE"', script)

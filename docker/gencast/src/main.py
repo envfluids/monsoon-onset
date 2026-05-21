@@ -234,26 +234,21 @@ def _run_inference(
 ) -> dict[str, object]:
     env = {**os.environ, "PYTHONPATH": str(GENCAST_UTILS)}
     if upload_full_field:
+        env.setdefault("GENCAST_GCSFUSE_BUCKET", common_bucket)
+        env.setdefault("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT))
         if env.get("GENCAST_ZARR_MIRROR_TARGET"):
             logger.info(
                 "Using preconfigured filesystem/Cloud Storage FUSE GenCast Zarr mirror target: %s",
                 env["GENCAST_ZARR_MIRROR_TARGET"],
             )
         else:
-            if not COMMON_BUCKET_MOUNT.is_dir():
-                raise RuntimeError(
-                    "UPLOAD_FULL_FIELD=true requires Cloud Storage FUSE at "
-                    f"{COMMON_BUCKET_MOUNT}. The TPU dispatcher mounts "
-                    f"gs://{common_bucket} there before starting this container."
-                )
             env["GENCAST_ZARR_MIRROR_TARGET"] = str(_gcs_fuse_mirror_target(date))
             logger.info(
-                "Using Cloud Storage FUSE GenCast Zarr mirror target: %s "
-                "(gs://%s/full_field/gencast/%s/init_%s.zarr/)",
+                "Using container-mounted Cloud Storage FUSE GenCast Zarr mirror target: %s "
+                "(bucket=gs://%s, mount=%s)",
                 env["GENCAST_ZARR_MIRROR_TARGET"],
                 common_bucket,
-                date,
-                date,
+                env["GENCAST_GCSFUSE_MOUNT"],
             )
     logger.info("Running GenCast run_gencast.py for %s", date)
     _log_jax_runtime(env)
@@ -265,7 +260,8 @@ def _run_inference(
 
 
 def _gcs_fuse_mirror_target(date: str) -> Path:
-    return COMMON_BUCKET_MOUNT / "full_field" / "gencast" / date / f"init_{date}.zarr"
+    mount = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", str(COMMON_BUCKET_MOUNT)))
+    return mount / "full_field" / "gencast" / date / f"init_{date}.zarr"
 
 
 def _run_post_process(date: str, region: str) -> None:

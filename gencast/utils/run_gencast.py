@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import traceback
@@ -285,6 +286,57 @@ class GcsZarrMirror:
         gcs_path = f"{self.gcs_prefix}/{relative.as_posix()}"
         self.bucket.blob(gcs_path).upload_from_filename(str(local_file))
         logging.info("Mirrored %s to gs://%s/%s", local_file, self.bucket_name, gcs_path)
+
+
+def _path_is_relative_to(path, root):
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _ensure_gcsfuse_mount(bucket_name, mount_path):
+    mount_path = Path(mount_path)
+    mount_path.mkdir(parents=True, exist_ok=True)
+    if os.path.ismount(mount_path):
+        logging.info(
+            "Cloud Storage FUSE mount already active in GenCast container: gs://%s -> %s",
+            bucket_name,
+            mount_path,
+        )
+        return
+
+    gcsfuse = shutil.which("gcsfuse")
+    if not gcsfuse:
+        raise RuntimeError(
+            "GENCAST_ZARR_MIRROR_TARGET points under the Cloud Storage FUSE mount, "
+            "but gcsfuse is not installed in the GenCast container."
+        )
+
+    profile = os.getenv("GENCAST_GCSFUSE_PROFILE", "aiml-checkpointing").strip()
+    command = [gcsfuse, "--implicit-dirs"]
+    if profile:
+        command.append(f"--profile={profile}")
+    command.extend([bucket_name, str(mount_path)])
+
+    logging.info(
+        "Mounting Cloud Storage FUSE in GenCast container for async full-field mirror: "
+        "gs://%s -> %s profile=%s",
+        bucket_name,
+        mount_path,
+        profile or "default",
+    )
+    subprocess.run(command, check=True)
+    if not os.path.ismount(mount_path):
+        raise RuntimeError(
+            f"Cloud Storage FUSE command completed but {mount_path} is not mounted."
+        )
+    logging.info(
+        "Cloud Storage FUSE active in GenCast container: gs://%s -> %s",
+        bucket_name,
+        mount_path,
+    )
 
 
 def _select_pmap_devices(num_samples):
@@ -771,6 +823,15 @@ def _zarr_mirror_for_runtime(
     target = os.getenv("GENCAST_ZARR_MIRROR_TARGET", "").strip()
     if target:
         workers = int(os.getenv("GENCAST_ZARR_MIRROR_WORKERS", "16"))
+        mount_path = Path(os.getenv("GENCAST_GCSFUSE_MOUNT", "/mnt/disks/common"))
+        bucket_name = os.getenv("GENCAST_GCSFUSE_BUCKET", "").strip()
+        if _path_is_relative_to(target, mount_path):
+            if not bucket_name:
+                raise RuntimeError(
+                    "GENCAST_ZARR_MIRROR_TARGET is under GENCAST_GCSFUSE_MOUNT, "
+                    "but GENCAST_GCSFUSE_BUCKET is not set."
+                )
+            _ensure_gcsfuse_mount(bucket_name, mount_path)
         logging.info(
             "Using filesystem/Cloud Storage FUSE GenCast Zarr mirror target %s with %d workers. "
             "Set only by cloud wrappers or operators; absent in the HPC workflow.",

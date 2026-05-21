@@ -311,7 +311,7 @@ The workflow submits one queued resource per GenCast date, using a stable ID `ge
 - local device count per TPU VM: `4`
 - process count: `8`
 
-Only JAX process 0 publishes full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts. The TPU startup script mounts the common bucket at `/mnt/disks/common` with Cloud Storage FUSE and passes `GENCAST_ZARR_MIRROR_TARGET=/mnt/disks/common/full_field/gencast/{date}/init_{date}.zarr` into the container, so full-field Zarr components are mirrored asynchronously while inference is still generating chunks. The GenCast utility code does not enable this mirror unless the cloud wrapper or an operator sets the mirror environment variable, preserving the HPC local-output workflow.
+Only JAX process 0 publishes full-field and region outputs; the other TPU hosts participate in the distributed run and then exit without publishing duplicate artifacts. The TPU startup script passes `GENCAST_ZARR_MIRROR_TARGET=/mnt/disks/common/full_field/gencast/{date}/init_{date}.zarr` into the container. Process 0 mounts the common bucket inside the GenCast container with Cloud Storage FUSE, so full-field Zarr components are mirrored asynchronously while inference is still generating chunks. The GenCast utility code does not enable this mirror unless the cloud wrapper or an operator sets the mirror environment variable, preserving the HPC local-output workflow.
 
 ### 7. blend
 

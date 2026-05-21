@@ -10,9 +10,16 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
+    ca-certificates \
+    curl \
+    gnupg \
+    lsb-release \
     libeccodes-dev \
     libeccodes-tools \
-    ca-certificates \
+    && curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg > /usr/share/keyrings/cloud.google.asc \
+    && echo "deb [signed-by=/usr/share/keyrings/cloud.google.asc] https://packages.cloud.google.com/apt gcsfuse-$(lsb_release -c -s) main" > /etc/apt/sources.list.d/gcsfuse.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gcsfuse \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies into /app/.venv. The project itself is not
