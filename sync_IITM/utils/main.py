@@ -160,7 +160,7 @@ def main():
     cluster_id = config["cluster_id"]
     logging.info(f"Cluster ID: {cluster_id}")
 
-    tp_dir = base / "AIFS" / "output" / "india" / "tp"
+    tp_dir = base / "AIFS" / "output" / "india" / "AIFS_single_v1p1" / "tp"
     local_dates = get_local_tp_dates(tp_dir)
     if not local_dates:
         logging.error("No valid tp_*.nc files found in tp directory.")

@@ -8,11 +8,23 @@ regions:
     drive:
       root: "/MO_operational_data_2026/{cluster}"
     rules:
-      - name: AIFS
+      - name: AIFS_single_v1p1
         kind: files
         gcs_prefix: "output/aifs/{date}/"
-        local_root: "AIFS/output/india"
-        drive_path: "{drive_root}/{date}/AIFS"
+        local_root: "AIFS/output/india/AIFS_single_v1p1"
+        drive_path: "{drive_root}/{date}/AIFS_single_v1p1"
+        date_regex: "\\d{8}T\\d{2}"
+        patterns:
+          - "tp/tp_2p0_{date}.nc"
+          - "tp/tp_0p25_{date}.nc"
+          - "sji/sji_{date}.nc"
+          - "tcw/tcw_{date}.nc"
+
+      - name: AIFS_single_v2
+        kind: files
+        gcs_prefix: "output/aifs/{date}/"
+        local_root: "AIFS/output/india/AIFS_single_v2"
+        drive_path: "{drive_root}/{date}/AIFS_single_v2"
         date_regex: "\\d{8}T\\d{2}"
         patterns:
           - "tp/tp_2p0_{date}.nc"
@@ -76,29 +88,53 @@ regions:
     drive:
       root: "/operational_data_ethiopia/{cluster}"
     rules:
-      - name: AIFS
+      - name: AIFS_single_v1p1
         kind: files
         gcs_prefix: "output/aifs/{date}/"
         gcs_date_kind: "aifs_date"
         local_root: "AIFS/output/ethiopia"
-        drive_path: "{drive_root}/{date}/AIFS"
+        drive_path: "{drive_root}/{date}/AIFS_single_v1p1"
         date_regex: "\\d{8}T\\d{2}"
         ignore_patterns:
           - ".nfs*"
         patterns:
-          - "AIFS/tp/tp_0p25_{date}.nc"
+          - "AIFS_single_v1p1/tp/tp_0p25_{date}.nc"
 
-      - name: AIFS_ENS
+      - name: AIFS_ENS_v1
         kind: files
         gcs_prefix: "output/aifs_ens/{date}/"
         gcs_date_kind: "aifs_date"
         local_root: "AIFS/output/ethiopia"
-        drive_path: "{drive_root}/{date}/AIFS_ENS"
+        drive_path: "{drive_root}/{date}/AIFS_ENS_v1"
         date_regex: "\\d{8}T\\d{2}"
         ignore_patterns:
           - ".nfs*"
         patterns:
-          - "AIFS_ENS/tp/tp_0p25_{date}.nc"
+          - "AIFS_ENS_v1/tp/tp_0p25_{date}.nc"
+
+      - name: AIFS_single_v2
+        kind: files
+        gcs_prefix: "output/aifs/{date}/"
+        gcs_date_kind: "aifs_date"
+        local_root: "AIFS/output/ethiopia"
+        drive_path: "{drive_root}/{date}/AIFS_single_v2"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "AIFS_single_v2/tp/tp_0p25_{date}.nc"
+
+      - name: AIFS_ENS_v2
+        kind: files
+        gcs_prefix: "output/aifs_ens/{date}/"
+        gcs_date_kind: "aifs_date"
+        local_root: "AIFS/output/ethiopia"
+        drive_path: "{drive_root}/{date}/AIFS_ENS_v2"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "AIFS_ENS_v2/tp/tp_0p25_{date}.nc"
 
       - name: NeuralGCM
         kind: files

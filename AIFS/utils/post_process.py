@@ -148,80 +148,90 @@ def post_process_india(AIFS, date, model):
 
     mask_path = "../data/india_mask.nc"
 
-    logging.info("Processing SJI")
-    AIFS_SJI = AIFS[["u_850", "v_850"]]
-    AIFS_SJI = calculate_sji(AIFS_SJI)
-    AIFS_SJI.to_netcdf(f"{output_base_path}/sji/sji_{date}.nc")
-    AIFS_SJI.close()
+    
+    SJI_OUT_PATH = f"{output_base_path}/sji/sji_{date}.nc"
+    if not os.path.exists(SJI_OUT_PATH):
+        logging.info("Processing SJI")
+        AIFS_SJI = AIFS[["u_850", "v_850"]]
+        AIFS_SJI = calculate_sji(AIFS_SJI)
+        AIFS_SJI.to_netcdf(f"{output_base_path}/sji/sji_{date}.nc")
+        AIFS_SJI.close()
 
     logging.info("Processing TCW")
-    AIFS_TCW = AIFS[["tcw"]]
-    AIFS_TCW = set_atts_tcw(AIFS_TCW)
-    regrid_input_path = f"{output_base_path}/tcw/{date}_INTERMEDIATE.nc"
-    regrid_output_path = f"{output_base_path}/tcw/{date}_INTERMEDIATE_2.nc"
-    AIFS_TCW.to_netcdf(regrid_input_path)
-    logging.info("Regridding TCW")
-    command = [
-        "cdo", "-s",
-        f"remapcon,{grid_file}",
-        regrid_input_path,
-        regrid_output_path,
-    ]
-    command = " ".join(command)
-    os.system(command)
-    os.remove(regrid_input_path)
-    AIFS_TCW = xr.open_dataset(regrid_output_path)
-    AIFS_TCW = process_tcw(AIFS_TCW)
-    AIFS_TCW.to_netcdf(f"{output_base_path}/tcw/tcw_{date}.nc")
-    AIFS_TCW.close()
-    os.remove(regrid_output_path)
+    TCW_OUT_PATH = f"{output_base_path}/tcw/tcw_{date}.nc"
+    if not os.path.exists(TCW_OUT_PATH):
+        logging.info("Processing TCW")
+        AIFS_TCW = AIFS[["tcw"]]
+        AIFS_TCW = set_atts_tcw(AIFS_TCW)
+        regrid_input_path = f"{output_base_path}/tcw/{date}_INTERMEDIATE.nc"
+        regrid_output_path = f"{output_base_path}/tcw/{date}_INTERMEDIATE_2.nc"
+        AIFS_TCW.to_netcdf(regrid_input_path)
+        logging.info("Regridding TCW")
+        command = [
+            "cdo", "-s",
+            f"remapcon,{grid_file}",
+            regrid_input_path,
+            regrid_output_path,
+        ]
+        command = " ".join(command)
+        os.system(command)
+        os.remove(regrid_input_path)
+        AIFS_TCW = xr.open_dataset(regrid_output_path)
+        AIFS_TCW = process_tcw(AIFS_TCW)
+        AIFS_TCW.to_netcdf(TCW_OUT_PATH)
+        AIFS_TCW.close()
+        os.remove(regrid_output_path)
 
-    logging.info("Processing TP")
-    AIFS_tp = AIFS[["tp"]]
-    AIFS_tp = set_atts_tp(AIFS_tp)
-    regrid_input_path = f"{output_base_path}/tp/{date}_2p0_INTERMEDIATE.nc"
-    regrid_output_path = f"{output_base_path}/tp/{date}_2p0_INTERMEDIATE_2.nc"
-    AIFS_tp.to_netcdf(regrid_input_path)
-    logging.info("Regridding TP")
-    command = [
-        "cdo", "-s",
-        f"remapcon,{grid_file}",
-        regrid_input_path,
-        regrid_output_path,
-    ]
-    command = " ".join(command)
-    os.system(command)
-    os.remove(regrid_input_path)
-    AIFS_tp = xr.open_dataset(regrid_output_path)
-    AIFS_tp = process_tp(AIFS_tp)
-    AIFS_tp.to_netcdf(f"{output_base_path}/tp/tp_2p0_{date}.nc")
-    os.remove(regrid_output_path)
-    AIFS_tp.close()
+
+    TP_OUT_PATH = f"{output_base_path}/tp/tp_2p0_{date}.nc"
+    if not os.path.exists(TP_OUT_PATH):
+        logging.info("Processing TP")
+        AIFS_tp = AIFS[["tp"]]
+        AIFS_tp = set_atts_tp(AIFS_tp)
+        regrid_input_path = f"{output_base_path}/tp/{date}_2p0_INTERMEDIATE.nc"
+        regrid_output_path = f"{output_base_path}/tp/{date}_2p0_INTERMEDIATE_2.nc"
+        AIFS_tp.to_netcdf(regrid_input_path)
+        logging.info("Regridding TP")
+        command = [
+            "cdo", "-s",
+            f"remapcon,{grid_file}",
+            regrid_input_path,
+            regrid_output_path,
+        ]
+        command = " ".join(command)
+        os.system(command)
+        os.remove(regrid_input_path)
+        AIFS_tp = xr.open_dataset(regrid_output_path)
+        AIFS_tp = process_tp(AIFS_tp)
+        AIFS_tp.to_netcdf(TP_OUT_PATH)
+        os.remove(regrid_output_path)
+        AIFS_tp.close()
 
     # ── NEW ADDITION — 0.25° India TP ─────────────────────
-
-    logging.info("Processing TP at 0.25° for India domain")
-
-    # take tp fresh from raw AIFS output
-    AIFS_tp_0p25 = AIFS[["tp"]]
-    AIFS_tp_0p25 = set_atts_tp(AIFS_tp_0p25)
-
-    # clip → mask → daily
-    AIFS_tp_0p25 = process_tp_0p25(AIFS_tp_0p25, mask_path)
-
-    # save to tp_0p25 folder
     output_path = f"{output_base_path}/tp/tp_0p25_{date}.nc"
-    AIFS_tp_0p25.to_netcdf(output_path)
-    AIFS_tp_0p25.close()
+    if not os.path.exists(output_path):
+        logging.info("Processing TP at 0.25° for India domain")
 
-    logging.info(f"Saved 0.25° TP to {output_path}")
+        # take tp fresh from raw AIFS output
+        AIFS_tp_0p25 = AIFS[["tp"]]
+        AIFS_tp_0p25 = set_atts_tp(AIFS_tp_0p25)
 
-    # ── CLOSE ──────────────────────────────────────────────
+        # clip → mask → daily
+        AIFS_tp_0p25 = process_tp_0p25(AIFS_tp_0p25, mask_path)
 
-    AIFS.close()
+        # save to tp_0p25 folder
+        output_path = f"{output_base_path}/tp/tp_0p25_{date}.nc"
+        AIFS_tp_0p25.to_netcdf(output_path)
+        AIFS_tp_0p25.close()
 
-    logging.info(f"Finished post-processing {date}")
-    logging.info("Exiting post-processing script")
+        logging.info(f"Saved 0.25° TP to {output_path}")
+
+        # ── CLOSE ──────────────────────────────────────────────
+
+        AIFS.close()
+
+        logging.info(f"Finished post-processing {date}")
+        logging.info("Exiting post-processing script")
 
 
 def subset_ethiopia(ds):
@@ -259,10 +269,15 @@ def post_process_ethiopia(ds, date, model):
     if not os.path.exists(tp_dir):
         os.makedirs(tp_dir)
 
+    tp_out_path = f"{tp_dir}/tp_0p25_{date}.nc"
+    if os.path.exists(tp_out_path):
+        logging.info(f"TP output already exists at {tp_out_path}, skipping TP processing")
+        return
+
     ds = ds[["tp"]]
     ds = subset_ethiopia(ds)
     ds = post_process_tp_ethiopia(ds)
-    tp_out_path = f"{tp_dir}/tp_0p25_{date}.nc"
+    
     ds.to_netcdf(tp_out_path)
     logging.info(f"Saved Ethiopia Daily TP to {tp_out_path}")
 

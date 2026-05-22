@@ -52,7 +52,7 @@ PIPELINES = {
                 label="AIFS",
                 script_name="run_AIFS.sh",
                 work_dir=ROOT / "AIFS" / "utils",
-                models=("AIFS_single_v1p1",),
+                models=("AIFS_single_v1p1","AIFS_single_v2"),
             )
         ],
     },
@@ -111,7 +111,7 @@ PIPELINES["aifs_ens"]["jobs"] = [
         label="AIFS_ENS",
         script_name="run_AIFS_ENS.sh",
         work_dir=ROOT / "AIFS" / "utils",
-        models=("AIFS_ENS_v1",),
+        models=("AIFS_ENS_v1","AIFS_ENS_v2"),
         optional=True,
     )
 ]

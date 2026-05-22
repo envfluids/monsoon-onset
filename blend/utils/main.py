@@ -37,6 +37,10 @@ class BlendConfig:
     script: Path
     inputs: tuple[ForecastInput, ...]
     output_dir_template: str
+    diagnostic_inputs: tuple[ForecastInput, ...] | None = None
+    implemented: bool = True
+    diagnostic_plots: bool = False
+    diagnostic_output_dir_template: str | None = None
 
     def models(self) -> set[str]:
         return {self.deterministic_model, self.ensemble_model}
@@ -44,8 +48,32 @@ class BlendConfig:
     def input_paths(self, date: str) -> dict[str, Path]:
         return {input_.model: input_.path(date) for input_ in self.inputs}
 
+    def diagnostic_input_paths(self, date: str) -> dict[str, Path]:
+        inputs = self.diagnostic_inputs or self.inputs
+        return {input_.model: input_.path(date) for input_ in inputs}
+
     def output_dir(self, date: str) -> Path:
         return REPO_ROOT / self.output_dir_template.format(date=date)
+
+    def diagnostic_output_dir(self, date: str) -> Path:
+        template = (
+            self.diagnostic_output_dir_template
+            or f"model_diagnostics/output/{self.region}/{{date}}/{self.name}"
+        )
+        return REPO_ROOT / template.format(date=date)
+
+    def input_for_role(self, role: str) -> ForecastInput:
+        for input_ in self.inputs:
+            if input_.role == role:
+                return input_
+        raise ValueError(f"Blend {self.name} has no {role!r} input.")
+
+    def diagnostic_input_for_role(self, role: str) -> ForecastInput:
+        inputs = self.diagnostic_inputs or self.inputs
+        for input_ in inputs:
+            if input_.role == role:
+                return input_
+        raise ValueError(f"Blend {self.name} has no {role!r} diagnostic input.")
 
     def command(
         self,
@@ -53,50 +81,79 @@ class BlendConfig:
         debug: bool = False,
         skip_to: int | None = None,
     ) -> list[str]:
+        deterministic_input = self.input_for_role("deterministic").path(date)
+        ensemble_input = self.input_for_role("ensemble").path(date)
         cmd = [sys.executable, str(self.script), "--date", date]
-
-        if self.region == "ethiopia":
-            cmd.extend(
-                [
-                    "--ensemble_model",
-                    self.ensemble_model,
-                    "--deterministic_model",
-                    self.deterministic_model,
-                ]
-            )
-            if debug:
-                cmd.append("--debug")
-            if skip_to is not None:
-                cmd.extend(["--skip_to", str(skip_to)])
+        cmd.extend(
+            [
+                "--deterministic_model",
+                self.deterministic_model,
+                "--ensemble_model",
+                self.ensemble_model,
+                "--deterministic_input",
+                str(deterministic_input),
+                "--ensemble_input",
+                str(ensemble_input),
+                "--output_dir",
+                str(self.output_dir(date)),
+            ]
+        )
+        if debug:
+            cmd.append("--debug")
+        if skip_to is not None:
+            cmd.extend(["--skip_to", str(skip_to)])
 
         return cmd
+
+    def diagnostics_command(self, date: str) -> list[str]:
+        deterministic_input = self.diagnostic_input_for_role("deterministic").path(date)
+        ensemble_input = self.diagnostic_input_for_role("ensemble").path(date)
+        return [
+            sys.executable,
+            str(REPO_ROOT / "model_diagnostics" / "utils" / "main.py"),
+            "--date",
+            date,
+            "--region",
+            self.region,
+            "--deterministic_model",
+            self.deterministic_model,
+            "--ensemble_model",
+            self.ensemble_model,
+            "--deterministic_input",
+            str(deterministic_input),
+            "--ensemble_input",
+            str(ensemble_input),
+            "--output_dir",
+            str(self.diagnostic_output_dir(date)),
+        ]
 
 
 BLENDS: tuple[BlendConfig, ...] = (
     BlendConfig(
         region="ethiopia",
-        name="AIFS_AIFS_ENS",
-        deterministic_model="AIFS",
-        ensemble_model="AIFS_ENS",
+        name="AIFS_single_v1p1_AIFS_ENS_v1",
+        deterministic_model="AIFS_single_v1p1",
+        ensemble_model="AIFS_ENS_v1",
         script=REPO_ROOT / "blend" / "utils" / "ethiopia2026" / "run_pipeline.py",
         inputs=(
             ForecastInput(
-                model="AIFS",
+                model="AIFS_single_v1p1",
                 role="deterministic",
-                path_template="AIFS/output/ethiopia/AIFS/tp/tp_0p25_{date}.nc",
+                path_template="AIFS/output/ethiopia/AIFS_single_v1p1/tp/tp_0p25_{date}.nc",
             ),
             ForecastInput(
-                model="AIFS_ENS",
+                model="AIFS_ENS_v1",
                 role="ensemble",
-                path_template="AIFS/output/ethiopia/AIFS_ENS/tp/tp_0p25_{date}.nc",
+                path_template="AIFS/output/ethiopia/AIFS_ENS_v1/tp/tp_0p25_{date}.nc",
             ),
         ),
-        output_dir_template="blend/output/ethiopia2026/{date}",
+        output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v1p1_AIFS_ENS_v1",
+        diagnostic_plots=True,
     ),
     BlendConfig(
         region="india",
-        name="AIFS_NCUM",
-        deterministic_model="AIFS",
+        name="AIFS_single_v1p1_NCUM",
+        deterministic_model="AIFS_single_v1p1",
         ensemble_model="NCUM",
         script=REPO_ROOT
         / "blend"
@@ -106,9 +163,9 @@ BLENDS: tuple[BlendConfig, ...] = (
         / "main.py",
         inputs=(
             ForecastInput(
-                model="AIFS",
+                model="AIFS_single_v1p1",
                 role="deterministic",
-                path_template="AIFS/output/india/tp/tp_0p25_{date}.nc",
+                path_template="AIFS/output/india/AIFS_single_v1p1/tp/tp_0p25_{date}.nc",
             ),
             ForecastInput(
                 model="NCUM",
@@ -116,13 +173,48 @@ BLENDS: tuple[BlendConfig, ...] = (
                 path_template="NCUM/output/precipitation_amount/precipitation_amount_{date}.nc",
             ),
         ),
-        output_dir_template="blend/output/india2026/{date}/AIFS_NCUM",
+        output_dir_template="blend/output/india2026/{date}/AIFS_single_v1p1_NCUM",
+        diagnostic_plots=False,
+    ),
+    BlendConfig(
+        region="india",
+        name="AIFS_single_v1p1_NeuralGCM",
+        deterministic_model="AIFS_single_v1p1",
+        ensemble_model="NeuralGCM",
+        script=REPO_ROOT
+        / "blend"
+        / "utils"
+        / "india2026"
+        / "AIFS_NGCM_blend"
+        / "main.py",
+        inputs=(
+            ForecastInput(
+                model="AIFS_single_v1p1",
+                role="deterministic",
+                path_template="AIFS/output/india/AIFS_single_v1p1/tp/tp_0p25_{date}.nc",
+            ),
+            ForecastInput(
+                model="NeuralGCM",
+                role="ensemble",
+                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+            ),
+        ),
+        output_dir_template="blend/output/india2026/{date}/AIFS_single_v1p1_NeuralGCM",
+        diagnostic_inputs=(
+            ForecastInput(
+                model="AIFS_single_v1p1",
+                role="deterministic",
+                path_template="AIFS/output/india/AIFS_single_v1p1/tp/tp_2p0_{date}.nc",
+            ),
+            ForecastInput(
+                model="NeuralGCM",
+                role="ensemble",
+                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+            ),
+        ),
+        diagnostic_plots=True,
     ),
 )
-
-
-def normalize_model(model: str | None) -> str | None:
-    return model.upper() if model else None
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,22 +242,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--blend",
         default=None,
-        help="Limit orchestration to one configured blend name, such as AIFS_NCUM.",
+        help="Limit orchestration to one configured blend name.",
     )
     parser.add_argument(
         "--ensemble_model",
         default=None,
-        help="Optional legacy filter for the ensemble model in a blend.",
+        help="Optional exact filter for the ensemble model in a blend.",
     )
     parser.add_argument(
         "--deterministic_model",
         default=None,
-        help="Optional legacy filter for the deterministic model in a blend.",
+        help="Optional exact filter for the deterministic model in a blend.",
     )
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Log eligible blend commands without executing them.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Rerun blend and diagnostic outputs that already exist.",
     )
     parser.add_argument(
         "--debug",
@@ -194,21 +291,31 @@ def validate_blend_config(blend: BlendConfig) -> None:
         )
     if {input_.model for input_ in blend.inputs} != blend.models():
         raise ValueError(f"Blend {blend.name} model names do not match its inputs.")
+    if blend.diagnostic_inputs is not None:
+        diagnostic_roles = {input_.role for input_ in blend.diagnostic_inputs}
+        if diagnostic_roles != {"deterministic", "ensemble"} or len(blend.diagnostic_inputs) != 2:
+            raise ValueError(
+                f"Blend {blend.name} must define exactly one deterministic and one ensemble diagnostic input."
+            )
+        if {input_.model for input_ in blend.diagnostic_inputs} != blend.models():
+            raise ValueError(
+                f"Blend {blend.name} diagnostic model names do not match its inputs."
+            )
 
 
 def select_blends(args: argparse.Namespace) -> list[BlendConfig]:
-    model = normalize_model(args.model)
-    ensemble_model = normalize_model(args.ensemble_model)
-    deterministic_model = normalize_model(args.deterministic_model)
+    model = args.model
+    ensemble_model = args.ensemble_model
+    deterministic_model = args.deterministic_model
     region = args.region.lower() if args.region else None
-    blend_name = args.blend.upper() if args.blend else None
+    blend_name = args.blend
 
     selected = []
     for blend in BLENDS:
         validate_blend_config(blend)
         if region and blend.region != region:
             continue
-        if blend_name and blend.name.upper() != blend_name:
+        if blend_name and blend.name != blend_name:
             continue
         if model and model not in blend.models():
             continue
@@ -229,14 +336,23 @@ def missing_inputs(blend: BlendConfig, date: str) -> dict[str, Path]:
     }
 
 
+def missing_diagnostic_inputs(blend: BlendConfig, date: str) -> dict[str, Path]:
+    return {
+        model: path
+        for model, path in blend.diagnostic_input_paths(date).items()
+        if not path.exists()
+    }
+
+
 def run_blend(
     blend: BlendConfig,
     date: str,
     dry_run: bool,
+    force: bool,
     debug: bool,
     skip_to: int | None,
 ) -> bool:
-    missing = missing_inputs(blend, date)
+    missing = missing_diagnostic_inputs(blend, date)
     if missing:
         logger.info(
             "Blend %s/%s is not ready for %s. Missing: %s",
@@ -247,25 +363,28 @@ def run_blend(
         )
         return False
 
+    if not blend.implemented:
+        logger.info("Blend %s/%s is configured but not implemented.", blend.region, blend.name)
+        return False
+
     output_dir = blend.output_dir(date)
-    if output_dir.exists():
+    if output_dir.exists() and not force:
         logger.info(
-            "Blend %s/%s already has output at %s; rerunning with %s + %s.",
+            "Blend %s/%s already has output at %s; skipping. Use --force to rerun.",
             blend.region,
             blend.name,
             output_dir,
-            blend.deterministic_model,
-            blend.ensemble_model,
         )
-    else:
-        logger.info(
-            "Blend %s/%s is ready for %s with %s + %s.",
-            blend.region,
-            blend.name,
-            date,
-            blend.deterministic_model,
-            blend.ensemble_model,
-        )
+        return False
+
+    logger.info(
+        "Blend %s/%s is ready for %s with %s + %s.",
+        blend.region,
+        blend.name,
+        date,
+        blend.deterministic_model,
+        blend.ensemble_model,
+    )
 
     cmd = blend.command(date, debug=debug, skip_to=skip_to)
     logger.info("Blend command: %s", " ".join(cmd))
@@ -273,6 +392,45 @@ def run_blend(
         return True
 
     subprocess.run(cmd, check=True, cwd=blend.script.parent)
+    return True
+
+
+def run_diagnostics(
+    blend: BlendConfig,
+    date: str,
+    dry_run: bool,
+    force: bool,
+) -> bool:
+    if not blend.diagnostic_plots:
+        return False
+
+    missing = missing_inputs(blend, date)
+    if missing:
+        logger.info(
+            "Diagnostics %s/%s are not ready for %s. Missing: %s",
+            blend.region,
+            blend.name,
+            date,
+            ", ".join(f"{model}={path}" for model, path in missing.items()),
+        )
+        return False
+
+    output_dir = blend.diagnostic_output_dir(date)
+    if output_dir.exists() and not force:
+        logger.info(
+            "Diagnostics %s/%s already have output at %s; skipping. Use --force to rerun.",
+            blend.region,
+            blend.name,
+            output_dir,
+        )
+        return False
+
+    cmd = blend.diagnostics_command(date)
+    logger.info("Diagnostics command: %s", " ".join(cmd))
+    if dry_run:
+        return True
+
+    subprocess.run(cmd, check=True, cwd=REPO_ROOT / "model_diagnostics" / "utils")
     return True
 
 
@@ -292,8 +450,18 @@ def main() -> None:
                 blend,
                 args.date,
                 dry_run=args.dry_run,
+                force=args.force,
                 debug=args.debug,
                 skip_to=args.skip_to,
+            )
+            or ran_any
+        )
+        ran_any = (
+            run_diagnostics(
+                blend,
+                args.date,
+                dry_run=args.dry_run,
+                force=args.force,
             )
             or ran_any
         )

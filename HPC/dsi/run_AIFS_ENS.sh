@@ -12,12 +12,17 @@ fi
 
 source /home/marchakitus/.bashrc
 
-conda activate /net/scratch2/marchakitus/conda-envs/AIFS_ENS
-python ./run_model_ENS.py --date $DATE_F --model $MODEL
+REPO_ROOT="$(cd ../.. && pwd)"
+export REPO_ROOT
+MODEL_ENV="$(python -c 'import json, os, pathlib; root = pathlib.Path(os.environ["REPO_ROOT"]); cfg = json.load(open(root / ".config" / "envs.json")); print(cfg["dsi"]["models"][os.environ["MODEL"]])')"
+DEFAULT_ENV="$(python -c 'import json, os, pathlib; root = pathlib.Path(os.environ["REPO_ROOT"]); cfg = json.load(open(root / ".config" / "envs.json")); print(cfg["dsi"]["misc"]["default"])')"
+
+conda activate "$MODEL_ENV"
+python ./run_model_ENS.py --date "$DATE_F" --model "$MODEL"
 
 conda deactivate
-conda activate /net/scratch2/marchakitus/conda-envs/operational
-python ./post_process.py --date $DATE_F --model $MODEL
+conda activate "$DEFAULT_ENV"
+python ./post_process.py --date "$DATE_F" --model "$MODEL" --region ethiopia
 
 cd ../../blend/utils
-python ./main.py --date $DATE_F --region ethiopia --model $MODEL
+python ./main.py --date "$DATE_F" --region ethiopia --model "$MODEL"

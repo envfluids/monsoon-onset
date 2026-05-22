@@ -7,7 +7,7 @@ Entry point
 
 What it does
 ------------
-1. Checks AIFS and NCUM forecast files exist.
+1. Checks AIFS and NGCM forecast files exist.
 2. Processes each active forecast model.
 3. Merges model outputs with climatological probabilities.
 4. Computes weekly rolling-sum features and blends them into onset
@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from maps_subdistrict import make_maps
-from models import AIFS_CONFIG, NCUM_CONFIG
+from models import AIFS_CONFIG, NGCM_CONFIG  # CHANGE 1
 from process_forecast import process_forecast
 from utils import compute_roll_sum
 
@@ -34,13 +34,13 @@ from blend import blend
 # ── Active models ─────────────────────────────────────────────────────────────
 ACTIVE_MODELS = [
     AIFS_CONFIG,
-    NCUM_CONFIG,
+    NGCM_CONFIG,  # CHANGE 2
 ]
 
 MODEL_CONFIGS = {
     "AIFS_single_v1p1": AIFS_CONFIG,
     "AIFS_single_v2": AIFS_CONFIG,
-    "NCUM": NCUM_CONFIG,
+    "NeuralGCM": NGCM_CONFIG,
 }
 
 logging.basicConfig(
@@ -67,14 +67,14 @@ def model_configs_for_pair(deterministic_model: str, ensemble_model: str):
     except KeyError as exc:
         supported = ", ".join(sorted(MODEL_CONFIGS))
         raise ValueError(
-            f"Unsupported model {exc.args[0]!r} for AIFS/NCUM blend. "
+            f"Unsupported model {exc.args[0]!r} for AIFS/NeuralGCM blend. "
             f"Supported models: {supported}"
         ) from exc
 
 
 def check_input_files(model_files: dict[str, Path]) -> bool:
     """
-    Check if AIFS and NCUM forecast files exist.
+    Check if AIFS and NGCM forecast files exist.
     Returns True if all required files exist, False otherwise.
     """
     for model, path in model_files.items():
@@ -104,15 +104,15 @@ def get_data(
     if output_dir is not None:
         out_path = output_dir
     elif source == "google":
-        out_path = base / "blend" / "output_google" / "india2026" / date / "AIFS_NCUM"
+        out_path = base / "blend" / "output_google" / "india2026" / date / "AIFS_NGCM"
     else:
-        out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM"
+        out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NGCM"
 
     support_dir = (
-        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
+        base / "blend" / "data" / "india2026" / "AIFS_NGCM_blend" / "data" / "support"  # CHANGE 5
     )
     coefs_dir = (
-        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
+        base / "blend" / "data" / "india2026" / "AIFS_NGCM_blend" / "data" / "coefs"  # CHANGE 5
     )
 
     thresholds_file = support_dir / "subdistrict_thresholds.csv"
@@ -309,7 +309,7 @@ def main():
         help="Date to download in format YYYYMMDDTHH. Defaults to latest.",
     )
     parser.add_argument("--deterministic_model", default="AIFS_single_v1p1")
-    parser.add_argument("--ensemble_model", default="NCUM")
+    parser.add_argument("--ensemble_model", default="NeuralGCM")
     parser.add_argument("--deterministic_input", default=None)
     parser.add_argument("--ensemble_input", default=None)
     parser.add_argument("--output_dir", default=None)

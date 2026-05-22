@@ -26,7 +26,7 @@ TOKEN_FILE = AUTH_DIR / "token.json"
 NUM_API_RETRIES = 3
 
 AIFS_DRIVE_PATH = "/AIFS_forecast/tp"
-AIFS_LOCAL_DIR = Path("AIFS") / "output" / "india" / "tp"
+AIFS_LOCAL_DIR = Path("AIFS") / "output" / "india" / "AIFS_single_v1p1" / "tp"
 
 
 def authenticate():
