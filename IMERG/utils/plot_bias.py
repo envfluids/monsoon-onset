@@ -68,7 +68,7 @@ def get_model_data(base, date_f):
     dateF = last_dt.strftime("%Y%m%d")
 
     NGCM_DATA_PATH = base / "NeuralGCM" / "output" / "india" / "tp" / fname
-    AIFS_DATA_PATH = base / "AIFS" / "output" / "india" / "tp" / fname
+    AIFS_DATA_PATH = base / "AIFS" / "output" / "india" / "AIFS_single_v2" / "tp" / fname
     df_ngcm = xr.open_dataset(NGCM_DATA_PATH)
     df_AIFS = xr.open_dataset(AIFS_DATA_PATH)
 
@@ -131,7 +131,7 @@ def plot_IMERG_model_bias(PATHS, ds_D, For_date_times):
     vars_cmaps = [
         ("tp_IMERG", "YlGnBu", "IMERG"),
         ("tp_ngcm_Bias", "seismic", "NGCM Bias"),
-        ("tp_AIFS_Bias", "seismic", "AIFS Bias"),
+        ("tp_AIFS_Bias", "seismic", "AIFSv2 Bias"),
     ]
 
     fig, axes = plt.subplots(1, 3, figsize=(12, 6))
@@ -206,7 +206,7 @@ def plot_IMERG_model_bias(PATHS, ds_D, For_date_times):
     vars_info = [
         ("tp_IMERG", "YlGnBu", "IMERG"),
         ("tp_ngcm", "YlGnBu", "NGCM"),
-        ("tp_AIFS", "YlGnBu", "AIFS"),
+        ("tp_AIFS", "YlGnBu", "AIFSv2"),
     ]
     masked_arrays = [ds_D[v].where(mask2d) for v, _, _ in vars_info]
 

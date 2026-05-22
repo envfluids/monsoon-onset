@@ -178,7 +178,7 @@ def plot_IFSS2S_Ensembles_and_Probabilities(df_IFS, df_AIFS, df_meta, folder_out
         )
         #ax2.plot(dates2, df_roll.mean(axis=1), color="blue", lw=1.5, label="IFS Ensemble Mean")
         ax2.plot(dates2, df_roll.mean(axis=1), color="blue", lw=1.5, label="IFS-S2S Ensemble Mean")
-        ax2.plot(df_roll_AIFS.index, df_roll_AIFS['rolling5'], color="crimson", lw=1.5, label="AIFS")
+        ax2.plot(df_roll_AIFS.index, df_roll_AIFS['rolling5'], color="crimson", lw=1.5, label="AIFS-single-v2")
 
         y2 = onset_thresh
         ax2.axhline(y2, color="black", linestyle="--", lw=1.5,
@@ -380,7 +380,7 @@ def plot_all(date_f):
     df_IFS = xr.open_dataset(IFS_DATA_PATH)
 
 
-    AIFS_DATA_PATH = base.parent / "AIFS" / "output" / "india" / "tp" / f"tp_2p0_{date_f}.nc"
+    AIFS_DATA_PATH = base.parent / "AIFS" / "output" / "india" / "AIFS_single_v2" / "tp" / f"tp_2p0_{date_f}.nc"
     df_AIFS = xr.open_dataset(AIFS_DATA_PATH)
 
     plot_IFSS2S_Ensembles_and_Probabilities(df_IFS, df_AIFS, df_meta, out_folder)

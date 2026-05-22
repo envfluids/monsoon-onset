@@ -154,7 +154,7 @@ def post_process_india(AIFS, date, model):
         logging.info("Processing SJI")
         AIFS_SJI = AIFS[["u_850", "v_850"]]
         AIFS_SJI = calculate_sji(AIFS_SJI)
-        AIFS_SJI.to_netcdf(f"{output_base_path}/sji/sji_{date}.nc")
+        AIFS_SJI.to_netcdf(SJI_OUT_PATH)
         AIFS_SJI.close()
 
     logging.info("Processing TCW")
