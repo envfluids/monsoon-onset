@@ -73,7 +73,7 @@ regions:
       - name: model_diagnostics
         kind: dated_directory
         local_root: "model_diagnostics/output/india"
-        drive_path: "{drive_root}/{date}"
+        drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"
 
       - name: IMD
@@ -177,4 +177,10 @@ regions:
         gcs_stage_dir: "blend/output_google/{region}/{date}"
         local_root: "blend/output_google/{region}"
         drive_path: "{drive_root}/{date}/blend_google"
+        date_regex: "\\d{8}T\\d{2}"
+
+      - name: model_diagnostics
+        kind: dated_directory
+        local_root: "model_diagnostics/output/ethiopia"
+        drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"
