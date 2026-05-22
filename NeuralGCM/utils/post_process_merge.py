@@ -71,12 +71,15 @@ def post_process_ethiopia(ds, date):
         )
         .sel(lat=slice(1, 16), lon=slice(30, 51), number=slice(1, 25))
     )
+    first_step = xr.zeros_like(ds.isel(step=0))
+    ds = xr.concat([first_step, ds], dim='step')
     if "step" in ds.coords:
         ds = ds.rename({"step": "prediction_timedelta"})
     ds["valid_time"] = ds["time"].values[0] + ds["prediction_timedelta"].astype(
         "timedelta64[h]"
     )
     ds = ds.swap_dims({"prediction_timedelta": "valid_time"})
+    ds = ds.diff("valid_time")
     ds = ds.resample(valid_time="1D").sum()
     ds["valid_time"] = np.arange(len(ds["valid_time"]))
     ds = ds.rename({"valid_time": "day"})
@@ -85,6 +88,7 @@ def post_process_ethiopia(ds, date):
 
     ds.to_netcdf(out_dir_tp / f"tp_2p8_{date}.nc")
     logging.info(f"Saved tp for Ethiopia to {out_dir_tp / f'tp_2p8_{date}.nc'}")
+
     return
 
 
@@ -158,7 +162,7 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    raw_dir = BASE / "raw" / "output" / date
+    raw_dir = BASE / "output" / "raw" / date
 
     fcsts = raw_dir.glob("*.zarr")
     ds = xr.open_mfdataset(fcsts, engine="zarr", preprocess=preprocess)

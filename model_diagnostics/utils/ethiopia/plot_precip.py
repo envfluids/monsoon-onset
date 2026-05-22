@@ -88,8 +88,14 @@ def _weekly_mean(da: xr.DataArray, day_start: int, day_end: int) -> np.ndarray:
 
 # ── PLOT ──────────────────────────────────────────────────────────────────────
 
-def _make_figure(aifs_path: Path, ens_path: Path, init_date: np.datetime64,
-                 date: str, save_path: Path):
+def _make_figure(
+    aifs_path: Path,
+    ens_path: Path,
+    init_date: np.datetime64,
+    date: str,
+    save_path: Path,
+    model_labels: tuple[str, str],
+):
     aifs_da = _load_tp(aifs_path)
     ens_da = _load_tp(ens_path)
 
@@ -99,7 +105,7 @@ def _make_figure(aifs_path: Path, ens_path: Path, init_date: np.datetime64,
 
     cmap = _get_precip_cmap()
     week_labels = list(WEEKS.keys())
-    models = ["AIFS", "AIFS-ENS (mean)"]
+    models = list(model_labels)
     das = [aifs_da, ens_da]
 
     fig, axes = plt.subplots(
@@ -146,7 +152,15 @@ def _make_figure(aifs_path: Path, ens_path: Path, init_date: np.datetime64,
 
 # ── PUBLIC API ────────────────────────────────────────────────────────────────
 
-def plot_precip(base: Path, date: str, model: str = None):
+def plot_precip(
+    base: Path,
+    date: str,
+    deterministic_model: str = "AIFS_single_v1p1",
+    ensemble_model: str = "AIFS_ENS_v1",
+    deterministic_input: Path | None = None,
+    ensemble_input: Path | None = None,
+    output_dir: Path | None = None,
+):
     """
     Called by model_diagnostics/utils/main.py.
 
@@ -154,12 +168,40 @@ def plot_precip(base: Path, date: str, model: str = None):
     ----------
     base  : repo root (monsoon-onset/), passed in from main.py
     date  : YYYYMMDDTHH init date string
-    model : "AIFS" or "AIFS_ENS" — accepted for API parity but both
-            models are always plotted together (one row each)
+    deterministic_model / ensemble_model : exact configured model names.
     """
-    aifs_nc = base / "AIFS" / "output" / "ethiopia" / "AIFS" / "tp" / f"tp_0p25_{date}.nc"
-    ens_nc  = base / "AIFS" / "output" / "ethiopia" / "AIFS_ENS" / "tp" / f"tp_0p25_{date}.nc"
-    out_dir = base / "model_diagnostics" / "output" / "ethiopia" / date
+    aifs_nc = (
+        Path(deterministic_input)
+        if deterministic_input
+        else base
+        / "AIFS"
+        / "output"
+        / "ethiopia"
+        / deterministic_model
+        / "tp"
+        / f"tp_0p25_{date}.nc"
+    )
+    ens_nc = (
+        Path(ensemble_input)
+        if ensemble_input
+        else base
+        / "AIFS"
+        / "output"
+        / "ethiopia"
+        / ensemble_model
+        / "tp"
+        / f"tp_0p25_{date}.nc"
+    )
+    out_dir = (
+        Path(output_dir)
+        if output_dir
+        else base
+        / "model_diagnostics"
+        / "output"
+        / "ethiopia"
+        / date
+        / f"{deterministic_model}_{ensemble_model}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     for p in (aifs_nc, ens_nc):
@@ -169,4 +211,11 @@ def plot_precip(base: Path, date: str, model: str = None):
 
     init_date = _parse_init_date(date)
     save_path = out_dir / f"precip_forecast_{date}.png"
-    _make_figure(aifs_nc, ens_nc, init_date, date, save_path)
+    _make_figure(
+        aifs_nc,
+        ens_nc,
+        init_date,
+        date,
+        save_path,
+        (deterministic_model, f"{ensemble_model} (mean)"),
+    )

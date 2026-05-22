@@ -1,12 +1,16 @@
 import argparse
 import datetime
+import json
 import logging
 import time
 from pathlib import Path
 
 import requests
 from ecmwf.opendata import Client as OpendataClient
+import earthkit.data as ekd
 from tqdm import tqdm
+import numpy as np
+import xarray as xr
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,17 +23,116 @@ ECMWF_BASE_URL = "https://data.ecmwf.int/forecasts/"
 GOOGLE_BASE_URL = "https://storage.googleapis.com/ecmwf-open-data/"
 
 DATE_SOURCE = "aws"
-STREAMS = ["oper", "wave"]
 RETRYABLE_HTTP_STATUS = {429, 500, 502, 503, 504}
 
 BASE = Path(__file__).resolve().parent.parent
 
-FINAL_OUTPUT_DIR = BASE / "raw" / "ifs_ic" / "AIFS"
-GRIB_OUTPUT_DIR = BASE / "raw" / "ifs_ic" / "grib"
+REPO_ROOT = BASE.parent
+CONFIG_DIR = REPO_ROOT / "config"
+CONFIG_PATH = CONFIG_DIR / "models.json"
 
-FINAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+GRIB_OUTPUT_DIR = BASE / "ecmwf"
 GRIB_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
+SST_DIR = BASE / "ecmwf"
+SST_DIR.mkdir(parents=True, exist_ok=True)
+
+with open(CONFIG_PATH) as f:
+    CONFIG = json.load(f)
+
+def get_streams_deltas():
+    streams_dict = {}
+
+    download_mars = False
+    for model, model_config in CONFIG.items():
+        if model_config["ic_source"] == "ecmwf":
+            streams = model_config["ic_streams"]
+            for stream in streams:
+                if stream not in streams_dict:
+                    streams_dict[stream] = set([0])
+                streams_dict[stream].add(model_config["ic_timedelta"])
+        if model_config["PARAM_MARS"]:
+            download_mars = True
+
+    return streams_dict, download_mars
+
+
+def get_mars_retrieval(date, param):
+
+    request = {
+        "class": "od",
+        "date": date.strftime("%Y-%m-%d"),
+        "expver": "1",
+        "param": param,
+        "step": 0,
+        "stream": "oper",
+        "time": date.strftime("%H:%M:%S"),
+        "type": "fc",
+        "grid": "0.25/0.25",
+        "REPRES": "LL",
+    }
+
+    levtype = "sfc"
+    request["levtype"] = levtype
+
+    print(request)
+
+    return request
+
+def get_open_data(DATE, param):
+    # Get the data for the current date and the previous date
+    data_list = []
+    for date in [DATE - datetime.timedelta(hours=12), DATE]:
+        date_mars = date - datetime.timedelta(hours=24)
+        data = ekd.from_source("mars", request=get_mars_retrieval(date_mars, param))
+        data = data.to_xarray()
+        if "time" not in data.coords:
+            data = data.expand_dims("time")
+            data["time"] = [np.datetime64(date)]
+        if data.longitude.max().item() < 200:
+            data = data.assign_coords(longitude=data.longitude % 360)
+            data = data.sortby("longitude")
+
+        data_list.append(data)
+
+    ds = xr.concat(data_list, dim="time")
+
+    return ds
+
+def get_sst(date):
+    SST_DIR.mkdir(parents=True, exist_ok=True)
+    date_f = date.strftime("%Y%m%dT%H")
+    out_path = SST_DIR / f"sst_{date_f}.nc"
+    tmp_path = out_path.with_name(out_path.name + ".tmp")
+
+    if out_path.exists():
+        logging.info("SST file %s already exists. Skipping download.", out_path)
+        return out_path
+    param = CONFIG["gencast"]["PARAM_MARS"]
+    date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
+    sfc_mars = get_open_data(DATE=date, param=list(param.keys()))
+    sfc_mars = sfc_mars.rename(param)
+
+    for var in sfc_mars.data_vars:
+        sfc_mars[var] = sfc_mars[var].astype(np.float32)
+        sfc_mars[var].attrs.pop("_earthkit", None)
+
+    if tmp_path.exists():
+        tmp_path.unlink()
+
+    try:
+        sfc_mars.to_netcdf(tmp_path)
+        tmp_path.replace(out_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    if not out_path.exists():
+        raise RuntimeError(f"SST download did not create {out_path}")
+
+    logging.info("SST file saved to %s", out_path)
+    return out_path
 
 def check_new_data(date_str=None):
     now_utc = datetime.datetime.now(datetime.timezone.utc)
@@ -193,13 +296,14 @@ def get_data(date_str=None):
     date = check_new_data(date_str)
     downloaded_files = []
     if date:
-        date_prev = date - datetime.timedelta(hours=6)
-        date_minus_12h = date - datetime.timedelta(hours=12)
-        for s in STREAMS:
-            for d in [date_minus_12h, date_prev, date]:
-                download_status = download_file(get_urls(d, s))
+        streams_deltas = get_streams_deltas()
+        for stream, delta in streams_deltas:
+            for d in delta:
+                download_date = date - datetime.timedelta(hours=d)
+                download_status = download_file(get_urls(download_date, stream))
                 if download_status:
                     downloaded_files.append(download_status)
+        get_sst(date)
 
     if downloaded_files:
         date_formatted = date.strftime("%Y%m%dT%H")

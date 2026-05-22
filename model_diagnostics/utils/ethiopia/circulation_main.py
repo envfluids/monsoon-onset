@@ -165,7 +165,17 @@ def _base_fig():
 
 # ── FIGURE FUNCTIONS ───────────────────────────────────────────────────────────
 
-def _wind_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path, domain):
+def _wind_figure(
+    aifs_nc,
+    ens_nc,
+    level,
+    u_var,
+    v_var,
+    date_str,
+    save_path,
+    domain,
+    model_labels,
+):
     lon_min, lon_max = domain["lon"]
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
@@ -179,7 +189,7 @@ def _wind_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path, doma
 
     fig, axes = _base_fig()
     im = None
-    for row, (label, ds) in enumerate([("AIFS", aifs_ds), ("AIFS-ENS (mean)", ens_ds)]):
+    for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, ws = _weekly_wind(ds, u_var, v_var, d0, d1)
@@ -203,8 +213,18 @@ def _wind_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path, doma
     log.info(f"Saved: {save_path}")
 
 
-def _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path,
-                   domain, smooth_sigma=1.5):
+def _divcon_figure(
+    aifs_nc,
+    ens_nc,
+    level,
+    u_var,
+    v_var,
+    date_str,
+    save_path,
+    domain,
+    model_labels,
+    smooth_sigma=1.5,
+):
     lon_min, lon_max = domain["lon"]
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
@@ -216,7 +236,7 @@ def _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path,
 
     fig, axes = _base_fig()
     im = None
-    for row, (label, ds) in enumerate([("AIFS", aifs_ds), ("AIFS-ENS (mean)", ens_ds)]):
+    for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, _ = _weekly_wind(ds, u_var, v_var, d0, d1)
@@ -244,8 +264,14 @@ def _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var, date_str, save_path,
 
 # ── PUBLIC API ─────────────────────────────────────────────────────────────────
 
-def plot_circulation(base: Path, date: str, model: str = None,
-                     smooth: float = 1.5):
+def plot_circulation(
+    base: Path,
+    date: str,
+    deterministic_model: str = "AIFS_single_v1p1",
+    ensemble_model: str = "AIFS_ENS_v1",
+    output_dir: Path | None = None,
+    smooth: float = 1.5,
+):
     """
     Called by model_diagnostics/utils/main.py.
 
@@ -257,13 +283,21 @@ def plot_circulation(base: Path, date: str, model: str = None,
     ----------
     base   : repo root (monsoon-onset/), passed in from main.py
     date   : YYYYMMDDTHH init date string
-    model  : "AIFS" or "AIFS_ENS" — accepted for API compatibility but both
-             models are always plotted together (one row each)
+    deterministic_model / ensemble_model : exact configured model names.
     smooth : Gaussian sigma applied to u,v before divergence computation
     """
-    aifs_dir = base / "AIFS" / "raw" / "output" / "AIFS"
-    ens_dir  = base / "AIFS" / "raw" / "output" / "AIFS_ENS"
-    out_dir  = base / "model_diagnostics" / "output" / "ethiopia" / date
+    aifs_dir = base / "AIFS" / "output" / "raw" / deterministic_model
+    ens_dir = base / "AIFS" / "output" / "raw" / ensemble_model
+    out_dir = (
+        Path(output_dir)
+        if output_dir
+        else base
+        / "model_diagnostics"
+        / "output"
+        / "ethiopia"
+        / date
+        / f"{deterministic_model}_{ensemble_model}"
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
 
     aifs_nc = aifs_dir / f"init_{date}.nc"
@@ -281,6 +315,8 @@ def plot_circulation(base: Path, date: str, model: str = None,
         prefix = f"{domain_name}_" if domain_name != "ethiopia" else ""
         for level, u_var, v_var in WIND_LEVELS:
             _wind_figure(aifs_nc, ens_nc, level, u_var, v_var,
-                         date, out_dir / f"{prefix}wind_{level}_{date}.png", dom)
+                         date, out_dir / f"{prefix}wind_{level}_{date}.png", dom,
+                         (deterministic_model, f"{ensemble_model} (mean)"))
             _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var,
-                           date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom, smooth)
+                           date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
+                           (deterministic_model, f"{ensemble_model} (mean)"), smooth)

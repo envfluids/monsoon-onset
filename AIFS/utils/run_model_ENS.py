@@ -16,8 +16,9 @@ import torch
 import xarray as xr
 from anemoi.inference.outputs.printer import print_state
 from anemoi.inference.runners.simple import SimpleRunner
-from preprocess_ic import get_ic, postprocess_ens
+from preprocess_ic import get_ic
 from scipy.sparse import load_npz
+import json
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,6 +43,12 @@ TFM_N320_LATLON = load_npz(TFM_N320_LATLON_PATH)
 latitudes = np.linspace(90, -90, 721)
 longitudes = np.linspace(0, 359.75, 1440)
 
+REPO_ROOT = BASE.parent
+MODEL_CONFIG_PATH = REPO_ROOT / "config" / "models.json"
+with open(MODEL_CONFIG_PATH, "r") as f:
+    MODEL_CONFIG = json.load(f)
+
+WEIGHTS_DIR = BASE / "weights"
 
 class ZarrMirror:
     def __init__(self, source_root, target_root, max_workers):
@@ -357,6 +364,7 @@ def writer_loop(
 
 
 def run_model(
+    model_config,
     output_dir,
     n_members,
     date_f,
@@ -383,7 +391,7 @@ def run_model(
         logging.warning(f"Partial output file {filename} already exists. Removing it.")
         shutil.rmtree(filename)
 
-    input_state = postprocess_ens(get_ic(date))
+    input_state = get_ic(date, model_config)
     n_workers = min(ngpus, n_members)
     ctx = mp.get_context("spawn")
     task_queue = ctx.Queue()
@@ -507,12 +515,26 @@ def main():
         help="Date for the inference in YYYYMMDDTHH format",
         required=True,
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        required=True,
+        help="Model name to run (must be defined in model_config.json)",
+    )
     args = parser.parse_args()
     date_f = args.date
-    output_dir = BASE / "raw" / "output" / "AIFS_ENS"
+    model_name = args.model
+    model_config = MODEL_CONFIG.get(model_name)
+
+    if model_config is None:
+        logging.error(f"Model {model_name} not found in model_config.json")
+        raise ValueError(f"Model {model_name} not defined in model_config.json")
+    
+    output_dir = BASE / "output" / "raw" / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cpkt_path = BASE / "weights" / "aifs-ens-crps-1.0.ckpt"
+    cpkt_path = WEIGHTS_DIR / model_config["weights"]
+    logging.info(f"Using model weights: {cpkt_path}")
     logging.info(f"Running for: {date_f}")
     logging.info(f"Output directory: {output_dir}")
 
@@ -545,6 +567,7 @@ def main():
         logging.info(f"AIFS-ENS Zarr mirror target: {mirror_target}")
 
     final_filename = run_model(
+        model_config,
         output_dir,
         n_members,
         date_f,

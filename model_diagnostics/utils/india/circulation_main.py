@@ -1,6 +1,7 @@
 from .AIFS import plot_aifs
 from .NeuralGCM import plot_neuralgcm
 from .AIFS_SJI import plot_sji
+from pathlib import Path
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -10,10 +11,29 @@ logging.basicConfig(
     ),
 )
 
-def plot_circulation(base, date):
-    AIFS_path = base / "AIFS" / "raw" / "output" /"AIFS" / f"init_{date}.nc"
-    NGCM_path = base / "NeuralGCM" / "raw" / "output" / f"{date}"
-    output_dir = base / "model_diagnostics" / "output" / "india" / f"{date}" / "circulation_plots"
+def plot_circulation(
+    base,
+    date,
+    deterministic_model="AIFS_single_v1p1",
+    ensemble_model="NeuralGCM",
+    output_dir=None,
+):
+    AIFS_path = base / "AIFS" / "output" / "raw" / deterministic_model / f"init_{date}.nc"
+    if ensemble_model != "NeuralGCM":
+        logging.warning("India circulation diagnostics do not support %s.", ensemble_model)
+        return
+    NGCM_path = base / "NeuralGCM" / "output" / "raw" / f"{date}"
+    output_dir = (
+        Path(output_dir) / "circulation_plots"
+        if output_dir
+        else base
+        / "model_diagnostics"
+        / "output"
+        / "india"
+        / f"{date}"
+        / f"{deterministic_model}_{ensemble_model}"
+        / "circulation_plots"
+    )
     logging.info(f"AIFS path: {AIFS_path}")
     logging.info(f"NGCM path: {NGCM_path}")
     logging.info(f"Output directory: {output_dir}")

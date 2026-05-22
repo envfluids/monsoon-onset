@@ -11,7 +11,7 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 conda activate /net/scratch2/marchakitus/conda-envs/operational
-python ./preprocess.py --date $DATE_F
+python ./preprocess_ic.py --date $DATE_F
 
 conda deactivate
 conda activate /net/scratch2/marchakitus/conda-envs/neuralgcm
@@ -30,12 +30,5 @@ python ./post_process.py --date $DATE_F
 
 python ./post_process_merge.py --date $DATE_F
 
-set -euo pipefail
-python ./verify_completion.py --date $DATE_F
-
-
-cd ../../model_diagnostics/utils
-python ./main.py --date $DATE_F --region india
-
 cd ../../blend/utils
-python ./main.py --date $DATE_F
+python ./main.py --date $DATE_F --model NeuralGCM

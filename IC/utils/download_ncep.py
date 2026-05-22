@@ -1,11 +1,13 @@
 import requests
-import os
 import datetime
 from tqdm import tqdm  # Install with: pip install tqdm
 import logging
+from pathlib import Path
 
 # --- Configuration ---
-SAVE_DIR = "../raw/ncep_ic/download"  # Directory for downloaded files
+BASE = Path(__file__).resolve().parent.parent
+
+SAVE_DIR = BASE / "output" / "ncep"
 # BASE_URL_PATTERN = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.{date}/{cycle}/atmos/gdas.t{cycle}z.atmf000.nc"
 BASE_URL_PATTERN = "https://nomads.ncep.noaa.gov/pub/data/nccf/com/gfs/prod/gdas.{date}/{cycle}/atmos/gdas.t{cycle}z.pgrb2.0p25.f000"
 CYCLES_TO_CHECK = 6  # How many past 6-hour cycles to check
@@ -71,7 +73,7 @@ def get_latest_available_cycle(pattern, num_cycles_to_check, cycles, timeout):
         # Construct URL and Filename for this cycle
         url = pattern.format(date=date_str, cycle=cycle_str)
         filename = f"gdas_{date_str}T{cycle_str}.pgrb2"
-        potential_save_path = os.path.join(SAVE_DIR, filename)  # Use global SAVE_DIR
+        potential_save_path = SAVE_DIR / filename  # Use global SAVE_DIR
 
         logging.info(f"Checking for: {url}")
         try:
@@ -105,13 +107,13 @@ def get_cycle_for_date(pattern, date_str):
     cycle_part = check_dt.strftime("%H")
     url = pattern.format(date=date_part, cycle=cycle_part)
     filename = f"gdas_{date_part}T{cycle_part}.pgrb2"
-    save_path = os.path.join(SAVE_DIR, filename)
+    save_path = SAVE_DIR / filename
     return url, filename, save_path
 
 
 def check_local_file_exists(filepath):
     """Checks if a file exists locally."""
-    exists = os.path.exists(filepath)
+    exists = filepath.exists()
     logging.debug(f"Checking local file: {filepath} - Exists: {exists}")
     return exists
 
@@ -143,12 +145,12 @@ def download_file(url, save_path, filename, chunk_size, timeout):
                         bar.update(len(chunk))
 
         # Verify download size if possible
-        if total_size != 0 and os.path.getsize(save_path) != total_size:
+        if total_size != 0 and save_path.stat().st_size != total_size:
             logging.error(
-                f"Download incomplete: Expected {total_size} bytes, got {os.path.getsize(save_path)}"
+                f"Download incomplete: Expected {total_size} bytes, got {save_path.stat().st_size} bytes."
             )
             # Optionally remove incomplete file here
-            # os.remove(save_path)
+            save_path.unlink(missing_ok=True)
             return False  # Indicate failure
 
         logging.info(f"Download complete: {save_path}")
@@ -162,10 +164,10 @@ def download_file(url, save_path, filename, chunk_size, timeout):
         logging.error(f"An unexpected error occurred during download: {e}")
 
     # Clean up potentially incomplete file if any error occurred
-    if os.path.exists(save_path):
+    if save_path.exists():
         try:
             logging.info(f"Removing potentially incomplete file: {save_path}")
-            os.remove(save_path)
+            save_path.unlink()
         except OSError as oe:
             logging.error(f"Error removing incomplete file {save_path}: {oe}")
     return False  # Indicate failure
@@ -173,12 +175,12 @@ def download_file(url, save_path, filename, chunk_size, timeout):
 
 def ensure_directory_exists(dir_path):
     """Creates the directory if it doesn't exist."""
-    if not os.path.exists(dir_path):
+    if not dir_path.exists():
         logging.info(f"Creating directory: {dir_path}")
         try:
-            os.makedirs(
-                dir_path, exist_ok=True
-            )  # exist_ok=True handles race conditions
+            dir_path.mkdir(
+                parents=True, exist_ok=True
+            )
         except OSError as e:
             logging.error(f"Failed to create directory {dir_path}: {e}")
             return False
@@ -229,7 +231,7 @@ def get_data(date_str=None):
         )
         if success:
             logging.info("--- Check Complete (Downloaded Successfully) ---")
-            latest_time = latest_filename.split(".")[0].split("_")[1]
+            latest_time = str(latest_filename).split(".")[0].split("_")[1]
             return latest_time
         else:
             logging.error("Download failed.")

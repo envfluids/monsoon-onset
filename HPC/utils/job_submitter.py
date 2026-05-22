@@ -52,7 +52,7 @@ def build_command(cluster, label, script_path, log_dir, date_f):
             f"--job-name={job_name}",
             f"--output={log_dir / (job_name + '.o%j')}",
             f"--error={log_dir / (job_name + '.e%j')}",
-            f"--export=DATE_F={date_f}",
+            f"--export=DATE_F={date_f},MODEL={label}",
             str(script_path),
         ]
 

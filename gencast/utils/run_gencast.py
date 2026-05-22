@@ -62,7 +62,7 @@ if DEBUG:
     N_DAYS = 2
     DEBUG_SUFFIX = "__DEBUG"
 else:
-    N_MEMBERS = 24
+    N_MEMBERS = 32
     N_DAYS = 50
 
 N_STEPS = N_DAYS * 2  # 2 steps per day (12h interval)

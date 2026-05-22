@@ -132,16 +132,15 @@ def process_tp_0p25(ds, mask_path):
     return ds
 
 
-def post_process_india(AIFS, date, model="AIFS"):
-    if model != "AIFS":
-        logging.info("post_process_india currently only configured for model=AIFS; got %s — skipping", model)
-        return
+def post_process_india(AIFS, date, model):
+
     if len(AIFS.step) > 164:
         logging.info("DS has more than 164 steps "
                      "reformatting to match previous forecast length")
         AIFS = AIFS.isel(step=slice(0, 164))
 
-    output_base_path = "../output/india"
+    output_base_path = f"../output/india/{model}"
+    os.makedirs(output_base_path, exist_ok=True)
     for subdir in ("sji", "tcw", "tp"):
         os.makedirs(os.path.join(output_base_path, subdir), exist_ok=True)
 
@@ -250,10 +249,9 @@ def post_process_ethiopia(ds, date, model):
     if not os.path.exists(output_base_path):
         os.makedirs(output_base_path)
 
-    if model == "AIFS":
-        output_base_path = f"{output_base_path}/AIFS"
-    if model == "AIFS_ENS":
-        output_base_path = f"{output_base_path}/AIFS_ENS"
+
+    output_base_path = f"{output_base_path}/{model}"
+
     if not os.path.exists(output_base_path):
         os.makedirs(output_base_path)
 
@@ -277,11 +275,25 @@ REGION_HANDLERS = {
 
 
 def _load_model_dataset(model, date):
-    if model == "AIFS":
-        return xr.open_dataset(f"../raw/output/AIFS/init_{date}.nc")
-    if model == "AIFS_ENS":
-        return xr.open_zarr(f"../raw/output/AIFS_ENS/init_{date}.zarr", chunks={})
-    raise ValueError(f"Unknown model: {model!r}")
+
+    base = f"../output/raw/{model}/init_{date}"
+    if "ENS" in model:
+        suffix = ".zarr"
+    else:        
+        suffix = ".nc"
+    
+    f_path = base + suffix
+    if not os.path.exists(f_path):
+        raise FileNotFoundError(f"Model output file not found: {f_path}")
+
+    logging.info(f"Loading model output from {f_path}")
+    if suffix == ".zarr":
+        ds = xr.open_zarr(f_path, chunks = {})
+    else:
+        ds = xr.open_dataset(f_path)
+    
+    return ds
+
 
 
 def main():
@@ -297,7 +309,6 @@ def main():
     parser.add_argument(
         "--model",
         type=str,
-        default="AIFS",
         help="Model output to process",
     )
     parser.add_argument(

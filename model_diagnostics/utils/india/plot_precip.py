@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import warnings
 import geopandas as gpd
+from pathlib import Path
 from shapely.geometry import box
 
 from .MoronRobertson_F import onset_agro_bis
@@ -156,7 +157,16 @@ def NGCM_Prob_Calc_first(df_ngcm, lat, lon, df):
     return df_melted
 
 
-def plot_precip(base, date, source=None):
+def plot_precip(
+    base,
+    date,
+    source=None,
+    deterministic_model="AIFS_single_v1p1",
+    ensemble_model="NeuralGCM",
+    deterministic_input=None,
+    ensemble_input=None,
+    output_dir=None,
+):
     logging.info("Starting precipitation plotting...")
     region = "india"
     onsets_2024_path = base / "blend" / "data" / "support" / "onsets_2024.csv"
@@ -164,13 +174,40 @@ def plot_precip(base, date, source=None):
     df_meta = df_onset_dates[["lat", "lon", "onset_thresh"]].copy()
     df_meta = df_meta.drop_duplicates(subset=["lat", "lon"])
 
-    aifs_tp_file = base / "AIFS" / "output" / region / "tp" / f"tp_2p0_{date}.nc"
+    aifs_tp_file = (
+        Path(deterministic_input)
+        if deterministic_input
+        else base
+        / "AIFS"
+        / "output"
+        / region
+        / deterministic_model
+        / "tp"
+        / f"tp_2p0_{date}.nc"
+    )
     if source == "google":
         ngcm_precip_file = base / "NeuralGCM_google" / "output" / "tp" / f"tp_{date}.nc"
         path_out = base / "blend" / "output_google" / date / "precip_plots"
     else:
-        ngcm_precip_file = base / "NeuralGCM" / "output" / region / "tp" / f"tp_2p0_{date}.nc"
-        path_out = base / "model_diagnostics" / "output" / region / date / "precip_plots"
+        if ensemble_model != "NeuralGCM":
+            logging.warning("India precipitation diagnostics do not support %s.", ensemble_model)
+            return
+        ngcm_precip_file = (
+            Path(ensemble_input)
+            if ensemble_input
+            else base / "NeuralGCM" / "output" / region / "tp" / f"tp_2p0_{date}.nc"
+        )
+        path_out = (
+            Path(output_dir) / "precip_plots"
+            if output_dir
+            else base
+            / "model_diagnostics"
+            / "output"
+            / region
+            / date
+            / f"{deterministic_model}_{ensemble_model}"
+            / "precip_plots"
+        )
 
     df_ngcm = xr.open_dataset(ngcm_precip_file)
     df_AIFS = xr.open_dataset(aifs_tp_file)

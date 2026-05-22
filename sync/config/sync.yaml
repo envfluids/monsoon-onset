@@ -100,6 +100,18 @@ regions:
         patterns:
           - "AIFS_ENS/tp/tp_0p25_{date}.nc"
 
+      - name: NeuralGCM
+        kind: files
+        gcs_prefix: "output/neuralgcm/{date}/"
+        gcs_stage_dir: "neuralgcm/output/ethiopia/tp"
+        local_root: "NeuralGCM/output/ethiopia"
+        drive_path: "{drive_root}/{date}/NeuralGCM"
+        date_regex: "\\d{8}T\\d{2}"
+        ignore_patterns:
+          - ".nfs*"
+        patterns:
+          - "tp/tp_2p8_{date}.nc"
+
       - name: GenCast
         kind: files
         gcs_prefix: "output/gencast/{date}/"

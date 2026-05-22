@@ -349,7 +349,7 @@ def main():
 
     # Define directories and file paths
     base_dir = "../raw/ncep_ic"  # Define base directory for clarity
-    input_dir = os.path.join(base_dir, "download")
+    input_dir = "../../IC/output/ncep"
     output_dir = os.path.join(base_dir, "processed")
 
     # Create output directory if it doesn't exist

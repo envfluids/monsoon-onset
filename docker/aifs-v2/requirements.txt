@@ -1,0 +1,14 @@
+# AIFS inference
+anemoi-inference[huggingface]==0.8.3
+anemoi-models==0.9.3
+anemoi-utils==0.4.35.post3
+
+# Data processing
+xarray
+scipy
+netcdf4
+h5netcdf
+gcsfs
+google-cloud-storage
+zarr
+earthkit-data

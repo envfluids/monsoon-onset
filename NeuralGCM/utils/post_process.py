@@ -91,7 +91,7 @@ def process_member(member, date):
     os.makedirs(f"{output_base}/tp", exist_ok=True)
     os.makedirs(f"{output_base}/tcw", exist_ok=True)
     ds = (
-        xr.open_zarr(f"../raw/output/{date}/member_{member}.zarr")
+        xr.open_zarr(f"../output/raw/{date}/member_{member}.zarr")
         .rename(
             {
                 "precipitation_cumulative_mean": "tp",
@@ -168,7 +168,7 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    n_members = len(glob.glob(f"../raw/output/{date}/member_*.zarr"))
+    n_members = len(glob.glob(f"../output/raw/{date}/member_*.zarr"))
     futures = []
     with ProcessPoolExecutor(max_workers=n_members) as executor:
         logging.info(

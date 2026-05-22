@@ -17,7 +17,7 @@ warnings.filterwarnings(
     "ignore", message="Consolidated metadata is currently not part.*"
 )
 
-output_path = "../raw/output"
+output_path = "../output/raw"
 N_MEMBERS = 30
 
 logging.basicConfig(

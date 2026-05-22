@@ -17,8 +17,7 @@ logging.basicConfig(
 BASE = Path(__file__).parent.parent
 REPO_ROOT = BASE.parent
 
-GRIB_OUTPUT_DIR = REPO_ROOT / "AIFS" / "raw" / "ifs_ic" / "grib"
-SST_DIR = BASE / "raw" / "sst_ic"
+IC_DIR = REPO_ROOT / "IC" / "output" / "ecmwf"
 LSM_PATH = BASE / "data" / "gencast_lsm_mask.nc"
 LSM_MASK = xr.open_dataarray(LSM_PATH, engine="h5netcdf")
 
@@ -26,7 +25,7 @@ LSM_MASK = xr.open_dataarray(LSM_PATH, engine="h5netcdf")
 def get_grib_path(date):
     date_f = date.strftime("%Y%m%d%H%M%S")
 
-    grib_path = GRIB_OUTPUT_DIR / f"{date_f}-0h-oper-fc.grib2"
+    grib_path = IC_DIR / f"{date_f}-0h-oper-fc.grib2"
     if not grib_path.exists():
         logging.error(f"GRIB file {grib_path} does not exist.")
         raise FileNotFoundError(f"GRIB file {grib_path} not found.")
@@ -36,7 +35,7 @@ def get_grib_path(date):
 
 def get_sst(date):
     date_f = date.strftime("%Y%m%dT%H")
-    sst_path = SST_DIR / f"sst_{date_f}.nc"
+    sst_path = IC_DIR / f"sst_{date_f}.nc"
     if not sst_path.exists():
         logging.error(f"SST file {sst_path} does not exist.")
         raise FileNotFoundError(f"SST file {sst_path} not found.")
