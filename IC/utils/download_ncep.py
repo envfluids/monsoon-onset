@@ -3,6 +3,7 @@ import datetime
 from tqdm import tqdm  # Install with: pip install tqdm
 import logging
 from pathlib import Path
+import argparse
 
 # --- Configuration ---
 BASE = Path(__file__).resolve().parent.parent
@@ -237,6 +238,20 @@ def get_data(date_str=None):
             logging.error("Download failed.")
             logging.info("--- Check Complete (Download Failed) ---")
 
+def main():
+    parser = argparse.ArgumentParser(
+        description="Download initial conditions for IFS model"
+    )
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="Date to download in format YYYYMMDDTHH. Defaults to latest.",
+    )
+    args = parser.parse_args()
+
+    date_str = args.date
+
+    get_data(date_str)
 
 if __name__ == "__main__":
-    get_data()
+    main()

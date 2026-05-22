@@ -31,10 +31,10 @@ REPO_ROOT = BASE.parent
 CONFIG_DIR = REPO_ROOT / "config"
 CONFIG_PATH = CONFIG_DIR / "models.json"
 
-GRIB_OUTPUT_DIR = BASE / "ecmwf"
+GRIB_OUTPUT_DIR = BASE / "output" / "ecmwf"
 GRIB_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-SST_DIR = BASE / "ecmwf"
+SST_DIR = BASE / "output" / "ecmwf"
 SST_DIR.mkdir(parents=True, exist_ok=True)
 
 with open(CONFIG_PATH) as f:
@@ -296,14 +296,15 @@ def get_data(date_str=None):
     date = check_new_data(date_str)
     downloaded_files = []
     if date:
-        streams_deltas = get_streams_deltas()
-        for stream, delta in streams_deltas:
+        streams_deltas, download_mars = get_streams_deltas()
+        for stream, delta in streams_deltas.items():
             for d in delta:
-                download_date = date - datetime.timedelta(hours=d)
+                download_date = date - datetime.timedelta(hours=int(d))
                 download_status = download_file(get_urls(download_date, stream))
                 if download_status:
                     downloaded_files.append(download_status)
-        get_sst(date)
+        if download_mars:
+            get_sst(date)
 
     if downloaded_files:
         date_formatted = date.strftime("%Y%m%dT%H")
