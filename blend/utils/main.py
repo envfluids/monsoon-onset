@@ -151,6 +151,29 @@ BLENDS: tuple[BlendConfig, ...] = (
         diagnostic_plots=True,
     ),
     BlendConfig(
+        region="ethiopia",
+        name="AIFS_single_v2_AIFS_ENS_v2",
+        deterministic_model="AIFS_single_v2",
+        ensemble_model="AIFS_ENS_v2",
+        script=REPO_ROOT / "blend" / "utils" / "ethiopia2026" / "run_pipeline.py",
+        inputs=(
+            ForecastInput(
+                model="AIFS_single_v2",
+                role="deterministic",
+                path_template="AIFS/output/ethiopia/AIFS_single_v2/tp/tp_0p25_{date}.nc",
+            ),
+            ForecastInput(
+                model="AIFS_ENS_v2",
+                role="ensemble",
+                path_template="AIFS/output/ethiopia/AIFS_ENS_v2/tp/tp_0p25_{date}.nc",
+            ),
+        ),
+        output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_AIFS_ENS_v2",
+        # Diagnostics-only: no v2 blend coefficients are available.
+        implemented=False,
+        diagnostic_plots=True,
+    ),
+    BlendConfig(
         region="india",
         name="AIFS_single_v1p1_NCUM",
         deterministic_model="AIFS_single_v1p1",
@@ -212,6 +235,46 @@ BLENDS: tuple[BlendConfig, ...] = (
                 path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
             ),
         ),
+        diagnostic_plots=True,
+    ),
+    BlendConfig(
+        region="india",
+        name="AIFS_single_v2_NeuralGCM",
+        deterministic_model="AIFS_single_v2",
+        ensemble_model="NeuralGCM",
+        script=REPO_ROOT
+        / "blend"
+        / "utils"
+        / "india2026"
+        / "AIFS_NGCM_blend"
+        / "main.py",
+        inputs=(
+            ForecastInput(
+                model="AIFS_single_v2",
+                role="deterministic",
+                path_template="AIFS/output/india/AIFS_single_v2/tp/tp_0p25_{date}.nc",
+            ),
+            ForecastInput(
+                model="NeuralGCM",
+                role="ensemble",
+                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+            ),
+        ),
+        output_dir_template="blend/output/india2026/{date}/AIFS_single_v2_NeuralGCM",
+        diagnostic_inputs=(
+            ForecastInput(
+                model="AIFS_single_v2",
+                role="deterministic",
+                path_template="AIFS/output/india/AIFS_single_v2/tp/tp_2p0_{date}.nc",
+            ),
+            ForecastInput(
+                model="NeuralGCM",
+                role="ensemble",
+                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+            ),
+        ),
+        # Diagnostics-only: no v2 blend coefficients are available.
+        implemented=False,
         diagnostic_plots=True,
     ),
 )
@@ -352,7 +415,11 @@ def run_blend(
     debug: bool,
     skip_to: int | None,
 ) -> bool:
-    missing = missing_diagnostic_inputs(blend, date)
+    if not blend.implemented:
+        logger.info("Blend %s/%s is disabled; no blend coefficients are configured.", blend.region, blend.name)
+        return False
+
+    missing = missing_inputs(blend, date)
     if missing:
         logger.info(
             "Blend %s/%s is not ready for %s. Missing: %s",
@@ -361,10 +428,6 @@ def run_blend(
             date,
             ", ".join(f"{model}={path}" for model, path in missing.items()),
         )
-        return False
-
-    if not blend.implemented:
-        logger.info("Blend %s/%s is configured but not implemented.", blend.region, blend.name)
         return False
 
     output_dir = blend.output_dir(date)
@@ -404,7 +467,7 @@ def run_diagnostics(
     if not blend.diagnostic_plots:
         return False
 
-    missing = missing_inputs(blend, date)
+    missing = missing_diagnostic_inputs(blend, date)
     if missing:
         logger.info(
             "Diagnostics %s/%s are not ready for %s. Missing: %s",
