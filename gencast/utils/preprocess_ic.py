@@ -87,7 +87,7 @@ def get_ic(date):
         "w": "vertical_velocity",
         "q": "specific_humidity",
     }
-    LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50]
+    LEVELS = [1000, 925, 850, 700, 600, 500, 400, 300, 250, 200, 150, 100, 50][::-1]
 
     sfc = get_open_data(DATE=date, param=list(PARAM_SFC.keys()))
     sfc = sfc.rename(PARAM_SFC)
