@@ -174,6 +174,29 @@ BLENDS: tuple[BlendConfig, ...] = (
         diagnostic_plots=True,
     ),
     BlendConfig(
+        region="ethiopia",
+        name="AIFS_single_v2_NeuralGCM",
+        deterministic_model="AIFS_single_v2",
+        ensemble_model="NeuralGCM",
+        script=REPO_ROOT / "blend" / "utils" / "ethiopia2026" / "run_pipeline.py",
+        inputs=(
+            ForecastInput(
+                model="AIFS_single_v2",
+                role="deterministic",
+                path_template="AIFS/output/ethiopia/AIFS_single_v2/tp/tp_0p25_{date}.nc",
+            ),
+            ForecastInput(
+                model="NeuralGCM",
+                role="ensemble",
+                path_template="NeuralGCM/output/ethiopia/tp/tp_2p8_{date}.nc",
+            ),
+        ),
+        output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_NeuralGCM",
+        # Diagnostics-only: no v2 blend coefficients are available.
+        implemented=True,
+        diagnostic_plots=False,
+    ),
+    BlendConfig(
         region="india",
         name="AIFS_single_v1p1_NCUM",
         deterministic_model="AIFS_single_v1p1",
