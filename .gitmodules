@@ -1,0 +1,3 @@
+[submodule "blend/utils/ethiopia2026/operational"]
+	path = blend/utils/ethiopia2026/operational
+	url = git@github.com:amarchakitus/onsetblending2026.git
