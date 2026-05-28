@@ -48,6 +48,20 @@ variable "external_api_secrets" {
   sensitive   = true
 }
 
+variable "google_drive_credentials_json" {
+  description = "Google Drive OAuth credentials JSON for the sync job. Prefer passing from sync/.auth/credentials.json via a gitignored tfvars file."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
+variable "google_drive_token_json" {
+  description = "Google Drive OAuth token JSON for the sync job. Prefer passing from sync/.auth/token.json via a gitignored tfvars file."
+  type        = string
+  default     = ""
+  sensitive   = true
+}
+
 variable "gencast_tpu_zone" {
   description = "Zone for GenCast TPU v5p jobs. Defaults to us-central1-a; set to us-east5-a if TPU capacity is moved east."
   type        = string
@@ -75,6 +89,14 @@ locals {
   environment        = "dev"
   gencast_tpu_region = regex("^(.+)-[a-z]$", var.gencast_tpu_zone)[0]
   disabled_model_ids = toset([for model in var.disabled_models : replace(model, "-", "_")])
+  drive_api_secrets = {
+    for name, value in {
+      GOOGLE_DRIVE_CREDENTIALS_JSON = var.google_drive_credentials_json
+      GOOGLE_DRIVE_TOKEN_JSON       = var.google_drive_token_json
+    } : name => value
+    if value != ""
+  }
+  external_api_secrets = merge(var.external_api_secrets, local.drive_api_secrets)
   model_sync_rule_exclusions = {
     AIFS_ENS_v2 = {
       ethiopia = ["AIFS_ENS_v2"]
@@ -201,7 +223,7 @@ module "compute" {
   service_account_email = module.storage.pipeline_service_account_email
   service_account_id    = module.storage.pipeline_service_account_name
 
-  external_api_secrets = var.external_api_secrets
+  external_api_secrets = local.external_api_secrets
 
   # Dev: use spot GPUs for model Batch jobs
   use_preemptible_gpu = true

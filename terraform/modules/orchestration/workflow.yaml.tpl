@@ -355,6 +355,7 @@ main:
                   - prepare_gencast_dispatch:
                       assign:
                         - gencast_run_id: $${"gencast-" + text.replace_all(gencast_action.date, "T", "-")}
+                        - gencast_wait_seconds: 0
                   - run_gencast_dispatch:
                       call: googleapis.run.v2.projects.locations.jobs.run
                       args:
@@ -413,6 +414,30 @@ main:
                                     value: "${tpu_config.process_count}"
                                   - name: GENCAST_ENSEMBLE_MEMBERS
                                     value: "${tpu_config.global_device_count}"
+                        connector_params:
+                          skip_polling: true
+                  - poll_gencast_state:
+                      call: pipeline_state
+                      args:
+                        base_url: $${pipeline_state_url}
+                        date: $${gencast_action.date}
+                      result: gencast_poll_state
+                  - check_gencast_complete:
+                      switch:
+                        - condition: $${gencast_poll_state.models.gencast.complete}
+                          next: gencast_done
+                        - condition: $${gencast_wait_seconds >= 86400}
+                          raise: '$${"gencast dispatch did not complete within workflow wait budget: date=" + gencast_action.date + " state=" + json.encode_to_string(gencast_poll_state.models.gencast)}'
+                        - condition: true
+                          next: sleep_gencast
+                  - sleep_gencast:
+                      call: sys.sleep
+                      args:
+                        seconds: 300
+                  - increment_gencast_wait:
+                      assign:
+                        - gencast_wait_seconds: $${gencast_wait_seconds + 300}
+                      next: poll_gencast_state
                   - gencast_done:
                       assign:
                         - gencast_branch_done: true
