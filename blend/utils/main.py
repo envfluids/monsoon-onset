@@ -193,7 +193,7 @@ BLENDS: tuple[BlendConfig, ...] = (
         ),
         output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_NeuralGCM",
         # Diagnostics-only: no v2 blend coefficients are available.
-        implemented=True,
+        implemented=False,
         diagnostic_plots=False,
     ),
     BlendConfig(
