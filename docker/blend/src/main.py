@@ -34,13 +34,14 @@ logger = logging.getLogger(__name__)
 
 REPO_ROOT   = Path("/app")
 BLEND_UTILS = REPO_ROOT / "blend" / "utils"
+REGIONS = json.loads(os.environ.get("REGIONS", "{}"))
 
 LOCAL_BLEND_OUT_BASE = REPO_ROOT / "blend" / "output"
 LOCAL_BLEND_DATA = REPO_ROOT / "blend" / "data"
 
 BLEND_MODEL_TO_PIPELINE_MODEL = {
-    "AIFS": "aifs",
-    "AIFS_ENS": "aifs_ens",
+    "AIFS_SINGLE_V2": "AIFS_single_v2",
+    "AIFS_ENS_V2": "AIFS_ENS_v2",
     "GENCAST": "gencast",
     "NCUM": "ncum",
     "NGCM": "neuralgcm",
@@ -119,7 +120,13 @@ def main(date, region, common_bucket, region_buckets):
 
 
 def _select_blends(region: str) -> list[BlendConfig]:
-    blends = [blend for blend in BLENDS if blend.region == region]
+    configured_models = set(REGIONS.get(region, {}).get("models", []))
+    blends = [
+        blend for blend in BLENDS
+        if blend.region == region
+        and blend.implemented
+        and (not configured_models or blend.models().issubset(configured_models))
+    ]
     if not blends:
         raise click.ClickException(f"Blend is not configured for region {region!r}")
     return blends
@@ -165,7 +172,7 @@ def _download_inputs(
 
 
 def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
-    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model.lower())
+    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model)
 
 
 def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:

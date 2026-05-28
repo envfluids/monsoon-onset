@@ -45,7 +45,7 @@ variable "regions" {
 variable "full_field_models" {
   description = "Models whose full-field raw forecast should be uploaded to the common bucket"
   type        = set(string)
-  default     = ["aifs", "aifs_ens"]
+  default     = ["AIFS_single_v2", "AIFS_ENS_v2"]
 }
 
 # -----------------------------------------------------------------------------

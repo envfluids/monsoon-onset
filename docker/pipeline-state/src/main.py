@@ -18,8 +18,8 @@ Response shape (sketch — actual contents depend on the configured regions):
       "ncep":  {"date": "20260513T00", "present": true}
     },
     "models": {
-      "aifs":     {"complete": true,  "regions": {"india":{"present":true},"ethiopia":{"present":true}}},
-      "aifs_ens": {"complete": false, "regions": {"ethiopia":{"present":false}}},
+      "AIFS_single_v2": {"complete": true, "regions": {"india":{"present":true},"ethiopia":{"present":true}}},
+      "AIFS_ENS_v2":    {"complete": false, "regions": {"ethiopia":{"present":false}}},
       "neuralgcm":{"complete": true,  "regions": {"india":{"present":true}}}
     },
     "per_region": {
@@ -29,7 +29,7 @@ Response shape (sketch — actual contents depend on the configured regions):
     },
     "actions": {
       "ic_to_download": [{"source":"ecmwf","date":"20260513T00"}],
-      "models_to_run": [{"model":"aifs","date":"20260513T00","regions":["india"]}],
+      "models_to_run": [{"model":"AIFS_single_v2","date":"20260513T00","regions":["india"]}],
       "regions_to_blend": [{"region":"india","date":"20260513T00"}],
       "regions_to_sync": [{"region":"india","date":"20260513T00"}],
       "blocked": [...]
@@ -97,15 +97,15 @@ REGION_MODELS = json.loads(os.environ.get("REGION_MODELS", "{}"))
 
 # Which IC source each model consumes
 MODEL_IC_SOURCE = {
-    "aifs":      "ecmwf",
-    "aifs_ens":  "ecmwf",
+    "AIFS_single_v2": "ecmwf",
+    "AIFS_ENS_v2":    "ecmwf",
     "gencast":   "ecmwf",
     "neuralgcm": "ncep",
 }
 
 BLEND_MODEL_TO_PIPELINE_MODEL = {
-    "AIFS": "aifs",
-    "AIFS_ENS": "aifs_ens",
+    "AIFS_SINGLE_V2": "AIFS_single_v2",
+    "AIFS_ENS_V2": "AIFS_ENS_v2",
     "GENCAST": "gencast",
     "NCUM": "ncum",
     "NGCM": "neuralgcm",
@@ -267,8 +267,18 @@ def read_gcs_text(bucket: str, path: str) -> str:
 
 def ic_ecmwf_paths(date: str) -> list[str]:
     base = datetime.strptime(date, "%Y%m%dT%H")
-    dates = [base - timedelta(hours=12), base - timedelta(hours=6), base]
-    filenames = [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+    requirements: dict[str, set[int]] = {}
+    models = _models_in_use()
+    if {"AIFS_single_v2", "AIFS_ENS_v2"} & models:
+        requirements.setdefault("oper", set()).update({0, 6})
+        requirements.setdefault("wave", set()).update({0, 6})
+    if "gencast" in models:
+        requirements.setdefault("oper", set()).update({0, 12})
+    filenames = []
+    for stream, deltas in requirements.items():
+        for delta in sorted(deltas, reverse=True):
+            target = base - timedelta(hours=delta)
+            filenames.append(target.strftime(f"%Y%m%d%H0000-0h-{stream}-fc.grib2"))
     return [f"ic/ecmwf/{date}/grib/{f}" for f in filenames]
 
 
@@ -290,12 +300,12 @@ def model_region_outputs_present(model: str, region: str, date: str) -> bool:
     if not bucket:
         return False
 
-    if model == "aifs" and region == "india":
-        return gcs_object_exists(bucket, f"output/aifs/{date}/tp/tp_2p0_{date}.nc")
-    if model == "aifs" and region == "ethiopia":
-        return gcs_prefix_has_objects(bucket, f"output/aifs/{date}/AIFS/")
-    if model == "aifs_ens" and region == "ethiopia":
-        return gcs_prefix_has_objects(bucket, f"output/aifs_ens/{date}/AIFS_ENS/")
+    if model == "AIFS_single_v2" and region == "india":
+        return gcs_object_exists(bucket, f"output/{model}/{date}/{model}/tp/tp_2p0_{date}.nc")
+    if model == "AIFS_single_v2" and region == "ethiopia":
+        return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/{model}/")
+    if model == "AIFS_ENS_v2" and region == "ethiopia":
+        return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/{model}/")
     if model == "neuralgcm" and region == "india":
         return gcs_object_exists(bucket, f"output/neuralgcm/{date}/tp/tp_2p0_{date}.nc")
     if model == "gencast":
@@ -319,7 +329,7 @@ def blend_present(region: str, date: str) -> bool:
 
 
 def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
-    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model.lower())
+    return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model)
 
 
 def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:
@@ -503,14 +513,18 @@ def _missing_ic_paths(source: str, date: str) -> list[str]:
     if not date:
         return []
     paths = ic_ecmwf_paths(date) if source == "ecmwf" else ic_ncep_paths(date)
-    if source == "ecmwf":
+    if source == "ecmwf" and "gencast" in _models_in_use():
         paths.append(f"ic/gencast_sst/{date}/sst_{date}.nc")
     return [p for p in paths if not gcs_object_exists(GCS_COMMON_BUCKET, p)]
 
 
 def _blend_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
     """Blend readiness follows the configured blend/utils/main.py inputs."""
-    configured = [blend for blend in BLENDS if blend.region == region]
+    configured_models = set(REGIONS.get(region, {}).get("models", []))
+    configured = [
+        blend for blend in BLENDS
+        if blend.region == region and blend.implemented and blend.models().issubset(configured_models)
+    ]
     if not configured:
         return {
             "date": "",

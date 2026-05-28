@@ -11,6 +11,8 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
+    libeccodes-dev \
+    libeccodes-tools \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
@@ -21,8 +23,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY docker/downloader/src/ ./src/
 
 # Copy science scripts (unmodified) into expected utils/ directories
-COPY AIFS/utils/download_ic.py    ./AIFS/utils/download_ic.py
-COPY NeuralGCM/utils/download_ncep.py ./NeuralGCM/utils/download_ncep.py
+COPY IC/utils/ ./IC/utils/
+COPY config/ ./config/
 COPY gencast/utils/download_sst.py ./gencast/utils/download_sst.py
 
 # Set environment variables

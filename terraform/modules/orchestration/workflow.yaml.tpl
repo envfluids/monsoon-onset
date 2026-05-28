@@ -170,7 +170,7 @@ main:
                           next: prepare_${model}_batch
                   - prepare_${model}_batch:
                       assign:
-                        - ${model}_job_id: $${"${replace(model, "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
+                        - ${model}_job_id: $${"${replace(lower(model), "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
                         - ${model}_job_name: $${"projects/" + project_id + "/locations/${region}/jobs/" + ${model}_job_id}
                         - ${model}_attempt: 1
                   # A prior workflow run may have left a FAILED/CANCELLED job at
@@ -223,7 +223,7 @@ main:
 %{ endif ~}
 %{ endif ~}
                                   maxRetryCount: 1
-                                  maxRunDuration: "${model == "aifs_ens" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
+                                  maxRunDuration: "${model == "AIFS_ENS_v2" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
                                   runnables:
                                     - container:
                                         imageUri: "${model_images[model]}"
@@ -236,7 +236,7 @@ main:
                                           GCS_COMMON_BUCKET: $${common_bucket}
                                           GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
                                           UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
-%{ if model == "aifs_ens" && contains(full_field_models, model) ~}
+%{ if model == "AIFS_ENS_v2" && contains(full_field_models, model) ~}
                                   volumes:
                                     - gcs:
                                         remotePath: $${common_bucket}

@@ -12,8 +12,8 @@
 images:
   downloader:
     - docker/downloader/
-    - AIFS/utils/download_ic.py
-    - NeuralGCM/utils/download_ncep.py
+    - IC/utils/
+    - config/models.json
     - gencast/utils/download_sst.py
 
   pipeline-state:
@@ -32,8 +32,16 @@ images:
     - docker/blend/
     - blend/utils/
 
-  aifs:
-    - docker/aifs/
+  aifs-v2:
+    - docker/aifs-v2/
+    - config/models.json
+    - AIFS/utils/
+    - AIFS/grids/
+    - AIFS/data/
+
+  aifs-ens-v2:
+    - docker/aifs-ens-v2/
+    - config/models.json
     - AIFS/utils/
     - AIFS/grids/
     - AIFS/data/

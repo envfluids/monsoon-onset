@@ -65,9 +65,9 @@ variable "gencast_tpu_subnet_cidr" {
 }
 
 variable "disabled_models" {
-  description = "Model names to disable globally in this environment. Hyphen and underscore spellings are both accepted, for example aifs-ens or aifs_ens."
+  description = "Versioned model names to disable globally in this environment. Hyphen and underscore spellings are both accepted, for example AIFS-ENS-v2 or AIFS_ENS_v2."
   type        = set(string)
-  default     = ["aifs-ens"]
+  default     = []
 }
 
 locals {
@@ -75,16 +75,11 @@ locals {
   gencast_tpu_region = regex("^(.+)-[a-z]$", var.gencast_tpu_zone)[0]
   disabled_model_ids = toset([for model in var.disabled_models : replace(model, "-", "_")])
   model_sync_rule_exclusions = {
-    aifs_ens = {
-      ethiopia = ["AIFS_ENS", "blend"]
+    AIFS_ENS_v2 = {
+      ethiopia = ["AIFS_ENS_v2"]
     }
   }
-  model_stage_exclusions = {
-    # The Ethiopia blend currently requires AIFS + AIFS-ENS.
-    aifs_ens = {
-      ethiopia = ["blend"]
-    }
-  }
+  model_stage_exclusions = {}
   additional_subnets = local.gencast_tpu_region == var.region ? {} : {
     gencast-tpu = {
       region = local.gencast_tpu_region
@@ -94,7 +89,7 @@ locals {
 
   base_regions = {
     india = {
-      models = ["aifs", "neuralgcm"]
+      models = ["AIFS_single_v2", "neuralgcm"]
       stages = ["blend", "sync"]
       sync = {
         rules     = ["blend_google"]
@@ -103,10 +98,10 @@ locals {
       }
     }
     ethiopia = {
-      models = ["aifs", "aifs_ens", "gencast"]
+      models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"]
       stages = ["blend", "sync"]
       sync = {
-        rules     = ["AIFS", "AIFS_ENS", "GenCast", "blend"]
+        rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "blend"]
         git_push  = false
         date_kind = "aifs_date"
       }
@@ -217,7 +212,8 @@ module "compute" {
   pipeline_state_image = "${module.storage.artifact_registry_url}/monsoon-pipeline-state:latest"
   blend_image          = "${module.storage.artifact_registry_url}/monsoon-blend:latest"
   sync_image           = "${module.storage.artifact_registry_url}/monsoon-sync:latest"
-  aifs_image           = "${module.storage.artifact_registry_url}/monsoon-aifs:latest"
+  aifs_v2_image        = "${module.storage.artifact_registry_url}/monsoon-aifs-v2:latest"
+  aifs_ens_v2_image    = "${module.storage.artifact_registry_url}/monsoon-aifs-ens-v2:latest"
   neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
   gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
   tpu_dispatch_image   = "${module.storage.artifact_registry_url}/monsoon-tpu-dispatch:latest"
@@ -237,7 +233,7 @@ module "orchestration" {
   environment = local.environment
 
   regions           = local.regions
-  full_field_models = setsubtract(toset(["aifs", "aifs_ens"]), local.disabled_model_ids)
+  full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2"]), local.disabled_model_ids)
 
   # Prod: frequent runs matching current HPC schedule
   pipeline_schedule = "*/15 * * * *" # Every 15 minutes (checks for new data)

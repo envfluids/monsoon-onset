@@ -38,7 +38,7 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 GENCAST_UTILS = Path("/app/gencast/utils")
-AIFS_GRIB_DIR = Path("/app/AIFS/raw/ifs_ic/grib")
+IC_ECMWF_DIR = Path("/app/IC/output/ecmwf")
 COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
 
 GRAPHCAST_BUCKET = "dm_graphcast"
@@ -183,7 +183,7 @@ def _setup_directories() -> None:
         GENCAST_UTILS.parent / "data",
         GENCAST_UTILS.parent / "raw" / "sst_ic",
         GENCAST_UTILS.parent / "raw" / "output",
-        AIFS_GRIB_DIR,
+        IC_ECMWF_DIR,
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -208,7 +208,7 @@ def _download_inputs(date: str, common_bucket: str) -> None:
     download_gcs_file(
         common_bucket,
         f"ic/gencast_sst/{date}/sst_{date}.nc",
-        GENCAST_UTILS.parent / "raw" / "sst_ic" / f"sst_{date}.nc",
+        IC_ECMWF_DIR / f"sst_{date}.nc",
     )
 
 
@@ -217,7 +217,7 @@ def _download_grib_inputs(date: str, common_bucket: str) -> None:
         download_gcs_file(
             common_bucket,
             f"ic/ecmwf/{date}/grib/{filename}",
-            AIFS_GRIB_DIR / filename,
+            IC_ECMWF_DIR / filename,
         )
 
 

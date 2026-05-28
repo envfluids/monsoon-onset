@@ -1,6 +1,6 @@
 # -----------------------------------------------------------------------------
-# Monsoon AIFS
-# ECMWF AIFS and AIFS-ENS model inference (PyTorch + GPU)
+# Monsoon AIFS v2
+# ECMWF deterministic AIFS v2 model inference (PyTorch + GPU)
 # Target: Cloud Batch with GPU
 # -----------------------------------------------------------------------------
 
@@ -17,21 +17,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY docker/aifs/requirements.txt .
+COPY docker/aifs-v2/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
-COPY docker/aifs/src/ ./src/
+COPY docker/aifs-v2/src/ ./src/
 
 # Copy science scripts (unmodified) into the expected utils/ directory structure
 COPY AIFS/utils/ ./AIFS/utils/
 COPY AIFS/grids/ ./AIFS/grids/
 COPY AIFS/data/ ./AIFS/data/
+COPY config/ ./config/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
-ENV AIFS_MODEL=AIFS
+ENV MODEL=AIFS_single_v2
 
 # Entry point
 ENTRYPOINT ["python", "-m", "src.main"]

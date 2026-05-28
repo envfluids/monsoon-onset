@@ -17,10 +17,10 @@ locals {
 
   # Map model name → batch container image
   model_images = {
-    aifs      = var.batch_job_template.aifs_image
-    aifs_ens  = var.batch_job_template.aifs_image
-    neuralgcm = var.batch_job_template.neuralgcm_image
-    gencast   = var.batch_job_template.gencast_image
+    AIFS_single_v2 = var.batch_job_template.aifs_v2_image
+    AIFS_ENS_v2    = var.batch_job_template.aifs_ens_v2_image
+    neuralgcm      = var.batch_job_template.neuralgcm_image
+    gencast        = var.batch_job_template.gencast_image
   }
 }
 

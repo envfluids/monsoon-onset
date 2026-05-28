@@ -25,23 +25,24 @@ output "pipeline_state_url" {
 output "batch_job_template" {
   description = "Cloud Batch job template configuration for model inference"
   value = {
-    project         = var.project_id
-    region          = var.region
-    machine_type    = local.gpu_machine_type
-    gpu_type        = var.gpu_type
-    gpu_count       = 1
-    os_image        = var.batch_vm_os_image
-    boot_disk_gb    = var.batch_boot_disk_size_gb
-    boot_disk_type  = var.batch_boot_disk_type
-    model_resources = local.batch_model_resources
-    max_attempts    = var.batch_job_max_attempts
-    image_streaming = var.batch_enable_image_streaming
-    preemptible     = var.use_preemptible_gpu
-    aifs_image      = var.aifs_image
-    neuralgcm_image = var.neuralgcm_image
-    gencast_image   = var.gencast_image
-    vpc_network     = var.vpc_id
-    vpc_subnet      = var.vpc_subnetwork
+    project           = var.project_id
+    region            = var.region
+    machine_type      = local.gpu_machine_type
+    gpu_type          = var.gpu_type
+    gpu_count         = 1
+    os_image          = var.batch_vm_os_image
+    boot_disk_gb      = var.batch_boot_disk_size_gb
+    boot_disk_type    = var.batch_boot_disk_type
+    model_resources   = local.batch_model_resources
+    max_attempts      = var.batch_job_max_attempts
+    image_streaming   = var.batch_enable_image_streaming
+    preemptible       = var.use_preemptible_gpu
+    aifs_v2_image     = var.aifs_v2_image
+    aifs_ens_v2_image = var.aifs_ens_v2_image
+    neuralgcm_image   = var.neuralgcm_image
+    gencast_image     = var.gencast_image
+    vpc_network       = var.vpc_id
+    vpc_subnet        = var.vpc_subnetwork
   }
 }
 

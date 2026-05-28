@@ -21,7 +21,7 @@ substitutions:
   _SHORT_SHA: local
   # auto  → diff HEAD against _BASE_REF and rebuild what changed
   # all   → rebuild every image
-  # comma-list (e.g. pipeline-state,downloader) → rebuild exactly those
+  # comma-list (e.g. pipeline-state,downloader,aifs-v2) → rebuild exactly those
   _TARGETS: auto
   _BASE_REF: HEAD~1
 
@@ -114,14 +114,24 @@ steps:
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest || true
     waitFor: [detect-targets]
 
-  - id: pull-cache-aifs
+  - id: pull-cache-aifs-v2
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     args:
       - -c
       - |
-        grep -qx aifs targets || { echo "skip"; exit 0; }
-        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest || true
+        grep -qx aifs-v2 targets || { echo "skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:latest || true
+    waitFor: [detect-targets]
+
+  - id: pull-cache-aifs-ens-v2
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest || true
     waitFor: [detect-targets]
 
   - id: pull-cache-neuralgcm
@@ -228,21 +238,37 @@ steps:
           -f docker/blend/Dockerfile .
     waitFor: [pull-cache-blend]
 
-  - id: build-aifs
+  - id: build-aifs-v2
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     env: ["DOCKER_BUILDKIT=1"]
     args:
       - -c
       - |
-        grep -qx aifs targets || { echo "skip"; exit 0; }
+        grep -qx aifs-v2 targets || { echo "skip"; exit 0; }
         docker build \
-          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:${_SHORT_SHA} \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs:latest \
-          -f docker/aifs/Dockerfile .
-    waitFor: [pull-cache-aifs]
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:latest \
+          -f docker/aifs-v2/Dockerfile .
+    waitFor: [pull-cache-aifs-v2]
+
+  - id: build-aifs-ens-v2
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - -c
+      - |
+        grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
+        docker build \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
+          -f docker/aifs-ens-v2/Dockerfile .
+    waitFor: [pull-cache-aifs-ens-v2]
 
   - id: build-neuralgcm
     name: gcr.io/cloud-builders/docker
@@ -330,15 +356,25 @@ steps:
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend
     waitFor: [build-blend]
 
-  - id: push-aifs
+  - id: push-aifs-v2
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     args:
       - -c
       - |
-        grep -qx aifs targets || { echo "skip"; exit 0; }
-        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs
-    waitFor: [build-aifs]
+        grep -qx aifs-v2 targets || { echo "skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2
+    waitFor: [build-aifs-v2]
+
+  - id: push-aifs-ens-v2
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2
+    waitFor: [build-aifs-ens-v2]
 
   - id: push-neuralgcm
     name: gcr.io/cloud-builders/docker
@@ -365,7 +401,7 @@ steps:
   # the resolved digest at revision-create time and does not auto-follow tag
   # movement on :latest, so explicit updates are required to deploy changes.
   #
-  # Batch (aifs, neuralgcm) and TPU workload (gencast) tasks resolve :latest at
+  # Batch (AIFS v2, AIFS ENS v2, neuralgcm) and TPU workload (gencast) tasks resolve :latest at
   # submit time. Cloud Run jobs, including tpu-dispatch, need explicit updates.
   # ---------------------------------------------------------------------------
   - id: deploy-pipeline-state

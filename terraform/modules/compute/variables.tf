@@ -108,8 +108,13 @@ variable "sync_image" {
   type        = string
 }
 
-variable "aifs_image" {
-  description = "Container image used for both AIFS and AIFS-ENS inference (selected by MODEL env)"
+variable "aifs_v2_image" {
+  description = "Container image for deterministic AIFS_single_v2 inference"
+  type        = string
+}
+
+variable "aifs_ens_v2_image" {
+  description = "Container image for AIFS_ENS_v2 inference"
   type        = string
 }
 
@@ -215,7 +220,7 @@ variable "batch_model_resources" {
     gpu_count         = optional(number)
   }))
   default = {
-    aifs_ens = {
+    AIFS_ENS_v2 = {
       machine_type      = "a2-highgpu-4g"
       boot_disk_size_gb = 300
       cpu_milli         = 12000

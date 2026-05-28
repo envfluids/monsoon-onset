@@ -39,7 +39,7 @@ variable "regions" {
 variable "full_field_models" {
   description = "Models whose full-field raw forecast should be uploaded to the common bucket"
   type        = set(string)
-  default     = ["aifs", "aifs_ens"]
+  default     = ["AIFS_single_v2", "AIFS_ENS_v2"]
 }
 
 variable "pipeline_schedule" {
@@ -119,13 +119,14 @@ variable "batch_job_template" {
       gpu_type          = optional(string)
       gpu_count         = optional(number)
     }))
-    image_streaming = bool
-    preemptible     = bool
-    aifs_image      = string
-    neuralgcm_image = string
-    gencast_image   = string
-    vpc_network     = string
-    vpc_subnet      = string
+    image_streaming   = bool
+    preemptible       = bool
+    aifs_v2_image     = string
+    aifs_ens_v2_image = string
+    neuralgcm_image   = string
+    gencast_image     = string
+    vpc_network       = string
+    vpc_subnet        = string
   })
 }
 

@@ -56,8 +56,8 @@ locals {
     }
   }
 
-  legacy_batch_model_resources = {
-    aifs = {
+  default_batch_model_resources = {
+    AIFS_single_v2 = {
       machine_type      = local.gpu_machine_type
       boot_disk_size_gb = var.batch_boot_disk_size_gb
       boot_disk_type    = var.batch_boot_disk_type
@@ -69,7 +69,7 @@ locals {
     }
   }
 
-  batch_model_resource_configs = merge(local.legacy_batch_model_resources, var.batch_model_resources)
+  batch_model_resource_configs = merge(local.default_batch_model_resources, var.batch_model_resources)
 
   batch_model_resources = {
     for model, config in local.batch_model_resource_configs : model => {

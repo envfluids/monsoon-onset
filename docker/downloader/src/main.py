@@ -10,10 +10,11 @@ wrapper sets up the expected directory structure and cwd before invoking them.
 Environment Variables:
     SOURCE             : 'ecmwf' | 'ncep' | 'both' for get_latest_date
     ACTION             : 'download' | 'get_latest_date'  (default: download)
-    DATE               : Forecast date YYYYMMDDTHH (NeuralGCM date; ECMWF date is DATE-12h)
+    DATE               : 00z forecast date YYYYMMDDTHH
     GCS_COMMON_BUCKET  : Common bucket for ICs, GenCast SST, intermediate markers
 """
 
+import json
 import logging
 import os
 import sys
@@ -32,13 +33,13 @@ LOG_FORMAT = (
 logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-AIFS_UTILS    = Path("/app/AIFS/utils")
-NGCM_UTILS    = Path("/app/NeuralGCM/utils")
+IC_UTILS      = Path("/app/IC/utils")
+IC_ECMWF_DIR  = Path("/app/IC/output/ecmwf")
+IC_NCEP_DIR   = Path("/app/IC/output/ncep")
+NGCM_UTILS    = IC_UTILS
 GENCAST_UTILS = Path("/app/gencast/utils")
 ECMWF_OPEN_DATA_BUCKET = "ecmwf-open-data"
-
-# Sparse transform matrix filename used by download_ic.py
-SPARSE_FILENAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
+MODEL_CONFIG_PATH = Path("/app/config/models.json")
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +198,7 @@ def _require_00z(date: str) -> None:
 
 
 def _download_ecmwf(date: str, bucket: str) -> None:
-    """Run download_ic.get_data() and upload ECMWF IC + GenCast SST artifacts to GCS."""
+    """Run IC download_ecmwf.get_data() and upload ECMWF IC + GenCast SST artifacts to GCS."""
     grib_prefix = f"ic/ecmwf/{date}/grib"
     expected_sst = f"ic/gencast_sst/{date}/sst_{date}.nc"
     if _ecmwf_gribs_exist(bucket, grib_prefix, date) and blob_exists(bucket, expected_sst):
@@ -205,36 +206,14 @@ def _download_ecmwf(date: str, bucket: str) -> None:
         write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date)
         return
 
-    (AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib").mkdir(parents=True, exist_ok=True)
-    sparse_local = AIFS_UTILS.parent / "EKR" / "mir_16_linear" / SPARSE_FILENAME
-    sparse_local.parent.mkdir(parents=True, exist_ok=True)
+    IC_ECMWF_DIR.mkdir(parents=True, exist_ok=True)
+    sys.path.insert(0, str(IC_UTILS))
+    os.chdir(IC_UTILS)
+    import download_ecmwf
 
-    # Sparse transform matrix lives in the common bucket under weights/
-    download_gcs_file(
-        bucket,
-        f"weights/aifs/EKR/mir_16_linear/{SPARSE_FILENAME}",
-        sparse_local,
-    )
-
-    if _download_ecmwf_gribs_from_public_gcs(date):
-        date_str = date
-    else:
-        logger.warning(
-            "Falling back to AIFS download_ic.get_data() for ECMWF GRIBs for %s",
-            date,
-        )
-        sys.path.insert(0, str(AIFS_UTILS))
-        os.chdir(AIFS_UTILS)
-        import download_ic
-
-        date_str = download_ic.get_data(date)
-
-        if not date_str:
-            date_str = date
-            logger.warning("ECMWF download_ic.get_data() returned None; checking local GRIB cache for %s", date_str)
+    date_str = download_ecmwf.get_data(date) or date
 
     _upload_ecmwf_gribs(bucket, date_str)
-    _upload_ecmwf_pickle_if_present(bucket, date_str)
     _download_and_upload_gencast_sst(bucket, date_str)
 
     write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date_str)
@@ -242,24 +221,41 @@ def _download_ecmwf(date: str, bucket: str) -> None:
 
 def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
     date = datetime.strptime(date_str, "%Y%m%dT%H")
-    dates = [date - timedelta(hours=12), date - timedelta(hours=6), date]
-    return [d.strftime("%Y%m%d%H0000-0h-oper-fc.grib2") for d in dates]
+    names = []
+    for stream, deltas in _ecmwf_stream_deltas().items():
+        for delta in sorted(deltas, reverse=True):
+            target = date - timedelta(hours=delta)
+            names.append(target.strftime(f"%Y%m%d%H0000-0h-{stream}-fc.grib2"))
+    return names
+
+
+def _ecmwf_stream_deltas() -> dict[str, set[int]]:
+    with open(MODEL_CONFIG_PATH, encoding="utf-8") as f:
+        config = json.load(f)
+
+    streams: dict[str, set[int]] = {}
+    for model_config in config.values():
+        cloud = model_config.get("CLOUD", {})
+        if model_config.get("ic_source") != "ecmwf" or cloud.get("run") != "true":
+            continue
+        for stream in model_config.get("ic_streams", []):
+            streams.setdefault(stream, {0}).add(int(model_config.get("ic_timedelta", 0)))
+    return streams
 
 
 def _ecmwf_open_data_path(filename: str) -> str:
     ymd = filename[:8]
     hh = filename[8:10]
-    return f"{ymd}/{hh}z/ifs/0p25/oper/{filename}"
+    stream = filename.split("-0h-", 1)[1].split("-fc.", 1)[0]
+    return f"{ymd}/{hh}z/ifs/0p25/{stream}/{filename}"
 
 
 def _local_ecmwf_gribs_exist(date_str: str) -> bool:
-    grib_dir = AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib"
-    return all((grib_dir / filename).exists() for filename in _expected_ecmwf_grib_names(date_str))
+    return all((IC_ECMWF_DIR / filename).exists() for filename in _expected_ecmwf_grib_names(date_str))
 
 
 def _download_ecmwf_gribs_from_public_gcs(date_str: str) -> bool:
-    grib_dir = AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib"
-    grib_dir.mkdir(parents=True, exist_ok=True)
+    IC_ECMWF_DIR.mkdir(parents=True, exist_ok=True)
 
     if _local_ecmwf_gribs_exist(date_str):
         logger.info("All expected ECMWF GRIBs already exist locally for %s.", date_str)
@@ -267,7 +263,7 @@ def _download_ecmwf_gribs_from_public_gcs(date_str: str) -> bool:
 
     try:
         for filename in _expected_ecmwf_grib_names(date_str):
-            local_path = grib_dir / filename
+            local_path = IC_ECMWF_DIR / filename
             if local_path.exists():
                 logger.info("ECMWF GRIB %s already exists locally; skipping.", local_path)
                 continue
@@ -295,10 +291,9 @@ def _ecmwf_gribs_exist(bucket: str, grib_prefix: str, date_str: str) -> bool:
 
 
 def _upload_ecmwf_gribs(bucket: str, date_str: str) -> None:
-    grib_dir = AIFS_UTILS.parent / "raw" / "ifs_ic" / "grib"
     missing = []
     for filename in _expected_ecmwf_grib_names(date_str):
-        local_path = grib_dir / filename
+        local_path = IC_ECMWF_DIR / filename
         if not local_path.exists():
             missing.append(str(local_path))
             continue
@@ -307,24 +302,20 @@ def _upload_ecmwf_gribs(bucket: str, date_str: str) -> None:
         raise RuntimeError("Missing expected ECMWF GRIB files: " + ", ".join(missing))
 
 
-def _upload_ecmwf_pickle_if_present(bucket: str, date_str: str) -> None:
-    local_pkl = AIFS_UTILS.parent / "raw" / "ifs_ic" / f"input_state_{date_str}.pkl"
-    if not local_pkl.exists():
-        logger.info("No ECMWF pickle found at %s; skipping pickle upload.", local_pkl)
-        return
-    upload_file(bucket, local_pkl, f"ic/ecmwf/{date_str}/input_state_{date_str}.pkl")
-
-
 def _download_and_upload_gencast_sst(bucket: str, date_str: str) -> None:
-    (GENCAST_UTILS.parent / "raw" / "sst_ic").mkdir(parents=True, exist_ok=True)
-    sys.path.insert(0, str(GENCAST_UTILS))
-    os.chdir(GENCAST_UTILS)
-    import download_sst
-
-    download_sst.get_sst(date_str)
-    local_sst = GENCAST_UTILS.parent / "raw" / "sst_ic" / f"sst_{date_str}.nc"
+    local_sst = IC_ECMWF_DIR / f"sst_{date_str}.nc"
     if not local_sst.exists():
-        raise RuntimeError(f"GenCast SST download did not create {local_sst}")
+        logger.info("ECMWF downloader did not create %s; falling back to GenCast SST helper.", local_sst)
+        (GENCAST_UTILS.parent / "raw" / "sst_ic").mkdir(parents=True, exist_ok=True)
+        sys.path.insert(0, str(GENCAST_UTILS))
+        os.chdir(GENCAST_UTILS)
+        import download_sst
+
+        download_sst.get_sst(date_str)
+        fallback_sst = GENCAST_UTILS.parent / "raw" / "sst_ic" / f"sst_{date_str}.nc"
+        if not fallback_sst.exists():
+            raise RuntimeError(f"GenCast SST download did not create {fallback_sst}")
+        local_sst = fallback_sst
     upload_file(bucket, local_sst, f"ic/gencast_sst/{date_str}/sst_{date_str}.nc")
 
 
@@ -336,7 +327,7 @@ def _download_ncep(date: str, bucket: str) -> None:
         write_gcs_text(bucket, "intermediate/latest_ncep_date.txt", date)
         return
 
-    (NGCM_UTILS.parent / "raw" / "ncep_ic" / "download").mkdir(parents=True, exist_ok=True)
+    IC_NCEP_DIR.mkdir(parents=True, exist_ok=True)
 
     sys.path.insert(0, str(NGCM_UTILS))
     os.chdir(NGCM_UTILS)
@@ -347,7 +338,7 @@ def _download_ncep(date: str, bucket: str) -> None:
     if not date_str:
         raise RuntimeError("NCEP download_ncep.get_data() returned None — download failed")
 
-    local_pgrb2 = NGCM_UTILS.parent / "raw" / "ncep_ic" / "download" / f"gdas_{date_str}.pgrb2"
+    local_pgrb2 = IC_NCEP_DIR / f"gdas_{date_str}.pgrb2"
     upload_file(bucket, local_pgrb2, f"ic/ncep/{date_str}/gdas_{date_str}.pgrb2")
     write_gcs_text(bucket, "intermediate/latest_ncep_date.txt", date_str)
 
