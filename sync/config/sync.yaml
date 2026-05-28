@@ -72,6 +72,7 @@ regions:
 
       - name: model_diagnostics
         kind: dated_directory
+        gcs_prefix: "output/model_diagnostics/{date}/india/"
         local_root: "model_diagnostics/output/india"
         drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"
@@ -139,7 +140,6 @@ regions:
       - name: NeuralGCM
         kind: files
         gcs_prefix: "output/neuralgcm/{date}/"
-        gcs_stage_dir: "neuralgcm/output/ethiopia/tp"
         local_root: "NeuralGCM/output/ethiopia"
         drive_path: "{drive_root}/{date}/NeuralGCM"
         date_regex: "\\d{8}T\\d{2}"
@@ -181,6 +181,7 @@ regions:
 
       - name: model_diagnostics
         kind: dated_directory
+        gcs_prefix: "output/model_diagnostics/{date}/ethiopia/"
         local_root: "model_diagnostics/output/ethiopia"
         drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"

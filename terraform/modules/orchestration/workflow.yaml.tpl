@@ -468,6 +468,47 @@ main:
                 assign:
                   - last_blend_region_checked: $${region_name}
 
+    # -------------------------------------------------------------------------
+    # 4. Run model diagnostics for regions whose diagnostic inputs are present.
+    #    The blend image owns this because blend/utils/main.py is the source of
+    #    truth for available model pair diagnostics.
+    # -------------------------------------------------------------------------
+    - diagnostics_loop:
+        for:
+          value: region_name
+          in: $${region_names}
+          steps:
+            - load_diagnostics_action:
+                assign:
+                  - diagnostics_action: $${default(map.get(state_post_models.actions.regions_to_diagnose_by_region, region_name), default_region_action)}
+            - maybe_diagnostics:
+                switch:
+                  - condition: $${diagnostics_action.date == ""}
+                    next: end_diagnostics_iteration
+                  - condition: true
+                    next: run_diagnostics
+            - run_diagnostics:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.blend.name}"
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: DATE
+                              value: $${diagnostics_action.date}
+                            - name: FORECAST_REGION
+                              value: $${region_name}
+                            - name: RUN_MODE
+                              value: "diagnostics"
+                            - name: GCS_COMMON_BUCKET
+                              value: $${common_bucket}
+                            - name: GCS_REGION_BUCKETS
+                              value: $${json.encode_to_string(region_buckets)}
+            - end_diagnostics_iteration:
+                assign:
+                  - last_diagnostics_region_checked: $${region_name}
+
     - probe_state_post_blend:
         call: pipeline_state
         args:
@@ -476,7 +517,7 @@ main:
         result: state_post_blend
 
     # -------------------------------------------------------------------------
-    # 4. Sync final regional outputs whose expected files are present.
+    # 5. Sync final regional outputs whose expected files are present.
     # -------------------------------------------------------------------------
     - sync_loop:
         for:

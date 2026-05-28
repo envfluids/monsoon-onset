@@ -90,18 +90,18 @@ locals {
   base_regions = {
     india = {
       models = ["AIFS_single_v2", "neuralgcm"]
-      stages = ["blend", "sync"]
+      stages = ["model_diagnostics", "sync"]
       sync = {
-        rules     = ["blend_google"]
+        rules     = ["AIFS_single_v2", "NeuralGCM", "model_diagnostics"]
         git_push  = true
         date_kind = "date"
       }
     }
     ethiopia = {
       models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"]
-      stages = ["blend", "sync"]
+      stages = ["model_diagnostics", "sync"]
       sync = {
-        rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "blend"]
+        rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "model_diagnostics"]
         git_push  = false
         date_kind = "aifs_date"
       }

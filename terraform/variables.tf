@@ -32,7 +32,7 @@ variable "regions" {
   description = "Per-region forecast configuration (models, downstream stages, sync spec)"
   type = map(object({
     models = list(string) # which models produce output for this region
-    stages = list(string) # which post-model stages run: "blend", "sync"
+    stages = list(string) # which post-model stages run: "blend", "model_diagnostics", "sync"
     sync = object({
       rules     = list(string) # sync.yaml rule names to invoke
       git_push  = bool         # push to monsoon-operational repo

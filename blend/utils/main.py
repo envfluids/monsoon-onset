@@ -361,6 +361,17 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Forward skip_to to blend scripts that support it.",
     )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--blend-only",
+        action="store_true",
+        help="Run eligible blend outputs without diagnostics.",
+    )
+    mode.add_argument(
+        "--diagnostics-only",
+        action="store_true",
+        help="Run eligible model diagnostics without blend outputs.",
+    )
     return parser.parse_args()
 
 
@@ -531,26 +542,28 @@ def main() -> None:
 
     ran_any = False
     for blend in selected:
-        ran_any = (
-            run_blend(
-                blend,
-                args.date,
-                dry_run=args.dry_run,
-                force=args.force,
-                debug=args.debug,
-                skip_to=args.skip_to,
+        if not args.diagnostics_only:
+            ran_any = (
+                run_blend(
+                    blend,
+                    args.date,
+                    dry_run=args.dry_run,
+                    force=args.force,
+                    debug=args.debug,
+                    skip_to=args.skip_to,
+                )
+                or ran_any
             )
-            or ran_any
-        )
-        ran_any = (
-            run_diagnostics(
-                blend,
-                args.date,
-                dry_run=args.dry_run,
-                force=args.force,
+        if not args.blend_only:
+            ran_any = (
+                run_diagnostics(
+                    blend,
+                    args.date,
+                    dry_run=args.dry_run,
+                    force=args.force,
+                )
+                or ran_any
             )
-            or ran_any
-        )
 
     if not ran_any:
         logger.info("No blends were run for %s.", args.date)

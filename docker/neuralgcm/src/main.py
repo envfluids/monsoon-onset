@@ -40,10 +40,10 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 NGCM_UTILS = Path("/app/NeuralGCM/utils")
+IC_NCEP_DIR = Path("/app/IC/output/ncep")
 
 # Regions where the science layer currently produces post-processed outputs.
-# Today only india; add more as post_process_merge.py gains region dispatch.
-NGCM_SUPPORTED_REGIONS = {"india"}
+NGCM_SUPPORTED_REGIONS = {"india", "ethiopia"}
 
 
 # ---------------------------------------------------------------------------
@@ -124,11 +124,13 @@ def _setup_directories(date: str) -> None:
         "output/india/sji",
         "output/india/tcw",
         "output/india/tp",
+        "output/ethiopia/tp",
         "weights",
         "data/forcings",
         "data/model_ds",
     ]:
         (NGCM_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
+    IC_NCEP_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _download_inputs(date: str, common_bucket: str) -> None:
@@ -136,7 +138,7 @@ def _download_inputs(date: str, common_bucket: str) -> None:
     download_gcs_file(
         common_bucket,
         f"ic/ncep/{date}/gdas_{date}.pgrb2",
-        NGCM_UTILS.parent / "raw" / "ncep_ic" / "download" / f"gdas_{date}.pgrb2",
+        IC_NCEP_DIR / f"gdas_{date}.pgrb2",
     )
 
     # 2. NeuralGCM model checkpoint (loaded at run_model.py module level)
@@ -158,9 +160,9 @@ def _download_inputs(date: str, common_bucket: str) -> None:
 def _run_science_scripts(date: str) -> None:
     env = {**os.environ, "PYTHONPATH": str(NGCM_UTILS)}
 
-    logger.info(f"Running preprocess.py for {date}")
+    logger.info(f"Running preprocess_ic.py for {date}")
     subprocess.run(
-        [sys.executable, "preprocess.py", "--date", date],
+        [sys.executable, "preprocess_ic.py", "--date", date],
         cwd=NGCM_UTILS, check=True, env=env,
     )
 

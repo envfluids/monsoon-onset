@@ -308,6 +308,8 @@ def model_region_outputs_present(model: str, region: str, date: str) -> bool:
         return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/{model}/")
     if model == "neuralgcm" and region == "india":
         return gcs_object_exists(bucket, f"output/neuralgcm/{date}/tp/tp_2p0_{date}.nc")
+    if model == "neuralgcm" and region == "ethiopia":
+        return gcs_object_exists(bucket, f"output/neuralgcm/{date}/tp/tp_2p8_{date}.nc")
     if model == "gencast":
         return gcs_object_exists(bucket, f"output/gencast/{date}/tp_0p25_{date}.nc")
 
@@ -328,8 +330,28 @@ def blend_present(region: str, date: str) -> bool:
     return gcs_prefix_has_objects(bucket, f"output/blend/{date}/")
 
 
+def diagnostics_present(region: str, date: str, blends: list[BlendConfig]) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return False
+    return all(
+        gcs_prefix_has_objects(
+            bucket,
+            f"output/model_diagnostics/{date}/{region}/{date}/{blend.name}/",
+        )
+        for blend in blends
+    )
+
+
 def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
     return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model)
+
+
+def _pipeline_models_for_blend(blend: BlendConfig) -> set[str]:
+    return {
+        BLEND_MODEL_TO_PIPELINE_MODEL.get(model.upper(), model)
+        for model in blend.models()
+    }
 
 
 def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:
@@ -360,9 +382,32 @@ def _blend_input_state(
     date: str,
     models_state: dict,
 ) -> list[dict]:
+    return _forecast_input_state(region, blend.inputs, date, models_state)
+
+
+def _diagnostic_input_state(
+    region: str,
+    blend: BlendConfig,
+    date: str,
+    models_state: dict,
+) -> list[dict]:
+    return _forecast_input_state(
+        region,
+        blend.diagnostic_inputs or blend.inputs,
+        date,
+        models_state,
+    )
+
+
+def _forecast_input_state(
+    region: str,
+    inputs: tuple[ForecastInput, ...],
+    date: str,
+    models_state: dict,
+) -> list[dict]:
     bucket = REGION_BUCKETS.get(region, "")
     states = []
-    for input_ in blend.inputs:
+    for input_ in inputs:
         model = _pipeline_model_for_blend_input(input_)
         path = _blend_input_bucket_path(region, input_, date)
         output_present = bool(bucket) and gcs_object_exists(bucket, path)
@@ -482,6 +527,8 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
         stages = cfg.get("stages", [])
         if "blend" in stages:
             block["blend"] = _blend_state_for_region(region, models_state, primary_date)
+        if "model_diagnostics" in stages:
+            block["model_diagnostics"] = _diagnostics_state_for_region(region, models_state, primary_date)
         if "sync" in stages:
             sync_target = _sync_date_for_region(region, cfg, models_state, per_region_block=block)
             latest = latest_synced(region)
@@ -523,7 +570,9 @@ def _blend_state_for_region(region: str, models_state: dict, fallback_date: str)
     configured_models = set(REGIONS.get(region, {}).get("models", []))
     configured = [
         blend for blend in BLENDS
-        if blend.region == region and blend.implemented and blend.models().issubset(configured_models)
+        if blend.region == region
+        and blend.implemented
+        and _pipeline_models_for_blend(blend).issubset(configured_models)
     ]
     if not configured:
         return {
@@ -567,6 +616,66 @@ def _blend_state_for_region(region: str, models_state: dict, fallback_date: str)
     }
 
 
+def _diagnostics_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
+    """Diagnostics readiness follows blend/utils/main.py diagnostic definitions."""
+    configured_models = set(REGIONS.get(region, {}).get("models", []))
+    configured = [
+        blend for blend in BLENDS
+        if blend.region == region
+        and blend.diagnostic_plots
+        and _pipeline_models_for_blend(blend).issubset(configured_models)
+    ]
+    if not configured:
+        return {
+            "date": "",
+            "present": False,
+            "configured": False,
+            "inputs": [],
+            "missing": [],
+        }
+
+    candidate_dates = {
+        _candidate_date_for_blend(blend, models_state, fallback_date)
+        for blend in configured
+    }
+    candidate_dates.discard("")
+    if len(candidate_dates) != 1:
+        return {
+            "date": "",
+            "present": False,
+            "configured": True,
+            "names": [blend.name for blend in configured],
+            "inputs": [],
+            "missing": [],
+        }
+
+    candidate = next(iter(candidate_dates))
+    input_states = [
+        state
+        for blend in configured
+        for state in _diagnostic_input_state(region, blend, candidate, models_state)
+    ]
+    missing = [state for state in input_states if not state["present"]]
+    if missing:
+        return {
+            "date": "",
+            "present": False,
+            "configured": True,
+            "names": [blend.name for blend in configured],
+            "inputs": input_states,
+            "missing": missing,
+        }
+
+    return {
+        "date": candidate,
+        "present": diagnostics_present(region, candidate, configured),
+        "configured": True,
+        "names": [blend.name for blend in configured],
+        "inputs": input_states,
+        "missing": [],
+    }
+
+
 def _candidate_date_for_blend(
     blend: BlendConfig,
     models_state: dict,
@@ -604,6 +713,10 @@ def _sync_date_for_region(
         if candidate and per_region_block["blend"].get("present"):
             return candidate
         return ""
+    if "model_diagnostics" in cfg.get("stages", []) and "model_diagnostics" in per_region_block:
+        candidate = per_region_block["model_diagnostics"].get("date", "")
+        if not candidate or not per_region_block["model_diagnostics"].get("present"):
+            return ""
     # No blend stage — pick the latest date where every model for the region
     # has its completion marker.
     region_models = cfg.get("models", [])
@@ -676,6 +789,24 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
             })
         regions_to_blend_by_region[region] = action
 
+    regions_to_diagnose = []
+    regions_to_diagnose_by_region = {}
+    for region, block in per_region.items():
+        action = {"region": region, "date": ""}
+        diagnostics = block.get("model_diagnostics")
+        if diagnostics and diagnostics.get("date") and not diagnostics.get("present"):
+            action = {"region": region, "date": diagnostics["date"]}
+            regions_to_diagnose.append(action)
+        elif diagnostics and diagnostics.get("configured") and diagnostics.get("missing"):
+            blocked.append({
+                "type": "model_diagnostics_blocked",
+                "region": region,
+                "diagnostics": diagnostics.get("names", []),
+                "reason": "inputs_missing",
+                "missing": diagnostics.get("missing", []),
+            })
+        regions_to_diagnose_by_region[region] = action
+
     regions_to_sync = []
     regions_to_sync_by_region = {}
     for region, block in per_region.items():
@@ -692,6 +823,8 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
         "models_to_run_by_model": models_to_run_by_model,
         "regions_to_blend": regions_to_blend,
         "regions_to_blend_by_region": regions_to_blend_by_region,
+        "regions_to_diagnose": regions_to_diagnose,
+        "regions_to_diagnose_by_region": regions_to_diagnose_by_region,
         "regions_to_sync": regions_to_sync,
         "regions_to_sync_by_region": regions_to_sync_by_region,
         "blocked": blocked,
