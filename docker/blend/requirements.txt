@@ -5,6 +5,9 @@ xarray>=2023.6.0
 scipy>=1.11.0
 netcdf4>=1.6.0
 dask
+zarr
+h5netcdf
+h5py
 
 # Geospatial
 geopandas>=0.13.0
