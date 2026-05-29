@@ -36,7 +36,8 @@ COPY docker/blend/src/ ./src/
 # Copy science scripts (unmodified) into expected directory structure
 COPY blend/utils/ ./blend/utils/
 COPY model_diagnostics/utils/ ./model_diagnostics/utils/
-# COPY blend/data/ ./blend/data/
+COPY blend/data/support/ ./blend/data/support/
+COPY blend/data/india_shapefile/ ./blend/data/india_shapefile/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

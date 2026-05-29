@@ -11,6 +11,7 @@ regions:
       - name: AIFS_single_v1p1
         kind: files
         gcs_prefix: "output/aifs/{date}/"
+        gcs_stage_dir: "AIFS/output/india"
         local_root: "AIFS/output/india/AIFS_single_v1p1"
         drive_path: "{drive_root}/{date}/AIFS_single_v1p1"
         date_regex: "\\d{8}T\\d{2}"
@@ -23,6 +24,7 @@ regions:
       - name: AIFS_single_v2
         kind: files
         gcs_prefix: "output/AIFS_single_v2/{date}/"
+        gcs_stage_dir: "AIFS/output/india"
         local_root: "AIFS/output/india/AIFS_single_v2"
         drive_path: "{drive_root}/{date}/AIFS_single_v2"
         date_regex: "\\d{8}T\\d{2}"

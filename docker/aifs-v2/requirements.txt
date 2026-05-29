@@ -1,4 +1,5 @@
 # AIFS inference
+numpy<2
 anemoi-inference[huggingface]==0.8.3
 anemoi-models==0.9.3
 anemoi-utils==0.4.35.post3

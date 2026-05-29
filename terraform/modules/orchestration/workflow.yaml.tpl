@@ -490,12 +490,17 @@ submit_batch_stage:
     - volumes
     - env_vars
   steps:
+    - init_batch_submit:
+        assign:
+          - job_name: $${"projects/${project_id}/locations/${region}/jobs/" + job_id}
+          - recreate_attempted: false
     - create_batch_job:
         try:
-          call: googleapis.batch.v1.projects.locations.jobs.create
+          call: http.post
           args:
-            parent: "projects/${project_id}/locations/${region}"
-            jobId: $${job_id}
+            url: $${"https://batch.googleapis.com/v1/projects/${project_id}/locations/${region}/jobs?jobId=" + job_id}
+            auth:
+              type: OAuth2
             body:
               taskGroups:
                 - taskCount: 1
@@ -534,25 +539,69 @@ submit_batch_stage:
                       noExternalIpAddress: true
               logsPolicy:
                 destination: CLOUD_LOGGING
-            # Don't block on the Batch create LRO. The default 1800s polling
-            # timeout fires when a job sits in QUEUED waiting for capacity or
-            # image pull, even though the job itself is healthy. Job completion
-            # is tracked separately via pipeline_state markers.
-            connector_params:
-              skip_polling: true
+          result: create_batch_response
         except:
           as: e
           steps:
             - handle_batch_create_error:
                 switch:
                   - condition: $${default(map.get(e, "code"), 0) == 409}
-                    next: batch_job_already_exists
+                    next: get_existing_batch_job
                   - condition: true
                     raise: $${e}
     - batch_job_created:
         return: "created"
+
+    - get_existing_batch_job:
+        try:
+          call: googleapis.batch.v1.projects.locations.jobs.get
+          args:
+            name: $${job_name}
+          result: existing_batch_job
+        except:
+          as: e
+          steps:
+            - handle_existing_batch_get_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 404}
+                    next: create_batch_job
+                  - condition: true
+                    raise: $${e}
+
+    - check_existing_batch_job:
+        switch:
+          - condition: $${existing_batch_job.status.state == "FAILED" or existing_batch_job.status.state == "CANCELLED" or existing_batch_job.status.state == "SUCCEEDED"}
+            next: maybe_recreate_existing_batch_job
+          - condition: true
+            next: batch_job_already_exists
+
+    - maybe_recreate_existing_batch_job:
+        switch:
+          - condition: $${recreate_attempted}
+            next: stale_batch_job_delete_pending
+          - condition: true
+            next: delete_existing_batch_job
+
+    - delete_existing_batch_job:
+        call: googleapis.batch.v1.projects.locations.jobs.delete
+        args:
+          name: $${job_name}
+
+    - mark_recreate_attempted:
+        assign:
+          - recreate_attempted: true
+
+    - wait_for_batch_delete:
+        call: sys.sleep
+        args:
+          seconds: 30
+        next: create_batch_job
+
     - batch_job_already_exists:
         return: "exists"
+
+    - stale_batch_job_delete_pending:
+        return: "stale_delete_pending"
 
 
 pipeline_state:
