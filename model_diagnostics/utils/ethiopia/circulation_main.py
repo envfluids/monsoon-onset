@@ -402,6 +402,7 @@ def plot_circulation(
             _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var,
                            date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
                            (deterministic_model, f"{ensemble_model} (mean)"), smooth)
-            _mslp_figure(aifs_nc, ens_nc, date,
-                         out_dir / f"{prefix}mslp_{date}.png", DOMAINS["mslp_extended"],
-                         (deterministic_model, f"{ensemble_model} (mean)"))
+            
+    _mslp_figure(aifs_nc, ens_nc, date,
+                    out_dir / f"africa_mslp_{date}.png", DOMAINS["mslp_extended"],
+                    (deterministic_model, f"{ensemble_model} (mean)"))

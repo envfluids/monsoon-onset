@@ -113,18 +113,6 @@ class ZarrMirror:
         logging.info(f"Mirrored {local_file} to {target_file}")
 
 
-# def get_state(date_f):
-#     logging.info(f"Reading input state for date: {date_f}")
-#     with open(f"../raw/ifs_ic/input_state_{date_f}.pkl", "rb") as f:
-#         data = pickle.load(f)
-#         vars_to_remove = ["swvl1", "swvl2"]
-#         for key in vars_to_remove:
-#             if key in data["fields"]:
-#                 logging.info(f"Removing variable {key} from input state")
-#                 data["fields"].pop(key)
-#         return data
-
-
 _CHUNK_SHAPE_BY_DIM = {
     "time": 1,
     "number": 1,
