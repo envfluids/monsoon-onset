@@ -40,6 +40,7 @@ output "batch_job_template" {
     aifs_v2_image     = var.aifs_v2_image
     aifs_ens_v2_image = var.aifs_ens_v2_image
     neuralgcm_image   = var.neuralgcm_image
+    blend_image       = var.blend_image
     gencast_image     = var.gencast_image
     vpc_network       = var.vpc_id
     vpc_subnet        = var.vpc_subnetwork

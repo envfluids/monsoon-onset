@@ -1,9 +1,9 @@
 # -----------------------------------------------------------------------------
-# Monsoon Pipeline Workflow — Greedy, IC-Driven, Deduplicated
+# Monsoon Pipeline Workflow — Event-Advanced, Artifact-Driven
 #
-# Each run probes pipeline-state, downloads missing ICs by source/date, greedily
-# runs models whose IC source is present, then blends/syncs regions whose
-# expected inputs are present. GCS artifacts are the success signal.
+# Scheduled runs download missing ICs and submit currently-ready work. GCS
+# finalization notifications for common-bucket intermediate markers invoke the
+# same workflow, which probes pipeline-state and submits the next ready stages.
 # -----------------------------------------------------------------------------
 
 main:
@@ -13,24 +13,57 @@ main:
         assign:
           - requested_date: $${default(map.get(args, "date"), "")}
           - action: $${default(map.get(args, "action"), "run")}
+          - event_type: $${default(map.get(args, "type"), "")}
+          - event_data: $${default(map.get(args, "data"), json.decode("{}"))}
+          - event_message: $${default(map.get(event_data, "message"), json.decode("{}"))}
+          - event_payload: $${json.decode(base64.decode(default(map.get(event_message, "data"), "e30=")))}
+          - event_object_name: $${default(map.get(event_payload, "name"), "")}
           - project_id: "${project_id}"
           - common_bucket: "${common_bucket}"
           - region_buckets: ${jsonencode(region_buckets)}
           - regions: ${jsonencode(regions)}
           - region_names: ${jsonencode([for r, _ in regions : r])}
-          - regions_by_model: ${jsonencode(regions_by_model)}
           - pipeline_state_url: "${pipeline_state_url}"
           - default_ic_download:
               source: ""
               date: ""
               missing: []
-          - default_model_action:
-              model: ""
-              date: ""
-              regions: []
-          - default_region_action:
-              region: ""
-              date: ""
+
+    - maybe_advance_from_event:
+        switch:
+          - condition: $${event_type != "" and text.match_regex(event_object_name, "^intermediate/.*_done$")}
+            next: advance_probe_state
+          - condition: $${event_type != ""}
+            next: return_ignored_event
+          - condition: true
+            next: probe_state_initial
+
+    - advance_probe_state:
+        call: pipeline_state
+        args:
+          base_url: $${pipeline_state_url}
+          date: ""
+        result: advance_state
+
+    - advance_submit_ready_work:
+        call: submit_ready_work
+        args:
+          state: $${advance_state}
+          common_bucket: $${common_bucket}
+          region_buckets: $${region_buckets}
+          regions: $${regions}
+          region_names: $${region_names}
+
+    - return_advanced:
+        return:
+          status: "advanced"
+          marker: $${event_object_name}
+          state: $${advance_state}
+
+    - return_ignored_event:
+        return:
+          status: "ignored_event"
+          object: $${event_object_name}
 
     - probe_state_initial:
         call: pipeline_state
@@ -53,8 +86,9 @@ main:
           text: $${"initial actions=" + json.encode_to_string(state.actions)}
 
     # -------------------------------------------------------------------------
-    # 1. Download missing ICs by source. A failed source logs an error and the
-    #    post-download state probe will keep dependent model work blocked.
+    # 1. Download missing ICs by source. Downloader completion writes
+    #    intermediate/latest_* markers that can independently advance the
+    #    pipeline through the Eventarc/Pub/Sub path.
     # -------------------------------------------------------------------------
     - download_ics:
         parallel:
@@ -143,417 +177,265 @@ main:
           severity: INFO
           text: $${"post-ic actions=" + json.encode_to_string(state_post_ic.actions)}
 
-    # -------------------------------------------------------------------------
-    # 2. Run each model at most once per IC date. Duplicate Batch job IDs mean
-    #    another workflow already started the same model/date, so poll it.
-    #    GenCast is launched as a TPU queued resource; GPU models stay on Batch.
-    # -------------------------------------------------------------------------
-    - run_models:
+    - submit_ready_work_after_ic:
+        call: submit_ready_work
+        args:
+          state: $${state_post_ic}
+          common_bucket: $${common_bucket}
+          region_buckets: $${region_buckets}
+          regions: $${regions}
+          region_names: $${region_names}
+
+    - return_submitted:
+        return:
+          status: "submitted"
+          state: $${state_post_ic}
+
+    - return_checked:
+        return:
+          status: "checked"
+          state: $${state}
+
+
+# -----------------------------------------------------------------------------
+# Subroutines
+# -----------------------------------------------------------------------------
+
+submit_ready_work:
+  params: [state, common_bucket, region_buckets, regions, region_names]
+  steps:
+    - init_ready_work:
+        assign:
+          - actions: $${state.actions}
+          - default_model_action:
+              model: ""
+              date: ""
+              regions: []
+          - default_region_action:
+              region: ""
+              date: ""
+
+    - submit_batch_models:
         parallel:
           branches:
-            - run_model_noop:
+            - batch_model_noop:
                 steps:
-                  - model_noop_done:
+                  - batch_model_noop_done:
                       assign:
-                        - model_noop_branch_done: true
-%{ for model in gpu_models_in_use ~}
-            - run_${model}:
+                        - batch_model_noop_branch_done: true
+%{ for model in batch_models_in_use ~}
+            - submit_${model}:
                 steps:
                   - load_${model}_action:
                       assign:
-                        - ${model}_action: $${default(map.get(state_post_ic.actions.models_to_run_by_model, "${model}"), default_model_action)}
-                  - maybe_skip_${model}:
+                        - ${model}_action: $${default(map.get(actions.models_to_run_by_model, "${model}"), default_model_action)}
+                  - maybe_submit_${model}:
                       switch:
                         - condition: $${${model}_action.date == ""}
-                          next: ${model}_done
+                          next: ${model}_submit_done
                         - condition: true
-                          next: prepare_${model}_batch
-                  - prepare_${model}_batch:
-                      assign:
-                        - ${model}_job_id: $${"${replace(lower(model), "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
-                        - ${model}_job_name: $${"projects/" + project_id + "/locations/${region}/jobs/" + ${model}_job_id}
-                        - ${model}_attempt: 1
-                  # Probe first so this execution can adopt in-flight jobs and
-                  # clean up terminal failed jobs before trying the same id.
-                  - probe_existing_${model}_job:
-                      try:
-                        call: googleapis.batch.v1.projects.locations.jobs.get
-                        args:
-                          name: $${${model}_job_name}
-                        result: ${model}_existing
-                      except:
-                        as: e
-                        steps:
-                          - handle_${model}_probe_error:
-                              switch:
-                                - condition: $${default(map.get(e, "code"), 0) == 404}
-                                  next: submit_${model}_batch
-                                - condition: true
-                                  raise: $${e}
-                  - check_${model}_stale:
-                      switch:
-                        - condition: $${${model}_existing.status.state == "SUCCEEDED"}
-                          next: ${model}_done
-                        - condition: $${${model}_existing.status.state == "FAILED" or ${model}_existing.status.state == "CANCELLED"}
-                          next: delete_stale_${model}_job
-                        - condition: true
-                          next: poll_${model}
-                  - delete_stale_${model}_job:
-                      call: googleapis.batch.v1.projects.locations.jobs.delete
-                      args:
-                        name: $${${model}_job_name}
-                      next: submit_${model}_batch
+                          next: submit_${model}_batch
                   - submit_${model}_batch:
-                      try:
-                        call: googleapis.batch.v1.projects.locations.jobs.create
-                        args:
-                          parent: $${"projects/" + project_id + "/locations/${region}"}
-                          jobId: $${${model}_job_id}
-                          body:
-                            taskGroups:
-                              - taskCount: 1
-                                taskSpec:
-%{ if batch_config.model_resources[model].cpu_milli != null || batch_config.model_resources[model].memory_mib != null ~}
-                                  computeResource:
-%{ if batch_config.model_resources[model].cpu_milli != null ~}
-                                    cpuMilli: ${batch_config.model_resources[model].cpu_milli}
-%{ endif ~}
-%{ if batch_config.model_resources[model].memory_mib != null ~}
-                                    memoryMib: ${batch_config.model_resources[model].memory_mib}
-%{ endif ~}
-%{ endif ~}
-                                  maxRetryCount: 1
-                                  maxRunDuration: "${model == "AIFS_ENS_v2" ? "7200s" : (model == "neuralgcm" ? "3600s" : "1800s")}"
-                                  runnables:
-                                    - container:
-                                        imageUri: "${model_images[model]}"
-                                        enableImageStreaming: ${batch_config.image_streaming}
-                                      environment:
-                                        variables:
-                                          DATE: $${${model}_action.date}
-                                          MODEL: "${model}"
-                                          FORECAST_REGIONS: $${json.encode_to_string(${model}_action.regions)}
-                                          GCS_COMMON_BUCKET: $${common_bucket}
-                                          GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
-                                          UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
-%{ if contains(full_field_models, model) ~}
-                                  volumes:
-                                    - gcs:
-                                        remotePath: $${common_bucket}
-                                      mountPath: /mnt/disks/common
-%{ endif ~}
-                            allocationPolicy:
-                              serviceAccount:
-                                email: "${pipeline_sa}"
-                              instances:
-                                - installGpuDrivers: true
-                                  policy:
-                                    machineType: "${batch_config.model_resources[model].machine_type}"
-                                    bootDisk:
-                                      image: "${batch_config.os_image}"
-%{ if batch_config.model_resources[model].boot_disk_size_gb != null ~}
-                                      sizeGb: ${batch_config.model_resources[model].boot_disk_size_gb}
-%{ endif ~}
-%{ if batch_config.model_resources[model].boot_disk_type != null ~}
-                                      type: "${batch_config.model_resources[model].boot_disk_type}"
-%{ endif ~}
-                                    provisioningModel: '${batch_config.preemptible ? "SPOT" : "STANDARD"}'
-%{ if batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ~}
-                                    accelerators:
-                                      - type: "${batch_config.model_resources[model].gpu_type}"
-                                        count: ${batch_config.model_resources[model].gpu_count}
-%{ endif ~}
-                              location:
-                                allowedLocations: ["regions/${region}"]
-                              network:
-                                networkInterfaces:
-                                  - network: "${batch_config.vpc_network}"
-                                    subnetwork: "${batch_config.vpc_subnet}"
-                                    noExternalIpAddress: true
-                            logsPolicy:
-                              destination: CLOUD_LOGGING
-                          connector_params:
-                            timeout: 86400
-                            polling_policy:
-                              initial_delay: ${model == "neuralgcm" ? 120 : 60}
-                              multiplier: 1
-                              max_delay: ${model == "neuralgcm" ? 120 : 60}
-                      except:
-                        as: e
-                        steps:
-                          - handle_${model}_submit_error:
-                              switch:
-                                - condition: $${default(map.get(e, "code"), 0) == 409}
-                                  next: poll_${model}
-                                - condition: $${"OperationError" in default(map.get(e, "tags"), [])}
-                                  next: poll_${model}
-                                - condition: $${"TimeoutError" in default(map.get(e, "tags"), [])}
-                                  next: poll_${model}
-                                - condition: true
-                                  raise: $${e}
-                      next: ${model}_done
-                  - poll_${model}:
-                      steps:
-                        - get_${model}_status:
-                            try:
-                              call: googleapis.batch.v1.projects.locations.jobs.get
-                              args:
-                                name: $${${model}_job_name}
-                              result: ${model}_status
-                            except:
-                              as: e
-                              steps:
-                                - handle_${model}_poll_get_error:
-                                    switch:
-                                      - condition: $${default(map.get(e, "code"), 0) == 404}
-                                        next: submit_${model}_batch
-                                      - condition: true
-                                        raise: $${e}
-                        - check_${model}_state:
-                            switch:
-                              - condition: $${${model}_status.status.state == "SUCCEEDED"}
-                                next: ${model}_done
-                              - condition: $${${model}_status.status.state == "FAILED" or ${model}_status.status.state == "CANCELLED"}
-                                next: maybe_retry_${model}
-                              - condition: true
-                                next: sleep_${model}
-                        - maybe_retry_${model}:
-                            switch:
-                              - condition: $${${model}_attempt < ${batch_config.max_attempts}}
-                                next: log_${model}_retry
-                              - condition: true
-                                raise: '$${"${model} job did not complete successfully after ${batch_config.max_attempts} attempts: " + ${model}_job_name + " state=" + ${model}_status.status.state + " events=" + json.encode_to_string(default(map.get(${model}_status.status, "statusEvents"), []))}'
-                        - log_${model}_retry:
-                            call: sys.log
-                            args:
-                              severity: WARNING
-                              text: '$${"${model} Batch job attempt " + json.encode_to_string(${model}_attempt) + " failed with state=" + ${model}_status.status.state + " events=" + json.encode_to_string(default(map.get(${model}_status.status, "statusEvents"), [])) + "; deleting and recreating " + ${model}_job_name}'
-                        - delete_failed_${model}_job:
-                            call: googleapis.batch.v1.projects.locations.jobs.delete
-                            args:
-                              name: $${${model}_job_name}
-                        - increment_${model}_attempt:
-                            assign:
-                              - ${model}_attempt: $${${model}_attempt + 1}
-                        - sleep_${model}_retry:
-                            call: sys.sleep
-                            args:
-                              seconds: 60
-                            next: submit_${model}_batch
-                        - sleep_${model}:
-                            call: sys.sleep
-                            args:
-                              seconds: ${model == "neuralgcm" ? 120 : 60}
-                            next: get_${model}_status
-                  - ${model}_done:
+                      call: submit_batch_stage
+                      args:
+                        job_id: $${"${replace(lower(model), "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
+                        image: "${model_images[model]}"
+                        machine_type: "${batch_config.model_resources[model].machine_type}"
+                        cpu_milli: ${batch_config.model_resources[model].cpu_milli}
+                        memory_mib: ${batch_config.model_resources[model].memory_mib}
+                        boot_disk_size_gb: ${batch_config.model_resources[model].boot_disk_size_gb}
+                        boot_disk_type: "${batch_config.model_resources[model].boot_disk_type}"
+                        install_gpu_drivers: ${batch_config.model_resources[model].install_gpu_drivers}
+                        provisioning_model: "${batch_config.model_resources[model].provisioning_model}"
+                        max_run_duration: "${batch_config.model_resources[model].max_run_duration}"
+                        accelerators: ${batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ? jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = batch_config.model_resources[model].gpu_count }]) : "[]"}
+                        volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                        env_vars:
+                          DATE: $${${model}_action.date}
+                          MODEL: "${model}"
+                          FORECAST_REGIONS: $${json.encode_to_string(${model}_action.regions)}
+                          GCS_COMMON_BUCKET: $${common_bucket}
+                          GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
+                          REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
+                          REGIONS: '${jsonencode(regions)}'
+                          PROJECT_ID: "${project_id}"
+                          UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
+                  - ${model}_submit_done:
                       assign:
-                        - ${model}_branch_done: true
+                        - ${model}_submit_branch_done: true
 %{ endfor ~}
+
 %{ if contains(models_in_use, "gencast") ~}
-            - run_gencast:
+    - submit_gencast:
+        steps:
+          - load_gencast_action:
+              assign:
+                - gencast_action: $${default(map.get(actions.models_to_run_by_model, "gencast"), default_model_action)}
+          - maybe_submit_gencast:
+              switch:
+                - condition: $${gencast_action.date == ""}
+                  next: gencast_submit_done
+                - condition: true
+                  next: run_gencast_dispatch
+          - run_gencast_dispatch:
+              try:
+                call: googleapis.run.v2.projects.locations.jobs.run
+                args:
+                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs["tpu-dispatch"].name}"
+                  body:
+                    overrides:
+                      containerOverrides:
+                        - env:
+                            - name: WORKLOAD_NAME
+                              value: "gencast"
+                            - name: RUN_ID
+                              value: $${"gencast-" + text.replace_all(gencast_action.date, "T", "-")}
+                            - name: DATE
+                              value: $${gencast_action.date}
+                            - name: WORKLOAD_IMAGE
+                              value: "${tpu_config.workload_image}"
+                            - name: FORECAST_REGIONS
+                              value: $${json.encode_to_string(gencast_action.regions)}
+                            - name: GCS_COMMON_BUCKET
+                              value: $${common_bucket}
+                            - name: GCS_REGION_BUCKETS
+                              value: $${json.encode_to_string(region_buckets)}
+                            - name: PROJECT_ID
+                              value: "${project_id}"
+                            - name: TPU_ZONE
+                              value: "${tpu_config.zone}"
+                            - name: TPU_ACCELERATOR_TYPE
+                              value: "${tpu_config.accelerator_type}"
+                            - name: TPU_RUNTIME_VERSION
+                              value: "${tpu_config.runtime_version}"
+                            - name: TPU_SPOT
+                              value: "${tpu_config.spot}"
+                            - name: TPU_NETWORK
+                              value: "${tpu_config.vpc_network}"
+                            - name: TPU_SUBNETWORK
+                              value: "${tpu_config.vpc_subnet}"
+                            - name: TPU_SERVICE_ACCOUNT
+                              value: "${pipeline_sa}"
+                            - name: ARTIFACT_REGISTRY_HOST
+                              value: "${tpu_config.artifact_registry_host}"
+                            - name: MAX_ATTEMPTS
+                              value: "${tpu_config.max_attempts}"
+                            - name: POLL_INTERVAL_SECONDS
+                              value: "${tpu_config.poll_interval_seconds}"
+                            - name: QUEUE_TIMEOUT_SECONDS
+                              value: "${tpu_config.queue_timeout_seconds}"
+                            - name: RUN_TIMEOUT_SECONDS
+                              value: "${tpu_config.run_timeout_seconds}"
+                            - name: REQUEST_VALID_DURATION
+                              value: "${tpu_config.request_valid_duration}"
+                            - name: GENCAST_EXPECTED_GLOBAL_DEVICES
+                              value: "${tpu_config.global_device_count}"
+                            - name: GENCAST_EXPECTED_LOCAL_DEVICES
+                              value: "${tpu_config.local_device_count}"
+                            - name: GENCAST_EXPECTED_PROCESS_COUNT
+                              value: "${tpu_config.process_count}"
+                            - name: GENCAST_ENSEMBLE_MEMBERS
+                              value: "${tpu_config.global_device_count}"
+                  connector_params:
+                    skip_polling: true
+              except:
+                as: e
                 steps:
-                  - load_gencast_action:
-                      assign:
-                        - gencast_action: $${default(map.get(state_post_ic.actions.models_to_run_by_model, "gencast"), default_model_action)}
-                  - maybe_skip_gencast:
-                      switch:
-                        - condition: $${gencast_action.date == ""}
-                          next: gencast_done
-                        - condition: true
-                          next: prepare_gencast_dispatch
-                  - prepare_gencast_dispatch:
-                      assign:
-                        - gencast_run_id: $${"gencast-" + text.replace_all(gencast_action.date, "T", "-")}
-                        - gencast_wait_seconds: 0
-                  - run_gencast_dispatch:
-                      call: googleapis.run.v2.projects.locations.jobs.run
+                  - log_gencast_dispatch_error:
+                      call: sys.log
                       args:
-                        name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs["tpu-dispatch"].name}"
-                        body:
-                          overrides:
-                            containerOverrides:
-                              - env:
-                                  - name: WORKLOAD_NAME
-                                    value: "gencast"
-                                  - name: RUN_ID
-                                    value: $${gencast_run_id}
-                                  - name: DATE
-                                    value: $${gencast_action.date}
-                                  - name: WORKLOAD_IMAGE
-                                    value: "${tpu_config.workload_image}"
-                                  - name: FORECAST_REGIONS
-                                    value: $${json.encode_to_string(gencast_action.regions)}
-                                  - name: GCS_COMMON_BUCKET
-                                    value: $${common_bucket}
-                                  - name: GCS_REGION_BUCKETS
-                                    value: $${json.encode_to_string(region_buckets)}
-                                  - name: PROJECT_ID
-                                    value: $${project_id}
-                                  - name: TPU_ZONE
-                                    value: "${tpu_config.zone}"
-                                  - name: TPU_ACCELERATOR_TYPE
-                                    value: "${tpu_config.accelerator_type}"
-                                  - name: TPU_RUNTIME_VERSION
-                                    value: "${tpu_config.runtime_version}"
-                                  - name: TPU_SPOT
-                                    value: "${tpu_config.spot}"
-                                  - name: TPU_NETWORK
-                                    value: "${tpu_config.vpc_network}"
-                                  - name: TPU_SUBNETWORK
-                                    value: "${tpu_config.vpc_subnet}"
-                                  - name: TPU_SERVICE_ACCOUNT
-                                    value: "${pipeline_sa}"
-                                  - name: ARTIFACT_REGISTRY_HOST
-                                    value: "${tpu_config.artifact_registry_host}"
-                                  - name: MAX_ATTEMPTS
-                                    value: "${tpu_config.max_attempts}"
-                                  - name: POLL_INTERVAL_SECONDS
-                                    value: "${tpu_config.poll_interval_seconds}"
-                                  - name: QUEUE_TIMEOUT_SECONDS
-                                    value: "${tpu_config.queue_timeout_seconds}"
-                                  - name: RUN_TIMEOUT_SECONDS
-                                    value: "${tpu_config.run_timeout_seconds}"
-                                  - name: REQUEST_VALID_DURATION
-                                    value: "${tpu_config.request_valid_duration}"
-                                  - name: GENCAST_EXPECTED_GLOBAL_DEVICES
-                                    value: "${tpu_config.global_device_count}"
-                                  - name: GENCAST_EXPECTED_LOCAL_DEVICES
-                                    value: "${tpu_config.local_device_count}"
-                                  - name: GENCAST_EXPECTED_PROCESS_COUNT
-                                    value: "${tpu_config.process_count}"
-                                  - name: GENCAST_ENSEMBLE_MEMBERS
-                                    value: "${tpu_config.global_device_count}"
-                        connector_params:
-                          skip_polling: true
-                  - poll_gencast_state:
-                      call: pipeline_state
-                      args:
-                        base_url: $${pipeline_state_url}
-                        date: $${gencast_action.date}
-                      result: gencast_poll_state
-                  - check_gencast_complete:
-                      switch:
-                        - condition: $${gencast_poll_state.models.gencast.complete}
-                          next: gencast_done
-                        - condition: $${gencast_wait_seconds >= 86400}
-                          raise: '$${"gencast dispatch did not complete within workflow wait budget: date=" + gencast_action.date + " state=" + json.encode_to_string(gencast_poll_state.models.gencast)}'
-                        - condition: true
-                          next: sleep_gencast
-                  - sleep_gencast:
-                      call: sys.sleep
-                      args:
-                        seconds: 300
-                  - increment_gencast_wait:
-                      assign:
-                        - gencast_wait_seconds: $${gencast_wait_seconds + 300}
-                      next: poll_gencast_state
-                  - gencast_done:
-                      assign:
-                        - gencast_branch_done: true
+                        severity: WARNING
+                        text: '$${"gencast dispatch submission returned: " + json.encode_to_string(e)}'
+          - gencast_submit_done:
+              assign:
+                - gencast_submit_complete: true
 %{ endif ~}
 
-    - probe_state_post_models:
-        call: pipeline_state
-        args:
-          base_url: $${pipeline_state_url}
-          date: $${requested_date}
-        result: state_post_models
-
-    - log_post_model_plan:
-        call: sys.log
-        args:
-          severity: INFO
-          text: $${"post-model actions=" + json.encode_to_string(state_post_models.actions)}
-
-    # -------------------------------------------------------------------------
-    # 3. Blend any region/date whose configured model outputs are now present.
-    # -------------------------------------------------------------------------
-    - blend_loop:
+    - submit_blends:
         for:
           value: region_name
           in: $${region_names}
           steps:
             - load_blend_action:
                 assign:
-                  - blend_action: $${default(map.get(state_post_models.actions.regions_to_blend_by_region, region_name), default_region_action)}
-            - maybe_blend:
+                  - blend_action: $${default(map.get(actions.regions_to_blend_by_region, region_name), default_region_action)}
+            - maybe_submit_blend:
                 switch:
                   - condition: $${blend_action.date == ""}
                     next: end_blend_iteration
                   - condition: true
-                    next: run_blend
-            - run_blend:
-                call: googleapis.run.v2.projects.locations.jobs.run
+                    next: submit_blend_batch
+            - submit_blend_batch:
+                call: submit_batch_stage
                 args:
-                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.blend.name}"
-                  body:
-                    overrides:
-                      containerOverrides:
-                        - env:
-                            - name: DATE
-                              value: $${blend_action.date}
-                            - name: FORECAST_REGION
-                              value: $${region_name}
-                            - name: GCS_COMMON_BUCKET
-                              value: $${common_bucket}
-                            - name: GCS_REGION_BUCKETS
-                              value: $${json.encode_to_string(region_buckets)}
+                  job_id: $${"blend-" + region_name + "-" + text.replace_all(blend_action.date, "T", "-")}
+                  image: "${model_images["blend"]}"
+                  machine_type: "${batch_config.model_resources["blend"].machine_type}"
+                  cpu_milli: ${batch_config.model_resources["blend"].cpu_milli}
+                  memory_mib: ${batch_config.model_resources["blend"].memory_mib}
+                  boot_disk_size_gb: ${batch_config.model_resources["blend"].boot_disk_size_gb}
+                  boot_disk_type: "${batch_config.model_resources["blend"].boot_disk_type}"
+                  install_gpu_drivers: ${batch_config.model_resources["blend"].install_gpu_drivers}
+                  provisioning_model: "${batch_config.model_resources["blend"].provisioning_model}"
+                  max_run_duration: "${batch_config.model_resources["blend"].max_run_duration}"
+                  accelerators: []
+                  volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                  env_vars:
+                    DATE: $${blend_action.date}
+                    FORECAST_REGION: $${region_name}
+                    RUN_MODE: "blend"
+                    GCS_COMMON_BUCKET: $${common_bucket}
+                    GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
+                    REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
+                    REGIONS: '${jsonencode(regions)}'
+                    PROJECT_ID: "${project_id}"
             - end_blend_iteration:
                 assign:
                   - last_blend_region_checked: $${region_name}
 
-    # -------------------------------------------------------------------------
-    # 4. Run model diagnostics for regions whose diagnostic inputs are present.
-    #    The blend image owns this because blend/utils/main.py is the source of
-    #    truth for available model pair diagnostics.
-    # -------------------------------------------------------------------------
-    - diagnostics_loop:
+    - submit_diagnostics:
         for:
           value: region_name
           in: $${region_names}
           steps:
             - load_diagnostics_action:
                 assign:
-                  - diagnostics_action: $${default(map.get(state_post_models.actions.regions_to_diagnose_by_region, region_name), default_region_action)}
-            - maybe_diagnostics:
+                  - diagnostics_action: $${default(map.get(actions.regions_to_diagnose_by_region, region_name), default_region_action)}
+            - maybe_submit_diagnostics:
                 switch:
                   - condition: $${diagnostics_action.date == ""}
                     next: end_diagnostics_iteration
                   - condition: true
-                    next: run_diagnostics
-            - run_diagnostics:
-                call: googleapis.run.v2.projects.locations.jobs.run
+                    next: submit_diagnostics_batch
+            - submit_diagnostics_batch:
+                call: submit_batch_stage
                 args:
-                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.blend.name}"
-                  body:
-                    overrides:
-                      containerOverrides:
-                        - env:
-                            - name: DATE
-                              value: $${diagnostics_action.date}
-                            - name: FORECAST_REGION
-                              value: $${region_name}
-                            - name: RUN_MODE
-                              value: "diagnostics"
-                            - name: GCS_COMMON_BUCKET
-                              value: $${common_bucket}
-                            - name: GCS_REGION_BUCKETS
-                              value: $${json.encode_to_string(region_buckets)}
+                  job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-")}
+                  image: "${model_images["blend"]}"
+                  machine_type: "${batch_config.model_resources["blend"].machine_type}"
+                  cpu_milli: ${batch_config.model_resources["blend"].cpu_milli}
+                  memory_mib: ${batch_config.model_resources["blend"].memory_mib}
+                  boot_disk_size_gb: ${batch_config.model_resources["blend"].boot_disk_size_gb}
+                  boot_disk_type: "${batch_config.model_resources["blend"].boot_disk_type}"
+                  install_gpu_drivers: ${batch_config.model_resources["blend"].install_gpu_drivers}
+                  provisioning_model: "${batch_config.model_resources["blend"].provisioning_model}"
+                  max_run_duration: "${batch_config.model_resources["blend"].max_run_duration}"
+                  accelerators: []
+                  volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                  env_vars:
+                    DATE: $${diagnostics_action.date}
+                    FORECAST_REGION: $${region_name}
+                    RUN_MODE: "diagnostics"
+                    GCS_COMMON_BUCKET: $${common_bucket}
+                    GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
+                    REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
+                    REGIONS: '${jsonencode(regions)}'
+                    PROJECT_ID: "${project_id}"
             - end_diagnostics_iteration:
                 assign:
                   - last_diagnostics_region_checked: $${region_name}
 
-    - probe_state_post_blend:
-        call: pipeline_state
-        args:
-          base_url: $${pipeline_state_url}
-          date: $${requested_date}
-        result: state_post_blend
-
-    # -------------------------------------------------------------------------
-    # 5. Sync final regional outputs whose expected files are present.
-    # -------------------------------------------------------------------------
-    - sync_loop:
+    - submit_sync:
         for:
           value: region_name
           in: $${region_names}
@@ -561,8 +443,8 @@ main:
             - load_sync_inputs:
                 assign:
                   - region_cfg: $${map.get(regions, region_name)}
-                  - sync_action: $${default(map.get(state_post_blend.actions.regions_to_sync_by_region, region_name), default_region_action)}
-            - maybe_sync:
+                  - sync_action: $${default(map.get(actions.regions_to_sync_by_region, region_name), default_region_action)}
+            - maybe_submit_sync:
                 switch:
                   - condition: $${sync_action.date == ""}
                     next: end_sync_iteration
@@ -588,33 +470,84 @@ main:
                 assign:
                   - last_sync_region_checked: $${region_name}
 
-    - maybe_return_partial:
-        switch:
-          - condition: $${len(state_post_blend.actions.blocked) > 0}
-            next: return_partial
-          - condition: true
-            next: return_completed
-
-    - return_completed:
-        return:
-          status: "completed"
-          state: $${state_post_blend}
-
-    - return_partial:
-        return:
-          status: "partial"
-          blocked: $${state_post_blend.actions.blocked}
-          state: $${state_post_blend}
-
-    - return_checked:
-        return:
-          status: "checked"
-          state: $${state}
+    - ready_work_done:
+        return: "submitted"
 
 
-# -----------------------------------------------------------------------------
-# Subroutines
-# -----------------------------------------------------------------------------
+submit_batch_stage:
+  params:
+    - job_id
+    - image
+    - machine_type
+    - cpu_milli
+    - memory_mib
+    - boot_disk_size_gb
+    - boot_disk_type
+    - install_gpu_drivers
+    - provisioning_model
+    - max_run_duration
+    - accelerators
+    - volumes
+    - env_vars
+  steps:
+    - create_batch_job:
+        try:
+          call: googleapis.batch.v1.projects.locations.jobs.create
+          args:
+            parent: "projects/${project_id}/locations/${region}"
+            jobId: $${job_id}
+            body:
+              taskGroups:
+                - taskCount: 1
+                  taskSpec:
+                    computeResource:
+                      cpuMilli: $${cpu_milli}
+                      memoryMib: $${memory_mib}
+                    maxRetryCount: 1
+                    maxRunDuration: $${max_run_duration}
+                    runnables:
+                      - container:
+                          imageUri: $${image}
+                          enableImageStreaming: ${batch_config.image_streaming}
+                        environment:
+                          variables: $${env_vars}
+                    volumes: $${volumes}
+              allocationPolicy:
+                serviceAccount:
+                  email: "${pipeline_sa}"
+                instances:
+                  - installGpuDrivers: $${install_gpu_drivers}
+                    policy:
+                      machineType: $${machine_type}
+                      bootDisk:
+                        image: "${batch_config.os_image}"
+                        sizeGb: $${boot_disk_size_gb}
+                        type: $${boot_disk_type}
+                      provisioningModel: $${provisioning_model}
+                      accelerators: $${accelerators}
+                location:
+                  allowedLocations: ["regions/${region}"]
+                network:
+                  networkInterfaces:
+                    - network: "${batch_config.vpc_network}"
+                      subnetwork: "${batch_config.vpc_subnet}"
+                      noExternalIpAddress: true
+              logsPolicy:
+                destination: CLOUD_LOGGING
+        except:
+          as: e
+          steps:
+            - handle_batch_create_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 409}
+                    next: batch_job_already_exists
+                  - condition: true
+                    raise: $${e}
+    - batch_job_created:
+        return: "created"
+    - batch_job_already_exists:
+        return: "exists"
+
 
 pipeline_state:
   params: [base_url, date]
@@ -638,7 +571,6 @@ pipeline_state:
           url: $${url}
           auth:
             type: OIDC
-            audience: $${base_url}
         result: response
     - return_body:
         return: $${response.body}

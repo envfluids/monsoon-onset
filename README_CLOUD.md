@@ -9,9 +9,9 @@ End-to-end reference for the GCP-based monsoon onset forecast pipeline. Covers e
 | Service | Role |
 |---------|------|
 | Cloud Scheduler | Cron trigger - fires the workflow on a schedule |
-| Cloud Workflows | Orchestrator - sequences and conditionally branches all pipeline stages |
-| Cloud Run Jobs | Lightweight compute for downloader, blend, sync |
-| Cloud Batch | GPU compute for AIFS and NeuralGCM inference |
+| Cloud Workflows | Orchestrator - submits ready work from scheduler and marker events |
+| Cloud Run Jobs | Lightweight compute for downloader, sync, and TPU dispatch |
+| Cloud Batch | GPU model compute and CPU blend/diagnostics compute |
 | Cloud Storage (GCS) | Data lake - raw inputs, intermediate state, model outputs, weights |
 | Artifact Registry | Container image registry for all pipeline images |
 | Cloud Logging | Centralized logs from all containers and the workflow itself |
@@ -248,11 +248,14 @@ The container fetches the NCEP GDAS GRIB2 file and uploads it to:
 gs://{common_bucket}/raw/ncep/{neuralgcm_ic_date}/gdas_{neuralgcm_ic_date}.pgrb2
 ```
 
-Cloud Batch is used instead of Cloud Run for AIFS and NeuralGCM because they require GPU accelerators and multi-hour runtimes beyond Cloud Run's limits.
+Cloud Batch is used for model inference and blend/diagnostics. Model jobs need accelerators and
+blend needs a cheap high-memory CPU VM.
 
 **AIFS Batch jobs:**
 
-Creates separate Cloud Batch jobs with IDs `aifs-{region}-{date}-{timestamp}` and `aifs-ens-{region}-{date}-{timestamp}`. Each job uses the same AIFS container image but passes a different `AIFS_MODEL` value. Pipeline-state skips region/model pairs that do not produce post-processed outputs for the requested region.
+Creates idempotent Cloud Batch jobs with stable IDs such as `aifs-single-v2-{date}` and
+`aifs-ens-v2-{date}`. Pipeline-state passes the pending forecast regions to each model job and
+skips region/model pairs that already have post-processed outputs.
 
 Deterministic AIFS job spec:
 - 1 task, 1 retry, max 1800s (30 minutes)
@@ -282,7 +285,9 @@ The AIFS container (`docker/aifs/src/main.py`) does:
 
 `AIFS_MODEL` defaults to `AIFS`; the cloud workflow sets it explicitly per Batch job.
 
-For newly-created jobs, the workflow lets the Batch connector wait for completion with a 60-second polling policy. If a deterministic job ID already exists, the workflow adopts active jobs by polling `googleapis.batch.v1.projects.locations.jobs.get`; succeeded jobs move on, and failed or cancelled jobs go through the delete-and-retry path.
+The workflow submits Batch jobs with `skip_polling: true`. Completion is detected from GCS output
+and common-bucket `intermediate/*_done` markers, which wake the workflow through
+Pub/Sub/Eventarc.
 
 **Branch B - run_neuralgcm:**
 
@@ -300,9 +305,10 @@ The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
 6. Runs `post_process_merge.py` - merges all 30 members into ensemble statistics
 7. Uploads full-field forecasts to `gs://{common_bucket}/raw_forecast/neuralgcm/{date}/`
 8. Uploads post-processed products to `gs://{region_bucket}/output/neuralgcm/{date}/`
-9. Writes a completion marker: `gs://{common_bucket}/intermediate/neuralgcm_{date}_done`
+9. Writes completion markers: `gs://{common_bucket}/intermediate/neuralgcm_{region}_{date}_done`
 
-For newly-created NeuralGCM jobs, the workflow lets the Batch connector wait for completion with a 120-second polling policy. If a matching job already exists and is still active, the workflow adopts it and polls every 120 seconds.
+The workflow does not poll NeuralGCM directly. It advances when NeuralGCM writes regional output
+and `intermediate/neuralgcm_{region}_{date}_done`.
 
 **GenCast TPU queued resource:**
 
@@ -317,9 +323,9 @@ Only JAX process 0 publishes full-field and region outputs; the other TPU hosts 
 
 ### 7. blend
 
-**Service: Cloud Run Jobs** (`monsoon-{env}-blend`)
+**Service: Cloud Batch** (`monsoon-blend` image)
 
-8 GiB RAM, 4 vCPU, 30-minute timeout.
+`e2-highmem-4` by default: 4 vCPU, 32 GiB RAM, 60-minute max run duration.
 
 The actual model post-processing happens inside the model containers, and `pipeline-state` performs the blend-readiness gate by importing the lightweight configuration in `blend/utils/main.py`.
 
@@ -332,6 +338,8 @@ The blend container (`docker/blend/src/main.py`) does:
    - Computes onset probability for each 2-degree grid cell across bins: week1, week2, week3, week4, later
    - Generates `blend_output_summary.csv` and forecast maps
 5. Uploads all outputs to `gs://{region_bucket}/output/blend/{date}/`
+6. Writes `gs://{common_bucket}/intermediate/blend_{region}_{date}_done` after upload, which
+   wakes the event-driven workflow advancement path.
 
 ### 8. sync
 
@@ -384,26 +392,21 @@ Cloud Workflows: monsoon-{env}-pipeline
         |
         +-- check_action ("check") --> return_checked
         |
-        +-- run_models [parallel]
+        +-- submit_ready_work
         |       |
         |       +-- AIFS branch
-        |       |     downloads missing ECMWF ICs to common bucket
         |       |     Cloud Batch Jobs: aifs-{region}-{date}, aifs-ens-{region}-{date}
         |       |     raw forecasts -> common bucket; post-processed outputs -> regional bucket
-        |       |     connector wait for new jobs; adopts active duplicates
         |       |
         |       +-- NeuralGCM branch
-        |             downloads missing NCEP ICs to common bucket
         |             Cloud Batch Job: neuralgcm-{region}-{date}
         |             raw forecasts -> common bucket; post-processed outputs -> regional bucket
-        |             connector wait for new jobs; adopts active duplicates
+        |       |
+        |       +-- Blend / diagnostics
+        |             Cloud Batch Job: blend-{region}-{date}, diagnostics-{region}-{date}
         |
-        +-- pipeline-state
-        |     finds latest blendable date
-        |
-        +-- blend
-        |     Cloud Run Job: blend
-        |     downloads configured inputs, runs eligible blends, uploads output/blend/{date}/
+        +-- common bucket intermediate *_done marker finalization
+        |     Pub/Sub notification -> Eventarc -> same workflow -> submit_ready_work
         |
         +-- sync
         |     Cloud Run Job: sync

@@ -185,13 +185,13 @@ variable "batch_vm_os_image" {
 }
 
 variable "batch_boot_disk_size_gb" {
-  description = "Boot disk size in GB for Cloud Batch GPU VMs. Must be large enough to unpack NVIDIA container image layers."
+  description = "Default boot disk size in GB for Cloud Batch VMs. GPU images need enough room to unpack NVIDIA container layers."
   type        = number
   default     = 100
 }
 
 variable "batch_boot_disk_type" {
-  description = "Boot disk type for Cloud Batch GPU VMs. Leave null to use the Batch/Compute default."
+  description = "Boot disk type for Cloud Batch VMs. Leave null to use the Batch/Compute default."
   type        = string
   default     = null
 }
@@ -203,28 +203,35 @@ variable "batch_enable_image_streaming" {
 }
 
 variable "batch_job_max_attempts" {
-  description = "Maximum workflow-level create/poll attempts for each GPU Batch job. Retries recreate failed/cancelled Batch jobs."
+  description = "Maximum workflow-level attempts retained for compatibility with Batch stages."
   type        = number
   default     = 3
 }
 
 variable "batch_model_resources" {
-  description = "Sparse per-model overrides for Cloud Batch GPU VM resources. Unset CPU, memory, and GPU fields use known machine-type defaults when available."
+  description = "Sparse per-stage overrides for Cloud Batch resources. Unset CPU, memory, and GPU fields use known machine-type defaults when available."
   type = map(object({
-    machine_type      = optional(string)
-    boot_disk_size_gb = optional(number)
-    boot_disk_type    = optional(string)
-    cpu_milli         = optional(number)
-    memory_mib        = optional(number)
-    gpu_type          = optional(string)
-    gpu_count         = optional(number)
+    machine_type        = optional(string)
+    boot_disk_size_gb   = optional(number)
+    boot_disk_type      = optional(string)
+    cpu_milli           = optional(number)
+    memory_mib          = optional(number)
+    gpu_type            = optional(string)
+    gpu_count           = optional(number)
+    install_gpu_drivers = optional(bool)
+    max_run_duration    = optional(string)
+    mount_common_bucket = optional(bool)
+    provisioning_model  = optional(string)
   }))
   default = {
     AIFS_ENS_v2 = {
-      machine_type      = "a2-highgpu-4g"
-      boot_disk_size_gb = 300
-      cpu_milli         = 12000
-      memory_mib        = 204800
+      machine_type        = "a2-highgpu-4g"
+      boot_disk_size_gb   = 300
+      cpu_milli           = 12000
+      memory_mib          = 204800
+      install_gpu_drivers = true
+      max_run_duration    = "7200s"
+      mount_common_bucket = true
     }
   }
 }

@@ -10,6 +10,7 @@ import time
 import traceback
 from pathlib import Path
 
+import numcodecs
 import numpy as np
 import pandas as pd
 import torch
@@ -191,9 +192,9 @@ def build_member_dataset(
             {
                 "time": 1,
                 "number": 1,
-                "prediction_timedelta": -1,
-                "lat": -1,
-                "lon": -1,
+                "prediction_timedelta": 24,
+                "lat": 90,
+                "lon": 180,
             }
         )
         return ds
@@ -305,7 +306,20 @@ def writer_loop(
                             f"Saving forecast for ensemble {next_member} and date "
                             f"{date} to {filename} (mode=w)"
                         )
-                        ds.to_zarr(filename, zarr_format=2, mode="w")
+                        compressor = numcodecs.Blosc(
+                            cname="zstd",
+                            clevel=3,
+                            shuffle=numcodecs.Blosc.BITSHUFFLE,
+                        )
+                        encoding = {
+                            v: {"compressor": compressor} for v in ds.data_vars
+                        }
+                        ds.to_zarr(
+                            filename,
+                            zarr_format=2,
+                            mode="w",
+                            encoding=encoding,
+                        )
                     else:
                         logging.info(
                             f"Saving forecast for ensemble {next_member} and date "

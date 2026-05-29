@@ -295,6 +295,14 @@ def model_marker_path(model: str, region: str, date: str) -> str:
     return f"intermediate/{model}_{region}_{date}_done"
 
 
+def blend_marker_path(region: str, date: str) -> str:
+    return f"intermediate/blend_{region}_{date}_done"
+
+
+def diagnostics_marker_path(region: str, date: str) -> str:
+    return f"intermediate/model_diagnostics_{region}_{date}_done"
+
+
 def model_region_outputs_present(model: str, region: str, date: str) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
@@ -327,19 +335,25 @@ def blend_present(region: str, date: str) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
         return False
-    return gcs_prefix_has_objects(bucket, f"output/blend/{date}/")
+    return (
+        gcs_object_exists(GCS_COMMON_BUCKET, blend_marker_path(region, date))
+        and gcs_prefix_has_objects(bucket, f"output/blend/{date}/")
+    )
 
 
 def diagnostics_present(region: str, date: str, blends: list[BlendConfig]) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
         return False
-    return all(
-        gcs_prefix_has_objects(
-            bucket,
-            f"output/model_diagnostics/{date}/{region}/{date}/{blend.name}/",
+    return (
+        gcs_object_exists(GCS_COMMON_BUCKET, diagnostics_marker_path(region, date))
+        and all(
+            gcs_prefix_has_objects(
+                bucket,
+                f"output/model_diagnostics/{date}/{region}/{date}/{blend.name}/",
+            )
+            for blend in blends
         )
-        for blend in blends
     )
 
 

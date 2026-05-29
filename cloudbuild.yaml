@@ -401,8 +401,9 @@ steps:
   # the resolved digest at revision-create time and does not auto-follow tag
   # movement on :latest, so explicit updates are required to deploy changes.
   #
-  # Batch (AIFS v2, AIFS ENS v2, neuralgcm) and TPU workload (gencast) tasks resolve :latest at
-  # submit time. Cloud Run jobs, including tpu-dispatch, need explicit updates.
+  # Batch (AIFS v2, AIFS ENS v2, neuralgcm, blend) and TPU workload (gencast)
+  # tasks resolve :latest at submit time. Cloud Run jobs, including
+  # tpu-dispatch, need explicit updates.
   # ---------------------------------------------------------------------------
   - id: deploy-pipeline-state
     name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
@@ -451,17 +452,5 @@ steps:
           --project=${PROJECT_ID} --region=${_REGION} \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
     waitFor: [push-sync]
-
-  - id: deploy-blend
-    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        grep -qx blend targets || { echo "skip"; exit 0; }
-        gcloud run jobs update monsoon-${_ENV}-blend \
-          --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA}
-    waitFor: [push-blend]
 
 timeout: 3600s

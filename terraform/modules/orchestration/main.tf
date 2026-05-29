@@ -5,23 +5,29 @@
 
 locals {
   models_in_use = distinct(flatten([for r, cfg in var.regions : cfg.models]))
-  gpu_models_in_use = [
+  batch_models_in_use = [
     for model in local.models_in_use : model
     if model != "gencast"
   ]
-
-  regions_by_model = {
-    for m in distinct(flatten([for r, cfg in var.regions : cfg.models])) :
-    m => [for r, cfg in var.regions : r if contains(cfg.models, m)]
-  }
 
   # Map model name → batch container image
   model_images = {
     AIFS_single_v2 = var.batch_job_template.aifs_v2_image
     AIFS_ENS_v2    = var.batch_job_template.aifs_ens_v2_image
     neuralgcm      = var.batch_job_template.neuralgcm_image
+    blend          = var.batch_job_template.blend_image
     gencast        = var.batch_job_template.gencast_image
   }
+}
+
+data "google_storage_project_service_account" "gcs_account" {
+  project = var.project_id
+}
+
+resource "google_project_service" "eventarc" {
+  project            = var.project_id
+  service            = "eventarc.googleapis.com"
+  disable_on_destroy = false
 }
 
 # -----------------------------------------------------------------------------
@@ -57,6 +63,12 @@ resource "google_project_iam_member" "workflow_batch_jobs_editor" {
 resource "google_project_iam_member" "workflow_invoker" {
   project = var.project_id
   role    = "roles/workflows.invoker"
+  member  = "serviceAccount:${google_service_account.workflow.email}"
+}
+
+resource "google_project_iam_member" "workflow_eventarc_receiver" {
+  project = var.project_id
+  role    = "roles/eventarc.eventReceiver"
   member  = "serviceAccount:${google_service_account.workflow.email}"
 }
 
@@ -100,24 +112,21 @@ resource "google_pubsub_topic" "pipeline_triggers" {
   }
 }
 
-resource "google_pubsub_topic" "pipeline_completions" {
-  name    = "${var.name_prefix}-${var.environment}-pipeline-completions"
+resource "google_pubsub_topic_iam_member" "gcs_pipeline_trigger_publisher" {
   project = var.project_id
-
-  labels = {
-    environment = var.environment
-    managed_by  = "terraform"
-  }
+  topic   = google_pubsub_topic.pipeline_triggers.name
+  role    = "roles/pubsub.publisher"
+  member  = "serviceAccount:${data.google_storage_project_service_account.gcs_account.email_address}"
 }
 
-resource "google_pubsub_topic" "dead_letter" {
-  name    = "${var.name_prefix}-${var.environment}-dead-letter"
-  project = var.project_id
+resource "google_storage_notification" "common_intermediate_finalized" {
+  bucket             = var.common_bucket
+  topic              = google_pubsub_topic.pipeline_triggers.id
+  payload_format     = "JSON_API_V1"
+  event_types        = ["OBJECT_FINALIZE"]
+  object_name_prefix = "intermediate/"
 
-  labels = {
-    environment = var.environment
-    managed_by  = "terraform"
-  }
+  depends_on = [google_pubsub_topic_iam_member.gcs_pipeline_trigger_publisher]
 }
 
 # -----------------------------------------------------------------------------
@@ -140,23 +149,56 @@ resource "google_workflows_workflow" "main_pipeline" {
     cloud_run_jobs     = var.cloud_run_services
     pipeline_state_url = var.pipeline_state_url
 
-    batch_config      = var.batch_job_template
-    common_bucket     = var.common_bucket
-    region_buckets    = var.region_buckets
-    regions           = var.regions
-    models_in_use     = local.models_in_use
-    gpu_models_in_use = local.gpu_models_in_use
-    regions_by_model  = local.regions_by_model
-    model_images      = local.model_images
-    tpu_config        = var.gencast_tpu_dispatch_template
-    pipeline_sa       = var.pipeline_service_account_email
-    full_field_models = var.full_field_models
+    batch_config        = var.batch_job_template
+    common_bucket       = var.common_bucket
+    region_buckets      = var.region_buckets
+    regions             = var.regions
+    models_in_use       = local.models_in_use
+    batch_models_in_use = local.batch_models_in_use
+    model_images        = local.model_images
+    tpu_config          = var.gencast_tpu_dispatch_template
+    pipeline_sa         = var.pipeline_service_account_email
+    full_field_models   = var.full_field_models
   })
 
   labels = {
     environment = var.environment
     managed_by  = "terraform"
   }
+}
+
+resource "google_eventarc_trigger" "pipeline_intermediate_events" {
+  name     = "${var.name_prefix}-${var.environment}-pipeline-intermediate-events"
+  project  = var.project_id
+  location = var.region
+
+  matching_criteria {
+    attribute = "type"
+    value     = "google.cloud.pubsub.topic.v1.messagePublished"
+  }
+
+  transport {
+    pubsub {
+      topic = google_pubsub_topic.pipeline_triggers.id
+    }
+  }
+
+  destination {
+    workflow = google_workflows_workflow.main_pipeline.id
+  }
+
+  service_account = google_service_account.workflow.email
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+  }
+
+  depends_on = [
+    google_project_service.eventarc,
+    google_project_iam_member.workflow_eventarc_receiver,
+    google_project_iam_member.workflow_invoker,
+  ]
 }
 
 # -----------------------------------------------------------------------------

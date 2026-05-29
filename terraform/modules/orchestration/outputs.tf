@@ -30,8 +30,6 @@ output "workflow_service_account" {
 output "pubsub_topics" {
   description = "Pub/Sub topic names"
   value = {
-    triggers    = google_pubsub_topic.pipeline_triggers.name
-    completions = google_pubsub_topic.pipeline_completions.name
-    dead_letter = google_pubsub_topic.dead_letter.name
+    triggers = google_pubsub_topic.pipeline_triggers.name
   }
 }

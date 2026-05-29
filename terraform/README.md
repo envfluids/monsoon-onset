@@ -54,6 +54,7 @@ gcloud services enable \
   batch.googleapis.com \
   tpu.googleapis.com \
   workflows.googleapis.com \
+  eventarc.googleapis.com \
   cloudscheduler.googleapis.com \
   containerfilesystem.googleapis.com \
   artifactregistry.googleapis.com \
@@ -270,7 +271,7 @@ Cloud Build builds them in parallel using `cloudbuild.yaml`.
 | Image | Dockerfile | Target | Description |
 |---|---|---|---|
 | `monsoon-downloader` | `docker/downloader/Dockerfile` | Cloud Run Job | Downloads ECMWF and NCEP/GDAS initial conditions |
-| `monsoon-blend` | `docker/blend/Dockerfile` | Cloud Run Job | Blends model outputs, applies logistic regression, generates visualizations |
+| `monsoon-blend` | `docker/blend/Dockerfile` | Cloud Batch | Blends model outputs, applies logistic regression, generates visualizations |
 | `monsoon-sync` | `docker/sync/Dockerfile` | Cloud Run Job | Syncs final outputs to the operational web repository |
 | `monsoon-aifs` | `docker/aifs/Dockerfile` | Cloud Batch | Runs AIFS GPU inference |
 | `monsoon-neuralgcm` | `docker/neuralgcm/Dockerfile` | Cloud Batch | Runs NeuralGCM GPU inference |
@@ -315,7 +316,7 @@ Cloud Workflows (main pipeline)
     ├── Cloud Batch Job: neuralgcm  (GPU inference, parallel with aifs)
     ├── TPU queued resource: gencast (v5p-64, parallel with GPU models)
     │
-    ├── Cloud Run Job: blend        (sequential)
+    ├── Cloud Batch Job: blend      (CPU, event-driven when inputs are ready)
     └── Cloud Run Job: sync         (sequential)
 ```
 
@@ -351,7 +352,6 @@ Creates Cloud Run v2 Jobs (not Services — these are batch workloads, not HTTP 
 | Job | Memory | CPU | Timeout |
 |---|---|---|---|
 | downloader | 2 Gi | 2 | 15 min |
-| blend | 8 Gi | 4 | 30 min |
 | sync | 1 Gi | 1 | 10 min |
 
 All Cloud Run Jobs:
@@ -359,9 +359,9 @@ All Cloud Run Jobs:
 - Receive `ENVIRONMENT`, `GCS_BUCKET`, `GCS_WEIGHTS_BUCKET`, `PROJECT_ID`, and `FORECAST_REGION`
   as environment variables (region is overridden at execution time by the workflow)
 
-GPU inference (AIFS and NeuralGCM) runs on **Cloud Batch**, not Cloud Run, because model
-execution requires accelerators. GenCast runs separately on a **Cloud TPU queued resource**
-using TPU v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
+GPU inference (AIFS and NeuralGCM) and CPU blend/diagnostics run on **Cloud Batch**. Blend uses
+`e2-highmem-4` by default. GenCast runs separately on a **Cloud TPU queued resource** using TPU
+v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
 
 ### Orchestration (`modules/orchestration`)
 
@@ -369,14 +369,15 @@ using TPU v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
   See `modules/orchestration/workflow.yaml.tpl` for the full step definition.
   - Accepts `region` and optionally `date` as inputs
   - Calls the pipeline-state service to discover latest ICs and check common/regional bucket state
-  - Downloads missing ECMWF and NCEP ICs inside the relevant model branches
-  - Runs deterministic AIFS, AIFS-ENS, and NeuralGCM as separate Cloud Batch jobs, polling every 60-120 seconds
-  - Runs GenCast as a TPU queued resource with a stable `gencast-{date}` ID and deletes the queued resource after expected outputs appear
-  - Runs blend → sync sequentially after pipeline-state confirms blend inputs
+  - Downloads missing ECMWF and NCEP ICs
+  - Submits deterministic AIFS, AIFS-ENS, NeuralGCM, blend, and diagnostics as idempotent Cloud Batch jobs with stable IDs
+  - Runs GenCast as a TPU queued resource with a stable `gencast-{date}` ID
+  - Advances downstream stages from common-bucket `intermediate/` object finalization events
 - **Cloud Scheduler jobs** (one per `forecast_regions` entry): trigger the Workflow on
   `pipeline_schedule` (default every 6 hours in dev, configurable in prod)
-- **Pub/Sub topics**: `pipeline-triggers`, `pipeline-completions`, and `dead-letter` for event
-  routing (not yet wired into the workflow; reserved for future integrations)
+- **Pub/Sub topic**: `pipeline-triggers` receives common-bucket `intermediate/` object finalization
+  notifications and routes them through Eventarc to the workflow. The workflow advances only for
+  `intermediate/*_done` marker objects.
 - **Workflow service account** with `run.developer`, `batch.jobsEditor`, and `logging.logWriter`,
   plus `iam.serviceAccountUser` to attach the pipeline service account to jobs
 
@@ -426,12 +427,12 @@ No other changes are needed — the workflow is parameterized by region.
 
 Cloud Run Job memory/CPU and Cloud Batch machine types are set in `modules/compute/main.tf` and
 `modules/compute/variables.tf`. To change them per environment, add override variables to the
-environment's `main.tf` and pass them into the module. For model Batch jobs, use
-`batch_model_resources` to override per-model VM settings such as `machine_type`,
-`boot_disk_size_gb`, `boot_disk_type`, `cpu_milli`, `memory_mib`, `gpu_type`, and `gpu_count`.
-Unset CPU, memory, and GPU fields use known machine-type defaults when available; otherwise unset
-granular fields are omitted from the Batch job. For GenCast TPU placement, set `gencast_tpu_zone`;
-it defaults to
+environment's `main.tf` and pass them into the module. For Batch stages, use
+`batch_model_resources` to override per-stage VM settings such as `machine_type`,
+`boot_disk_size_gb`, `boot_disk_type`, `cpu_milli`, `memory_mib`, `gpu_type`, `gpu_count`,
+`install_gpu_drivers`, `max_run_duration`, `mount_common_bucket`, and `provisioning_model`.
+Unset CPU, memory, and GPU fields use known machine-type defaults when available. For GenCast TPU
+placement, set `gencast_tpu_zone`; it defaults to
 `us-central1-a` and supports `us-east5-a` when TPU capacity must move east.
 
 ### Updating Container Images Without Terraform

@@ -14,7 +14,7 @@ sync/state/
 .config/
 __pycache__/
 .DS_Store
-.vscode/*
+.vscode/
 .ruff_cache
 
 /blend/data/

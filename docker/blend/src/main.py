@@ -73,6 +73,11 @@ def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None
     logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
 
 
+def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
+    _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
+    logger.info("Wrote gs://%s/%s", bucket_name, gcs_path)
+
+
 def download_gcs_prefix(bucket_name: str, gcs_prefix: str, local_dir: Path) -> int:
     client = _client()
     count = 0
@@ -332,6 +337,11 @@ def _upload_outputs(date: str, region: str, region_bucket: str, run_mode: str) -
     if run_mode in {"all", "blend"}:
         upload_directory(region_bucket, LOCAL_BLEND_OUT_BASE, f"output/blend/{date}")
         logger.info("Blend outputs uploaded to gs://%s/output/blend/%s/", region_bucket, date)
+        write_gcs_text(
+            os.environ["GCS_COMMON_BUCKET"],
+            f"intermediate/blend_{region}_{date}_done",
+            "done",
+        )
     if run_mode in {"all", "diagnostics"}:
         upload_directory(
             region_bucket,
@@ -343,6 +353,11 @@ def _upload_outputs(date: str, region: str, region_bucket: str, run_mode: str) -
             region_bucket,
             date,
             region,
+        )
+        write_gcs_text(
+            os.environ["GCS_COMMON_BUCKET"],
+            f"intermediate/model_diagnostics_{region}_{date}_done",
+            "done",
         )
 
 

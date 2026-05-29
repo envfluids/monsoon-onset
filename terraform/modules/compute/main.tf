@@ -58,14 +58,33 @@ locals {
 
   default_batch_model_resources = {
     AIFS_single_v2 = {
-      machine_type      = local.gpu_machine_type
-      boot_disk_size_gb = var.batch_boot_disk_size_gb
-      boot_disk_type    = var.batch_boot_disk_type
+      machine_type        = local.gpu_machine_type
+      boot_disk_size_gb   = var.batch_boot_disk_size_gb
+      boot_disk_type      = var.batch_boot_disk_type
+      install_gpu_drivers = true
+      max_run_duration    = "1800s"
+      mount_common_bucket = true
     }
     neuralgcm = {
-      machine_type      = local.gpu_machine_type
-      boot_disk_size_gb = var.batch_boot_disk_size_gb
-      boot_disk_type    = var.batch_boot_disk_type
+      machine_type        = local.gpu_machine_type
+      boot_disk_size_gb   = var.batch_boot_disk_size_gb
+      boot_disk_type      = var.batch_boot_disk_type
+      install_gpu_drivers = true
+      max_run_duration    = "3600s"
+      mount_common_bucket = true
+    }
+    blend = {
+      machine_type        = "e2-highmem-4"
+      boot_disk_size_gb   = var.batch_boot_disk_size_gb
+      boot_disk_type      = var.batch_boot_disk_type
+      cpu_milli           = 4000
+      memory_mib          = 32768
+      gpu_type            = null
+      gpu_count           = null
+      install_gpu_drivers = false
+      max_run_duration    = "3600s"
+      mount_common_bucket = true
+      provisioning_model  = "STANDARD"
     }
   }
 
@@ -74,8 +93,8 @@ locals {
   batch_model_resources = {
     for model, config in local.batch_model_resource_configs : model => {
       machine_type      = coalesce(try(config.machine_type, null), local.gpu_machine_type)
-      boot_disk_size_gb = try(config.boot_disk_size_gb, null)
-      boot_disk_type    = try(config.boot_disk_type, null)
+      boot_disk_size_gb = coalesce(try(config.boot_disk_size_gb, null), var.batch_boot_disk_size_gb)
+      boot_disk_type    = coalesce(try(config.boot_disk_type, null), var.batch_boot_disk_type, "pd-balanced")
       cpu_milli = coalesce(
         try(config.cpu_milli, null),
         try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].cpu_milli, null)
@@ -84,13 +103,33 @@ locals {
         try(config.memory_mib, null),
         try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].memory_mib, null)
       )
-      gpu_type = coalesce(
+      gpu_type = coalesce(try(config.install_gpu_drivers, null), true) ? coalesce(
         try(config.gpu_type, null),
         try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].gpu_type, null)
-      )
-      gpu_count = coalesce(
+      ) : null
+      gpu_count = coalesce(try(config.install_gpu_drivers, null), true) ? coalesce(
         try(config.gpu_count, null),
         try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].gpu_count, null)
+      ) : null
+      install_gpu_drivers = coalesce(
+        try(config.install_gpu_drivers, null),
+        coalesce(
+          try(config.gpu_count, null),
+          try(local.gpu_machine_resource_defaults[coalesce(try(config.machine_type, null), local.gpu_machine_type)].gpu_count, null),
+          0,
+        ) > 0
+      )
+      max_run_duration = coalesce(
+        try(config.max_run_duration, null),
+        model == "AIFS_ENS_v2" ? "7200s" : "1800s"
+      )
+      mount_common_bucket = coalesce(
+        try(config.mount_common_bucket, null),
+        false
+      )
+      provisioning_model = coalesce(
+        try(config.provisioning_model, null),
+        var.use_preemptible_gpu ? "SPOT" : "STANDARD"
       )
     }
   }
@@ -110,8 +149,6 @@ locals {
     }
   }
 
-  cloud_run_jobs_with_common_bucket_mount = toset(["blend"])
-
   cloud_run_services = {
     downloader = {
       name    = "${var.name_prefix}-${var.environment}-downloader"
@@ -123,15 +160,6 @@ locals {
       # Optional env-var names to mount from Secret Manager when supplied in
       # var.external_api_secrets.
       secrets = ["ECMWF_API_KEY", "ECMWF_API_URL", "ECMWF_API_EMAIL"]
-    }
-    blend = {
-      name    = "${var.name_prefix}-${var.environment}-blend"
-      image   = var.blend_image
-      memory  = "8Gi"
-      cpu     = "4"
-      timeout = "1800s"
-      retries = 2
-      secrets = []
     }
     sync = {
       name    = "${var.name_prefix}-${var.environment}-sync"
@@ -236,14 +264,6 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       containers {
         image = each.value.image
 
-        dynamic "volume_mounts" {
-          for_each = contains(local.cloud_run_jobs_with_common_bucket_mount, each.key) ? [1] : []
-          content {
-            name       = "common-bucket"
-            mount_path = "/mnt/disks/common"
-          }
-        }
-
         resources {
           limits = {
             memory = each.value.memory
@@ -306,16 +326,6 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
 
       service_account = var.service_account_email
 
-      dynamic "volumes" {
-        for_each = contains(local.cloud_run_jobs_with_common_bucket_mount, each.key) ? [1] : []
-        content {
-          name = "common-bucket"
-          gcs {
-            bucket    = var.common_gcs_bucket
-            read_only = true
-          }
-        }
-      }
     }
 
     task_count = 1
