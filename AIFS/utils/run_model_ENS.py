@@ -149,7 +149,7 @@ def _v3_encoding(ds):
     )
     encoding = {}
     for name, da in ds.data_vars.items():
-        if not all(d in _CHUNK_SHAPE_BY_DIM for d in da.dims):
+        if not da.dims or not all(d in _CHUNK_SHAPE_BY_DIM for d in da.dims):
             continue
         encoding[name] = {
             "chunks": tuple(_CHUNK_SHAPE_BY_DIM[d] for d in da.dims),
