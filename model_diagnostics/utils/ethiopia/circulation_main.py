@@ -38,6 +38,10 @@ DOMAINS = {
         "lon": (-26, 68), "lat": (-51, 40),
         "stride": 8, "div_qscale": 900, "label": "Africa",
     },
+    "mslp_extended": {
+        "lon": (-26, 68), "lat": (-51, 40),
+        "stride": 10, "div_qscale": 1000, "label": "Africa & Indian Ocean",
+    },
 }
 
 # ── WEEK / STEP CONFIG ────────────────────────────────────────────────────────
@@ -86,6 +90,18 @@ CMAP_DIV_200.set_under(_COLORS_DIV_200[0])
 CMAP_DIV_200.set_over(_COLORS_DIV_200[-1])
 NORM_DIV_200 = BoundaryNorm(_LEVELS_DIV, CMAP_DIV_200.N)
 
+# MSLP: deep blue (low) → white → deep red (high)
+_LEVELS_MSLP = [950, 960, 970, 980, 990, 1000, 1005, 1010, 1015, 1020, 1025, 1030]
+_COLORS_MSLP = [
+    "#1A0090", "#0040CC", "#0080FF", "#40B8FF",
+    "#C0E8FF", "#FFFFFF", "#FFE8C0", "#FFA040",
+    "#FF5000", "#CC0000", "#800000",
+]
+CMAP_MSLP = ListedColormap(_COLORS_MSLP, name="mslp")
+CMAP_MSLP.set_under(_COLORS_MSLP[0])
+CMAP_MSLP.set_over(_COLORS_MSLP[-1])
+NORM_MSLP = BoundaryNorm(_LEVELS_MSLP, CMAP_MSLP.N)
+
 _WIND_CMAPS = {
     "850": (CMAP_850, NORM_850, _LEVELS_850),
     "200": (CMAP_200, NORM_200, _LEVELS_200),
@@ -129,6 +145,15 @@ def _weekly_wind(ds, u_var, v_var, day_start, day_end):
     v_m = v.mean("step").values.astype(float)
     return u_m, v_m, np.sqrt(u_m**2 + v_m**2)
 
+def _weekly_mslp(ds, day_start, day_end):
+    sl = _step_slice(day_start, day_end)
+    mslp = ds["msl"].isel(step=sl)
+    if "number" in mslp.dims:
+        mslp = mslp.mean("number")
+    arr = mslp.mean("step").values.astype(float)
+    if arr.mean() > 10000:
+        arr /= 100.0
+    return arr
 
 def _divergence(u, v, lat, lon, smooth_sigma=0.0):
     if smooth_sigma > 0:
@@ -274,6 +299,51 @@ def _divcon_figure(
     plt.close(fig)
     log.info(f"Saved: {save_path}")
 
+def _mslp_figure(
+    aifs_nc,
+    ens_nc,
+    date_str,
+    save_path,
+    domain,
+    model_labels,
+):
+    lon_min, lon_max = domain["lon"]
+    lat_min, lat_max = domain["lat"]
+    stride = domain["stride"]
+
+    aifs_ds = _load_ds(aifs_nc, lon_min, lon_max, lat_min, lat_max)
+    ens_ds  = _load_ds(ens_nc,  lon_min, lon_max, lat_min, lat_max)
+    lats, lons = aifs_ds.lat.values, aifs_ds.lon.values
+    lon2d, lat2d = np.meshgrid(lons, lats)
+
+    fig, axes = _base_fig()
+    im = None
+    for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
+            ax = axes[row, col]
+            u, v, _ = _weekly_wind(ds, "u_850", "v_850", d0, d1)
+            mslp = _weekly_mslp(ds, d0, d1)
+            im = ax.pcolormesh(lon2d, lat2d, mslp, cmap=CMAP_MSLP, norm=NORM_MSLP,
+                               shading="auto", transform=ccrs.PlateCarree())
+            ax.contour(lon2d, lat2d, mslp, levels=np.arange(950, 1036, 4),
+                       colors="black", linewidths=0.4, transform=ccrs.PlateCarree())
+            sl = slice(None, None, stride)
+            ax.quiver(lon2d[sl, sl], lat2d[sl, sl], u[sl, sl], v[sl, sl],
+                      transform=ccrs.PlateCarree(),
+                      scale=400, width=0.003, headwidth=3, color="black", alpha=0.7)
+            _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
+            _label_panels(axes, row, col, label,
+                          f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}")
+
+    cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
+    fig.colorbar(im, cax=cbar_ax, extend="both", ticks=_LEVELS_MSLP).set_label(
+        "Mean sea level pressure (hPa)", fontsize=10)
+    fig.suptitle(f"{domain['label']} — MSLP & 850 hPa Wind  |  Init: {date_str}",
+                 fontsize=13, y=1.02)
+    fig.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close(fig)
+    log.info(f"Saved: {save_path}")
+
 # ── PUBLIC API ─────────────────────────────────────────────────────────────────
 
 def plot_circulation(
@@ -332,3 +402,6 @@ def plot_circulation(
             _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var,
                            date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
                            (deterministic_model, f"{ensemble_model} (mean)"), smooth)
+            _mslp_figure(aifs_nc, ens_nc, date,
+                         out_dir / f"{prefix}mslp_{date}.png", DOMAINS["mslp_extended"],
+                         (deterministic_model, f"{ensemble_model} (mean)"))
