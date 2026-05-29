@@ -19,6 +19,7 @@ __pycache__/
 
 /blend/data/india2026
 /blend/utils/ethiopia2026_old
+/blend/utils/ethiopia2026/operational/Monsoon_Data/Processed_Data/2026/*
 /gencast/data/*_by_level.nc
 /debug/
 
