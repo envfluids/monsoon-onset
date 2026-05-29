@@ -3,6 +3,7 @@ import logging
 import os
 import pickle
 import warnings
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime
 
 import jax
@@ -17,8 +18,13 @@ warnings.filterwarnings(
     "ignore", message="Consolidated metadata is currently not part.*"
 )
 
-output_path = "../output/raw"
+output_path = os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", "../output/raw")
 N_MEMBERS = 30
+ASYNC_SAVE_WORKERS = max(1, int(os.environ.get("NEURALGCM_ASYNC_SAVE_WORKERS", "1")))
+ASYNC_SAVE_MAX_PENDING = max(
+    ASYNC_SAVE_WORKERS,
+    int(os.environ.get("NEURALGCM_ASYNC_SAVE_MAX_PENDING", "2")),
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +92,48 @@ regridder = horizontal_interpolation.ConservativeRegridder(
 )
 
 
+
+def _save_member_zarr(data, member_path: str, member: int) -> str:
+    logging.info("Saving member %s to %s", member, member_path)
+    data.to_zarr(member_path)
+    logging.info("Finished saving member %s to %s", member, member_path)
+    return member_path
+
+
+def _submit_member_save(
+    executor,
+    pending_saves: set,
+    data,
+    member_path: str,
+    member: int,
+) -> None:
+    future = executor.submit(_save_member_zarr, data, member_path, int(member))
+    pending_saves.add(future)
+
+
+def _drain_completed_saves(
+    pending_saves: set,
+    *,
+    block: bool,
+    until_empty: bool = False,
+) -> None:
+    while pending_saves:
+        timeout = None if block else 0
+        done, pending = wait(
+            pending_saves,
+            timeout=timeout,
+            return_when=FIRST_COMPLETED,
+        )
+        if not done:
+            return
+        for future in done:
+            future.result()
+        pending_saves.clear()
+        pending_saves.update(pending)
+        if not until_empty:
+            return
+
+
 def run_model(date, date_f, forcings_clim, members):
     logging.info(f"Running model for date: {date_f}")
     path_gfs_Ini = f"../raw/ncep_ic/processed/gdas_{date_f}.nc"
@@ -105,67 +153,82 @@ def run_model(date, date_f, forcings_clim, members):
     steps = 45 * 24 // 6
     all_forcings = model.forcings_from_xarray(forcings_clim_sub)
     time = eval_era5.time
-    for rand in members:
-        logging.info(f"Running model for member: {rand}")
-        init_date = time.values
-        times = init_date + (np.arange(1, steps + 1) * dt)  # time axis in hours
+    pending_saves = set()
+    executor = ThreadPoolExecutor(max_workers=ASYNC_SAVE_WORKERS)
+    try:
+        for rand in members:
+            logging.info(f"Running model for member: {rand}")
+            init_date = time.values
+            times = init_date + (np.arange(1, steps + 1) * dt)  # time axis in hours
 
-        # initialize model state
-        inputs = model.inputs_from_xarray(eval_era5)
-        forcing_initial = model.forcings_from_xarray(forcings_clim_sub.isel(time=0))
-        rng_key = jax.random.key(rand)
-        initial_state = model.encode(inputs, forcing_initial, rng_key)
+            # initialize model state
+            inputs = model.inputs_from_xarray(eval_era5)
+            forcing_initial = model.forcings_from_xarray(forcings_clim_sub.isel(time=0))
+            rng_key = jax.random.key(rand)
+            initial_state = model.encode(inputs, forcing_initial, rng_key)
 
-        # make forecast
-        state, predictions = model.unroll(
-            initial_state,
-            all_forcings,
-            steps=steps,
-            timedelta=dt,
-            start_with_input=False,
-        )
-        predictions_ds = model.data_to_xarray(predictions, times=times)
+            # make forecast
+            state, predictions = model.unroll(
+                initial_state,
+                all_forcings,
+                steps=steps,
+                timedelta=dt,
+                start_with_input=False,
+            )
+            predictions_ds = model.data_to_xarray(predictions, times=times)
 
-        specific_humidity = predictions_ds[["specific_humidity"]].sel(
-            level=[
-                100,
-                200,
-                300,
-                400,
-                500,
-                550,
-                600,
-                650,
-                700,
-                750,
-                775,
-                800,
-                825,
-                850,
-                875,
-                900,
-                925,
-                950,
-                975,
-                1000,
-            ]
-        )
-        geopotential = predictions_ds[["geopotential"]].sel(
-            level=[850, 900, 925, 950, 975, 1000]
-        )
-        wind = predictions_ds[["u_component_of_wind", "v_component_of_wind"]].sel(
-            level=[200, 850]
-        )
-        precipitation = predictions_ds[["precipitation_cumulative_mean"]]
+            specific_humidity = predictions_ds[["specific_humidity"]].sel(
+                level=[
+                    100,
+                    200,
+                    300,
+                    400,
+                    500,
+                    550,
+                    600,
+                    650,
+                    700,
+                    750,
+                    775,
+                    800,
+                    825,
+                    850,
+                    875,
+                    900,
+                    925,
+                    950,
+                    975,
+                    1000,
+                ]
+            )
+            geopotential = predictions_ds[["geopotential"]].sel(
+                level=[850, 900, 925, 950, 975, 1000]
+            )
+            wind = predictions_ds[["u_component_of_wind", "v_component_of_wind"]].sel(
+                level=[200, 850]
+            )
+            precipitation = predictions_ds[["precipitation_cumulative_mean"]]
 
-        data = xarray.merge([specific_humidity, geopotential, wind, precipitation], join='outer')
-        data = data.expand_dims("ensemble", axis=0)
-        data["ensemble"] = [rand]
+            data = xarray.merge(
+                [specific_humidity, geopotential, wind, precipitation],
+                join="outer",
+            )
+            data = data.expand_dims("ensemble", axis=0)
+            data["ensemble"] = [rand]
 
-        data_rechunked = data.chunk({"time": -1, "latitude": -1, "longitude": -1})
+            data_rechunked = data.chunk({"time": -1, "latitude": -1, "longitude": -1})
+            member_path = os.path.join(output_path, date_f, f"member_{rand}.zarr")
+            _submit_member_save(executor, pending_saves, data_rechunked, member_path, rand)
+            _drain_completed_saves(
+                pending_saves,
+                block=len(pending_saves) >= ASYNC_SAVE_MAX_PENDING,
+            )
 
-        data_rechunked.to_zarr(output_path + f"/{date_f}/member_{rand}.zarr")
-
+    finally:
+        try:
+            _drain_completed_saves(pending_saves, block=True, until_empty=True)
+        finally:
+            executor.shutdown(wait=True)
     logging.info(f"Done with members: {members}")
 
 
@@ -191,8 +254,9 @@ def main():
 
         forcings_clim = get_forcings_clim(date.year)
 
-        if not os.path.exists(output_path + f"/{date_f}"):
-            os.makedirs(output_path + f"/{date_f}", exist_ok=True)
+        raw_date_dir = os.path.join(output_path, date_f)
+        if not os.path.exists(raw_date_dir):
+            os.makedirs(raw_date_dir, exist_ok=True)
 
         all_members = np.arange(1, N_MEMBERS + 1)
         if args.seed is not None:
@@ -208,8 +272,9 @@ def main():
 
         forcings_clim = get_forcings_clim(date.year)
 
-        if not os.path.exists(output_path + f"/{date_f}"):
-            os.makedirs(output_path + f"/{date_f}", exist_ok=True)
+        raw_date_dir = os.path.join(output_path, date_f)
+        if not os.path.exists(raw_date_dir):
+            os.makedirs(raw_date_dir, exist_ok=True)
 
         all_members = np.arange(1, N_MEMBERS + 1)
         if args.seed is not None:

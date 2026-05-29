@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from datetime import timedelta
 import math
 import logging
@@ -227,7 +226,7 @@ def generate_messages(base, out_path, onset_times):
         if first_week is not None:
             rounded_before = rounded_mid = rounded_after = None
             # Assigning probabilities when the chosen period includes later
-            if percent_after == None: 
+            if percent_after is None: 
                 if percent_mid > .95:
                     rounded_mid = .95
                     rounded_before = .05
@@ -235,7 +234,7 @@ def generate_messages(base, out_path, onset_times):
                     rounded_mid = round_5(percent_mid)
                     rounded_before = 1 - rounded_mid
             # Assigning probabilities when the chosen period starts with week1
-            if percent_before == None: 
+            if percent_before is None: 
                 if percent_mid > .95:
                     rounded_mid = .95
                     rounded_after = .05
@@ -246,7 +245,7 @@ def generate_messages(base, out_path, onset_times):
             tolerance = 1e-7
 
             # Assigning rounded values to test rounded sum.
-            if percent_before != None and percent_after != None:
+            if percent_before is not None and percent_after is not None:
                 percent = [percent_before, percent_mid, percent_after]
                 perc_df = pd.DataFrame({'percent': percent})
                 perc_df['rounded'] = None

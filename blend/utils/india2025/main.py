@@ -14,7 +14,7 @@ from plot_precip import plot_precip
 from circulation.circulation_main import plot_circulation
 from zenodo import write_public
 from messages import generate_messages
-from datetime import datetime, timedelta
+from datetime import datetime
 
 def parse_date(date_str):
     """

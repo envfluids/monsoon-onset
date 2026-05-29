@@ -19,7 +19,7 @@ import argparse
 import logging
 import os
 import re
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np

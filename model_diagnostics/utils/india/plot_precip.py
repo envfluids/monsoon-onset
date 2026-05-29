@@ -75,7 +75,7 @@ def get_week_bin(onset_date, init_date):
 
 def NGCM_Prob_Calc_first(df_ngcm, lat, lon, df):
     df_ngcm_grid = df_ngcm.sel(lat=lat, lon=lon)
-    time = pd.to_datetime(df_ngcm_grid.time.values)
+    # time = pd.to_datetime(df_ngcm_grid.time.values)
     # df_MWMean = xr.open_dataset("/glade/u/home/mgupta/MWMean01_1901_2023_2deg.nc")
     # MWMean = df_MWMean.sel(lat = lat, lon = lon)['MWMean'].item()
     MWMean = df.loc[(df.lat == lat) & (df.lon == lon), "onset_thresh"].iloc[0]

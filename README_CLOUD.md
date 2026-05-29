@@ -282,7 +282,7 @@ The AIFS container (`docker/aifs/src/main.py`) does:
 
 `AIFS_MODEL` defaults to `AIFS`; the cloud workflow sets it explicitly per Batch job.
 
-After creating each job, the workflow polls `googleapis.batch.v1.projects.locations.jobs.get` every 60 seconds until `status.state == "SUCCEEDED"` or `"FAILED"`.
+For newly-created jobs, the workflow lets the Batch connector wait for completion with a 60-second polling policy. If a deterministic job ID already exists, the workflow adopts active jobs by polling `googleapis.batch.v1.projects.locations.jobs.get`; succeeded jobs move on, and failed or cancelled jobs go through the delete-and-retry path.
 
 **Branch B - run_neuralgcm:**
 
@@ -302,7 +302,7 @@ The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
 8. Uploads post-processed products to `gs://{region_bucket}/output/neuralgcm/{date}/`
 9. Writes a completion marker: `gs://{common_bucket}/intermediate/neuralgcm_{date}_done`
 
-The workflow polls every 120 seconds (longer than AIFS because NeuralGCM takes more time).
+For newly-created NeuralGCM jobs, the workflow lets the Batch connector wait for completion with a 120-second polling policy. If a matching job already exists and is still active, the workflow adopts it and polls every 120 seconds.
 
 **GenCast TPU queued resource:**
 
@@ -390,13 +390,13 @@ Cloud Workflows: monsoon-{env}-pipeline
         |       |     downloads missing ECMWF ICs to common bucket
         |       |     Cloud Batch Jobs: aifs-{region}-{date}, aifs-ens-{region}-{date}
         |       |     raw forecasts -> common bucket; post-processed outputs -> regional bucket
-        |       |     polls every 60s
+        |       |     connector wait for new jobs; adopts active duplicates
         |       |
         |       +-- NeuralGCM branch
         |             downloads missing NCEP ICs to common bucket
         |             Cloud Batch Job: neuralgcm-{region}-{date}
         |             raw forecasts -> common bucket; post-processed outputs -> regional bucket
-        |             polls every 120s
+        |             connector wait for new jobs; adopts active duplicates
         |
         +-- pipeline-state
         |     finds latest blendable date

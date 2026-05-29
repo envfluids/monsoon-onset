@@ -255,7 +255,7 @@ module "orchestration" {
   environment = local.environment
 
   regions           = local.regions
-  full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2"]), local.disabled_model_ids)
+  full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]), local.disabled_model_ids)
 
   # Prod: frequent runs matching current HPC schedule
   pipeline_schedule = "*/15 * * * *" # Every 15 minutes (checks for new data)

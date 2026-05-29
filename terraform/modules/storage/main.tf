@@ -165,7 +165,18 @@ resource "google_artifact_registry_repository" "containers" {
   dynamic "cleanup_policies" {
     for_each = var.environment == "dev" ? [1] : []
     content {
-      id     = "delete-old-images"
+      id     = "keep-most-recent-versions"
+      action = "KEEP"
+      most_recent_versions {
+        keep_count = 3
+      }
+    }
+  }
+
+  dynamic "cleanup_policies" {
+    for_each = var.environment == "dev" ? [1] : []
+    content {
+      id     = "delete-old-images-after-retention"
       action = "DELETE"
       condition {
         older_than = var.artifact_registry_cleanup_older_than

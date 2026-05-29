@@ -40,6 +40,7 @@ REGIONS = json.loads(os.environ.get("REGIONS", "{}"))
 LOCAL_BLEND_OUT_BASE = REPO_ROOT / "blend" / "output"
 LOCAL_DIAGNOSTICS_OUT_BASE = REPO_ROOT / "model_diagnostics" / "output"
 LOCAL_BLEND_DATA = REPO_ROOT / "blend" / "data"
+COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
 
 BLEND_MODEL_TO_PIPELINE_MODEL = {
     "AIFS_SINGLE_V2": "AIFS_single_v2",
@@ -48,6 +49,13 @@ BLEND_MODEL_TO_PIPELINE_MODEL = {
     "NCUM": "ncum",
     "NGCM": "neuralgcm",
     "NEURALGCM": "neuralgcm",
+}
+
+FULL_FIELD_MODELS = {
+    "AIFS_SINGLE_V2": {"prefix": "AIFS_single_v2", "kind": "file", "suffix": ".nc"},
+    "AIFS_ENS_V2": {"prefix": "AIFS_ENS_v2", "kind": "directory", "suffix": ".zarr"},
+    "NEURALGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ""},
+    "NGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ""},
 }
 
 
@@ -165,6 +173,13 @@ def _setup_directories(blends: list[BlendConfig], date: str, run_mode: str) -> N
     for blend in blends:
         for input_ in _inputs_for_mode(blend, run_mode):
             input_.path(date).parent.mkdir(parents=True, exist_ok=True)
+        if run_mode in {"all", "diagnostics"}:
+            for model in blend.models():
+                if _full_field_config_for_model(model):
+                    _raw_full_field_path(model, date).parent.mkdir(
+                        parents=True,
+                        exist_ok=True,
+                    )
 
 
 def _download_inputs(
@@ -182,6 +197,8 @@ def _download_inputs(
                 _blend_input_bucket_path(region, input_, date),
                 input_.path(date),
             )
+        if run_mode in {"all", "diagnostics"}:
+            _download_raw_full_fields(common_bucket, blend, date)
 
     if run_mode == "diagnostics" or not any(blend.implemented for blend in blends):
         return
@@ -204,6 +221,73 @@ def _download_inputs(
 
 def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
     return BLEND_MODEL_TO_PIPELINE_MODEL.get(input_.model.upper(), input_.model)
+
+
+def _full_field_config_for_model(model: str) -> dict | None:
+    return FULL_FIELD_MODELS.get(model.upper())
+
+
+def _raw_full_field_path(model: str, date: str) -> Path:
+    config = _full_field_config_for_model(model)
+    if not config:
+        raise click.ClickException(f"No full-field mapping is configured for {model}")
+    if config["prefix"] == "neuralgcm":
+        return REPO_ROOT / "NeuralGCM" / "output" / "raw" / date
+    return (
+        REPO_ROOT
+        / "AIFS"
+        / "output"
+        / "raw"
+        / model
+        / f"init_{date}{config['suffix']}"
+    )
+
+
+def _download_raw_full_fields(common_bucket: str, blend: BlendConfig, date: str) -> None:
+    for model in sorted(blend.models()):
+        config = _full_field_config_for_model(model)
+        if config is None:
+            continue
+        local_path = _raw_full_field_path(model, date)
+        mounted_path = _mounted_full_field_path(config, date)
+        if mounted_path.exists():
+            _symlink_full_field(mounted_path, local_path)
+            continue
+
+        gcs_prefix = f"full_field/{config['prefix']}/{date}/"
+        if config["kind"] == "directory":
+            source_prefix = gcs_prefix
+            if config["prefix"] != "neuralgcm":
+                source_prefix = f"{gcs_prefix}init_{date}{config['suffix']}/"
+            downloaded = download_gcs_prefix(common_bucket, source_prefix, local_path)
+            if downloaded == 0:
+                raise click.ClickException(
+                    f"No {model} full-field objects found at "
+                    f"gs://{common_bucket}/{source_prefix}"
+                )
+            continue
+        download_gcs_file(
+            common_bucket,
+            f"{gcs_prefix}init_{date}{config['suffix']}",
+            local_path,
+        )
+
+
+def _mounted_full_field_path(config: dict, date: str) -> Path:
+    base = COMMON_BUCKET_MOUNT / "full_field" / config["prefix"] / date
+    if config["kind"] == "directory" and config["prefix"] != "neuralgcm":
+        return base / f"init_{date}{config['suffix']}"
+    if config["kind"] == "file":
+        return base / f"init_{date}{config['suffix']}"
+    return base
+
+
+def _symlink_full_field(source: Path, target: Path) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        return
+    target.symlink_to(source, target_is_directory=source.is_dir())
+    logger.info("Using mounted full-field input %s -> %s", target, source)
 
 
 def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> str:

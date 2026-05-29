@@ -15,6 +15,7 @@ sync/state/
 __pycache__/
 .DS_Store
 .vscode/*
+.ruff_cache
 
 /blend/data/
 /blend/utils/ethiopia2026_old

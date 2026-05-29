@@ -1,5 +1,4 @@
 import argparse
-import glob
 import logging
 import os
 from pathlib import Path
@@ -15,6 +14,7 @@ logging.basicConfig(
 )
 
 BASE = Path(__file__).parent.parent
+RAW_OUTPUT_BASE = Path(os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", BASE / "output" / "raw"))
 
 
 def calculate_sji(ds):
@@ -162,7 +162,7 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    raw_dir = BASE / "output" / "raw" / date
+    raw_dir = RAW_OUTPUT_BASE / date
 
     fcsts = raw_dir.glob("*.zarr")
     ds = xr.open_mfdataset(fcsts, engine="zarr", preprocess=preprocess)

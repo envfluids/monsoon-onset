@@ -173,10 +173,8 @@ main:
                         - ${model}_job_id: $${"${replace(lower(model), "_", "-")}-" + text.replace_all(${model}_action.date, "T", "-")}
                         - ${model}_job_name: $${"projects/" + project_id + "/locations/${region}/jobs/" + ${model}_job_id}
                         - ${model}_attempt: 1
-                  # A prior workflow run may have left a FAILED/CANCELLED job at
-                  # this id. Batch ids are immutable, so resubmitting would 409
-                  # forever. Probe first; if stale, delete (synchronous via the
-                  # default connector polling) and then fall through to submit.
+                  # Probe first so this execution can adopt in-flight jobs and
+                  # clean up terminal failed jobs before trying the same id.
                   - probe_existing_${model}_job:
                       try:
                         call: googleapis.batch.v1.projects.locations.jobs.get
@@ -194,10 +192,12 @@ main:
                                   raise: $${e}
                   - check_${model}_stale:
                       switch:
+                        - condition: $${${model}_existing.status.state == "SUCCEEDED"}
+                          next: ${model}_done
                         - condition: $${${model}_existing.status.state == "FAILED" or ${model}_existing.status.state == "CANCELLED"}
                           next: delete_stale_${model}_job
                         - condition: true
-                          next: submit_${model}_batch
+                          next: poll_${model}
                   - delete_stale_${model}_job:
                       call: googleapis.batch.v1.projects.locations.jobs.delete
                       args:
@@ -236,7 +236,7 @@ main:
                                           GCS_COMMON_BUCKET: $${common_bucket}
                                           GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
                                           UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
-%{ if model == "AIFS_ENS_v2" && contains(full_field_models, model) ~}
+%{ if contains(full_field_models, model) ~}
                                   volumes:
                                     - gcs:
                                         remotePath: $${common_bucket}
@@ -273,7 +273,11 @@ main:
                             logsPolicy:
                               destination: CLOUD_LOGGING
                           connector_params:
-                            skip_polling: true
+                            timeout: 86400
+                            polling_policy:
+                              initial_delay: ${model == "neuralgcm" ? 120 : 60}
+                              multiplier: 1
+                              max_delay: ${model == "neuralgcm" ? 120 : 60}
                       except:
                         as: e
                         steps:
@@ -281,8 +285,13 @@ main:
                               switch:
                                 - condition: $${default(map.get(e, "code"), 0) == 409}
                                   next: poll_${model}
+                                - condition: $${"OperationError" in default(map.get(e, "tags"), [])}
+                                  next: poll_${model}
+                                - condition: $${"TimeoutError" in default(map.get(e, "tags"), [])}
+                                  next: poll_${model}
                                 - condition: true
                                   raise: $${e}
+                      next: ${model}_done
                   - poll_${model}:
                       steps:
                         - get_${model}_status:

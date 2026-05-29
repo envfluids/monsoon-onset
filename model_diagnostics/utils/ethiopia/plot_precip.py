@@ -64,7 +64,8 @@ def _parse_init_date(date: str) -> np.datetime64:
 def _valid_period_str(init: np.datetime64, day_start: int, day_end: int) -> str:
     t0 = (init + np.timedelta64(day_start, "D")).astype("datetime64[D]")
     t1 = (init + np.timedelta64(day_end, "D")).astype("datetime64[D]")
-    pretty = lambda t: datetime.strptime(str(t), "%Y-%m-%d").strftime("%-d %b")
+    def pretty(t):
+        return datetime.strptime(str(t), "%Y-%m-%d").strftime("%-d %b")
     year = str(t1)[:4]
     return f"{pretty(str(t0))} – {pretty(str(t1))} {year}"
 

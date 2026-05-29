@@ -256,7 +256,7 @@ module "orchestration" {
   environment = local.environment
 
   regions           = local.regions
-  full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2"]), local.disabled_model_ids)
+  full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]), local.disabled_model_ids)
 
   # Dev: less frequent runs
   pipeline_schedule       = "0 */6 * * *" # Every 6 hours

@@ -20,6 +20,7 @@ logging.basicConfig(
 )
 
 grid_file = "../grids/grid_2p0.txt"
+RAW_OUTPUT_BASE = os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", "../output/raw")
 
 def set_atts_tcw(ds):
     ds["lat"].attrs["standard_name"] = "latitude"
@@ -91,7 +92,7 @@ def process_member(member, date):
     os.makedirs(f"{output_base}/tp", exist_ok=True)
     os.makedirs(f"{output_base}/tcw", exist_ok=True)
     ds = (
-        xr.open_zarr(f"../output/raw/{date}/member_{member}.zarr")
+        xr.open_zarr(os.path.join(RAW_OUTPUT_BASE, date, f"member_{member}.zarr"))
         .rename(
             {
                 "precipitation_cumulative_mean": "tp",
@@ -168,7 +169,7 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    n_members = len(glob.glob(f"../output/raw/{date}/member_*.zarr"))
+    n_members = len(glob.glob(os.path.join(RAW_OUTPUT_BASE, date, "member_*.zarr")))
     futures = []
     with ProcessPoolExecutor(max_workers=n_members) as executor:
         logging.info(

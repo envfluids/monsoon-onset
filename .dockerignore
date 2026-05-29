@@ -9,6 +9,7 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .ipynb_checkpoints/
+.ruff_cache
 
 # Local environments and notebooks are not needed in image build context.
 .venv/

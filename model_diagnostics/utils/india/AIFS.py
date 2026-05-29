@@ -140,7 +140,7 @@ def plot_circulation_quiver(u850_daily, v850_daily, init_time_index, forecast_da
     ax.add_patch(rect)
 
 # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
     #qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E', coordinates='axes', color='black')
     #qk.text.set_backgroundcolor('white')
@@ -199,7 +199,7 @@ def plot_circulation_quiver_200hpa(u850_daily, v850_daily, init_time_index, fore
     ax.add_patch(rect)
 
 # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
     #qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E', coordinates='axes', color='black')
     #qk.text.set_backgroundcolor('white')
@@ -331,7 +331,7 @@ def plot_wndspd850_aifs(u850_daily, v850_daily, init_time_index, forecast_day_in
     ax.add_patch(rect)
 
     # Quiver key
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
                       coordinates='axes', color='black', zorder=2)
 
     # Axis ticks
@@ -395,7 +395,7 @@ def plot_wndspd200_aifs(u850_daily, v850_daily, init_time_index, forecast_day_in
     ax.add_patch(rect)
 
 # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
     #qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E', coordinates='axes', color='black')
     #qk.text.set_backgroundcolor('white')

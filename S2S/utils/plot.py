@@ -38,13 +38,20 @@ def get_week_bin(onset_date, init_date):
     if pd.isna(onset_date):
         return None
     delta_days = (onset_date - init_date).days
-    if delta_days < 0: return None # Or handle as needed
-    if 0 <= delta_days <= 7: return 'Week 1'
-    elif 8 <= delta_days <= 14: return 'Week 2'
-    elif 15 <= delta_days <= 21: return 'Week 3'
-    elif 22 <= delta_days <= 28: return 'Week 4'
-    elif delta_days > 28: return 'Week Later'
-    else: return None
+    if delta_days < 0:
+        return None # Or handle as needed
+    if 0 <= delta_days <= 7:
+        return 'Week 1'
+    elif 8 <= delta_days <= 14:
+        return 'Week 2'
+    elif 15 <= delta_days <= 21:
+        return 'Week 3'
+    elif 22 <= delta_days <= 28:
+        return 'Week 4'
+    elif delta_days > 28:
+        return 'Week Later'
+    else:
+        return None
 
 def IFSS2S_Prob_Calc(df_IFS, lat, lon, df):
     df_IFS_grid = df_IFS.sel(lat = lat, lon = lon)
@@ -339,8 +346,10 @@ def plot_IFSS2S_Probabilities(df_IFS, df_meta, folder_out):
             ax.text(r.lon, r.lat, f"{r.probability*100:.0f}", ha='center', va='center', fontsize=8)
 
         ax.set_title(wk)
-        ax.set_xticks(xticks); ax.set_yticks(yticks)
-        ax.set_xlim(minx, maxx); ax.set_ylim(miny, maxy)
+        ax.set_xticks(xticks)
+        ax.set_yticks(yticks)
+        ax.set_xlim(minx, maxx)
+        ax.set_ylim(miny, maxy)
         ax.set_xlabel('Longitude')
         if ax is axes[0]:
             ax.set_ylabel('Latitude')

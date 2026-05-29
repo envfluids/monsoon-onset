@@ -1,5 +1,4 @@
 import os
-import io
 from pathlib import Path
 import threading
 from google.auth.transport.requests import Request
@@ -7,7 +6,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload
+from googleapiclient.http import MediaFileUpload
 import logging
 import argparse
 
@@ -632,7 +631,7 @@ def drive_sync(date, cluster):  # Added cluster parameter with default
 
     if drive_service:
         logging.info("Google Drive authentication successful.")
-        logging.info(f"Starting Google Drive sync process...")
+        logging.info("Starting Google Drive sync process...")
         # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
         cluster_base_drive_folder_id = get_folder_id_by_path(
             drive_service, DRIVE_CLUSTER_BASE_PATH
@@ -800,7 +799,7 @@ def drive_sync_IMERG(date, cluster):  # Added cluster parameter with default
 
     if drive_service:
         logging.info("Google Drive authentication successful.")
-        logging.info(f"Starting Google Drive sync process...")
+        logging.info("Starting Google Drive sync process...")
         # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
         cluster_base_drive_folder_id = get_folder_id_by_path(
             drive_service, DRIVE_CLUSTER_BASE_PATH
@@ -887,17 +886,13 @@ def drive_sync_S2S(date, cluster):  # Added cluster parameter with default
 
     output_path = base / "S2S" / "output"
     date_dir_local_path = output_path / date
-    DIR_TO_UPLOAD = {
-        # Key is the target folder name in Drive under the date folder
-        "S2S": date_dir_local_path
-    }
 
     logging.info("Starting Google Drive authentication process...")
     drive_service = authenticate()
 
     if drive_service:
         logging.info("Google Drive authentication successful.")
-        logging.info(f"Starting Google Drive sync process...")
+        logging.info("Starting Google Drive sync process...")
         # 1. Get the ID for the cluster base path (e.g., .../operational_data/midway)
         cluster_base_drive_folder_id = get_folder_id_by_path(
             drive_service, DRIVE_CLUSTER_BASE_PATH
@@ -941,7 +936,7 @@ def drive_sync_IMD(date):  # Added cluster parameter with default
 
     # Define the base Google Drive folder path using date and cluster
     # Example: /MO Forecast Benchmarking/operational_data/midway
-    DRIVE_IMD_BASE_PATH = f"/MO Forecast Benchmarking/operational_data/imd-bulletins/IMD_AllIndiaWeatherBulletins"
+    DRIVE_IMD_BASE_PATH = "/MO Forecast Benchmarking/operational_data/imd-bulletins/IMD_AllIndiaWeatherBulletins"
 
     # Define local paths
     try:

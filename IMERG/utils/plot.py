@@ -141,7 +141,8 @@ def onset_agro_bis(X, lseason, defdry, sw, wet, sd, dry, window):
             SW_extension = np.concatenate([SW[:,j], np.ones(sw - 1) * SW[lseason - sw, j]])
             SD_extension = np.concatenate([SD[:,j], np.zeros(sd - 1)])
             tab = np.column_stack([sample[:, j], wsample[:,j], SW_extension, SD_extension])
-            if i == 123: print(f"Tab for year {i}, station {j}:", pd.DataFrame(tab).to_string())
+            if i == 123:
+                print(f"Tab for year {i}, station {j}:", pd.DataFrame(tab).to_string())
             nrtab, nctab = np.shape(tab)
             o1 = np.where((tab[:, 2] >= wet[j]) & (tab[:, 1] == 1) & (np.arange(tab.shape[0]) >= 54))[0]
             #if i == 123: print(o1)
@@ -217,7 +218,6 @@ def plot_graph_mod(
                 ax.text(lon, lat, '{:.2f}'.format(float(z)), ha='center', va='center', transform=ccrs.PlateCarree(), fontsize=8, fontweight='bold', color='black')
     ax.coastlines()
     ax.add_feature(cfeature.BORDERS) 
-    gridlines = ax.gridlines(draw_labels=True, linestyle="--", color="gray")
     ax.set_title(title)
    
     base = Path(__file__).resolve().parent.parent

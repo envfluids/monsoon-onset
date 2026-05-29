@@ -338,7 +338,7 @@ Cloud Workflows (main pipeline)
   always enabled; `force_destroy = false` even in dev.
 - **Artifact Registry** (`monsoon-{env}-containers`): stores pipeline container images. Dev
   repositories delete old image versions after `artifact_registry_cleanup_older_than`, which
-  defaults to 7 days.
+  defaults to 7 days, while retaining the 3 most recent versions per package.
 - **Pipeline service account** with `storage.objectAdmin` on the common and regional data buckets,
   `storage.objectViewer` on the weights bucket, and `artifactregistry.reader` on the registry.
 - **GCS folder structure**: common bucket paths are `raw/`, `raw_forecast/`, and `intermediate/`;

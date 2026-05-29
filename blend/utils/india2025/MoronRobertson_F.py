@@ -1,6 +1,4 @@
-import xarray as xr
 import numpy as np
-import pandas as pd
 
 def sequence_overlap(X, lseason, nday):
     nr, nv = np.shape(X)

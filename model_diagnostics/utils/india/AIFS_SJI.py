@@ -158,7 +158,6 @@ def plot_sji(input_path, save_dir):
     u850_daily = compute_daily_mean(ds['u_850'])
     v850_daily = compute_daily_mean(ds['v_850'])
     u200_daily = compute_daily_mean(ds['u_200'])
-    v200_daily = compute_daily_mean(ds['v_200'])
 
 
     sji = compute_somali_jet_index(u850_daily,v850_daily)

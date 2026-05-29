@@ -110,6 +110,8 @@ locals {
     }
   }
 
+  cloud_run_jobs_with_common_bucket_mount = toset(["blend"])
+
   cloud_run_services = {
     downloader = {
       name    = "${var.name_prefix}-${var.environment}-downloader"
@@ -234,6 +236,14 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       containers {
         image = each.value.image
 
+        dynamic "volume_mounts" {
+          for_each = contains(local.cloud_run_jobs_with_common_bucket_mount, each.key) ? [1] : []
+          content {
+            name       = "common-bucket"
+            mount_path = "/mnt/disks/common"
+          }
+        }
+
         resources {
           limits = {
             memory = each.value.memory
@@ -295,6 +305,17 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
       max_retries = each.value.retries
 
       service_account = var.service_account_email
+
+      dynamic "volumes" {
+        for_each = contains(local.cloud_run_jobs_with_common_bucket_mount, each.key) ? [1] : []
+        content {
+          name = "common-bucket"
+          gcs {
+            bucket    = var.common_gcs_bucket
+            read_only = true
+          }
+        }
+      }
     }
 
     task_count = 1

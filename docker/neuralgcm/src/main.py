@@ -19,6 +19,8 @@ Environment Variables:
     GCS_COMMON_BUCKET : Common bucket for ICs, weights, full-field, markers
     GCS_REGION_BUCKETS: JSON map {region: bucket} for post-processed outputs
     UPLOAD_FULL_FIELD : 'true' to upload raw forecast to common bucket (default false)
+    NEURALGCM_ASYNC_SAVE_WORKERS: member Zarr save threads (default 1)
+    NEURALGCM_ASYNC_SAVE_MAX_PENDING: bounded pending member saves (default 2)
 """
 
 import json
@@ -41,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 NGCM_UTILS = Path("/app/NeuralGCM/utils")
 IC_NCEP_DIR = Path("/app/IC/output/ncep")
+COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
 
 # Regions where the science layer currently produces post-processed outputs.
 NGCM_SUPPORTED_REGIONS = {"india", "ethiopia"}
@@ -94,12 +97,14 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
 
     logger.info(f"NeuralGCM shim: date={date} regions={regions} upload_full_field={upload_full_field}")
 
-    _setup_directories(date)
+    raw_output_base = _raw_output_base(upload_full_field)
+
+    _setup_directories(date, raw_output_base)
     _download_inputs(date, common_bucket)
-    _run_science_scripts(date)
+    _run_science_scripts(date, raw_output_base)
 
     if upload_full_field:
-        _upload_full_field(date, common_bucket)
+        _upload_full_field(date, common_bucket, raw_output_base)
     else:
         logger.info("UPLOAD_FULL_FIELD=false — skipping NeuralGCM full-field upload")
 
@@ -116,11 +121,16 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
         _write_completion_marker(date, region, common_bucket)
 
 
-def _setup_directories(date: str) -> None:
+def _raw_output_base(upload_full_field: bool) -> Path:
+    if upload_full_field:
+        return COMMON_BUCKET_MOUNT / "full_field" / "neuralgcm"
+    return NGCM_UTILS.parent / "output" / "raw"
+
+
+def _setup_directories(date: str, raw_output_base: Path) -> None:
     for subdir in [
         "raw/ncep_ic/download",
         "raw/ncep_ic/processed",
-        f"raw/output/{date}",
         "output/india/sji",
         "output/india/tcw",
         "output/india/tp",
@@ -130,6 +140,7 @@ def _setup_directories(date: str) -> None:
         "data/model_ds",
     ]:
         (NGCM_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
+    (raw_output_base / date).mkdir(parents=True, exist_ok=True)
     IC_NCEP_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -157,8 +168,12 @@ def _download_inputs(date: str, common_bucket: str) -> None:
     )
 
 
-def _run_science_scripts(date: str) -> None:
-    env = {**os.environ, "PYTHONPATH": str(NGCM_UTILS)}
+def _run_science_scripts(date: str, raw_output_base: Path) -> None:
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(NGCM_UTILS),
+        "NEURALGCM_RAW_OUTPUT_DIR": str(raw_output_base),
+    }
 
     logger.info(f"Running preprocess_ic.py for {date}")
     subprocess.run(
@@ -216,9 +231,24 @@ def _log_gpu_runtime(env: dict[str, str]) -> None:
             logger.warning("%s stderr:\n%s", command[0], result.stderr)
 
 
-def _upload_full_field(date: str, common_bucket: str) -> None:
-    raw_dir = NGCM_UTILS.parent / "raw" / "output" / date
+def _upload_full_field(date: str, common_bucket: str, raw_output_base: Path) -> None:
+    raw_dir = raw_output_base / date
+    if _path_is_relative_to(raw_dir, COMMON_BUCKET_MOUNT):
+        logger.info(
+            "NeuralGCM full-field output was written through GCS FUSE to gs://%s/full_field/neuralgcm/%s/",
+            common_bucket,
+            date,
+        )
+        return
     upload_directory(common_bucket, raw_dir, f"full_field/neuralgcm/{date}")
+
+
+def _path_is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _upload_region_outputs(date: str, region: str, region_bucket: str) -> None:

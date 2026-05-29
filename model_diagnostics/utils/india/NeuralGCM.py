@@ -148,7 +148,7 @@ def plot_circulation_quiver_850(u_daily, v_daily, init_time_index, forecast_day_
     ax.add_patch(rect)
 
     # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
 
     # Axis ticks
@@ -205,7 +205,7 @@ def plot_circulation_quiver_200(u_daily, v_daily, init_time_index, forecast_day_
     ax.add_patch(rect)
 
     # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
 
     # Axis ticks
@@ -275,8 +275,8 @@ def plot_wndspd_quiver_850(u_daily, v_daily, init_time_index, forecast_day_index
     rect = patches.Rectangle((0.85, 0.92), 0.22, 0.07, transform=ax.transAxes,
                              facecolor='white', edgecolor='none', zorder=1)
     ax.add_patch(rect)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
-                      coordinates='axes', color='black', zorder=2)
+    ax.quiverkey(q, X=0.9, Y=0.95, U=10, label='10 m/s', labelpos='E',
+                 coordinates='axes', color='black', zorder=2)
 
     # Axis ticks
     xticks = np.arange(30, 131, 20)
@@ -338,7 +338,7 @@ def plot_wndspd_quiver_200(u_daily, v_daily, init_time_index, forecast_day_index
     ax.add_patch(rect)
 
     # Add quiver key (make sure it has higher zorder so it's on top of the patch)
-    qk = ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
+    ax.quiverkey(q, X=0.9, Y=0.95, U=30, label='30 m/s', labelpos='E',
                   coordinates='axes', color='black', zorder=2)
 
     # Axis ticks

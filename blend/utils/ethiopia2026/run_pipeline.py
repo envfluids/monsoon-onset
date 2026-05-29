@@ -4,8 +4,6 @@ import datetime
 from pathlib import Path
 import logging
 from operational.utils.remap_nc import batch_aggregate_to_adm3_matrix
-from operational.utils.remap_nc import batch_aggregate_to_adm3_matrix
-from operational.utils.kiremt_onset_messages import generate_messages
 
 logging.basicConfig(
     level=logging.INFO,
