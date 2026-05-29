@@ -10,11 +10,11 @@ import time
 import traceback
 from pathlib import Path
 
-import numcodecs
 import numpy as np
 import pandas as pd
 import torch
 import xarray as xr
+from zarr.codecs import BloscCodec, BloscShuffle
 from anemoi.inference.outputs.printer import print_state
 from anemoi.inference.runners.simple import SimpleRunner
 from preprocess_ic import get_ic
@@ -125,6 +125,40 @@ class ZarrMirror:
 #         return data
 
 
+_CHUNK_SHAPE_BY_DIM = {
+    "time": 1,
+    "number": 1,
+    "prediction_timedelta": 24,
+    "lat": 90,
+    "lon": 180,
+}
+# Shard shape must be a positive multiple of chunk shape on every dim.
+# One shard packs a full single-member field (7×8×8 = 448 chunks).
+_SHARD_SHAPE_BY_DIM = {
+    "time": 1,
+    "number": 1,
+    "prediction_timedelta": 168,
+    "lat": 720,
+    "lon": 1440,
+}
+
+
+def _v3_encoding(ds):
+    compressors = (
+        BloscCodec(cname="zstd", clevel=3, shuffle=BloscShuffle.bitshuffle),
+    )
+    encoding = {}
+    for name, da in ds.data_vars.items():
+        if not all(d in _CHUNK_SHAPE_BY_DIM for d in da.dims):
+            continue
+        encoding[name] = {
+            "chunks": tuple(_CHUNK_SHAPE_BY_DIM[d] for d in da.dims),
+            "shards": tuple(_SHARD_SHAPE_BY_DIM[d] for d in da.dims),
+            "compressors": compressors,
+        }
+    return encoding
+
+
 def process_step(output_state):
     output_state, runcount = output_state
     data_vars = {}
@@ -188,14 +222,11 @@ def build_member_dataset(
         ds = ds.expand_dims("time")
         ds["time"] = [date]
 
+        # Dask chunks must align with zarr v3 shard shape (the on-disk write
+        # unit). Inner zarr chunks for fast partial reads are set separately in
+        # `_v3_encoding`.
         ds = ds.chunk(
-            {
-                "time": 1,
-                "number": 1,
-                "prediction_timedelta": 24,
-                "lat": 90,
-                "lon": 180,
-            }
+            {dim: _SHARD_SHAPE_BY_DIM[dim] for dim in _SHARD_SHAPE_BY_DIM}
         )
         return ds
     finally:
@@ -306,19 +337,11 @@ def writer_loop(
                             f"Saving forecast for ensemble {next_member} and date "
                             f"{date} to {filename} (mode=w)"
                         )
-                        compressor = numcodecs.Blosc(
-                            cname="zstd",
-                            clevel=3,
-                            shuffle=numcodecs.Blosc.BITSHUFFLE,
-                        )
-                        encoding = {
-                            v: {"compressor": compressor} for v in ds.data_vars
-                        }
                         ds.to_zarr(
                             filename,
-                            zarr_format=2,
+                            zarr_format=3,
                             mode="w",
-                            encoding=encoding,
+                            encoding=_v3_encoding(ds),
                         )
                     else:
                         logging.info(
@@ -327,7 +350,7 @@ def writer_loop(
                         )
                         ds.to_zarr(
                             filename,
-                            zarr_format=2,
+                            zarr_format=3,
                             mode="a",
                             append_dim="number",
                         )

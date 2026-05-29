@@ -4,11 +4,11 @@ anemoi-models==0.11.2
 anemoi-utils==0.4.35.post3
 
 # Data processing
-xarray
+xarray>=2024.10
 scipy
 netcdf4
 h5netcdf
 gcsfs
 google-cloud-storage
-zarr
+zarr>=3.0
 earthkit-data

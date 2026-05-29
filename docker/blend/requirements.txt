@@ -1,11 +1,11 @@
 # Data processing
 pandas>=2.0.0
 numpy>=1.24.0
-xarray>=2023.6.0
+xarray>=2024.10
 scipy>=1.11.0
 netcdf4>=1.6.0
 dask
-zarr
+zarr>=3.0
 h5netcdf
 h5py
 
