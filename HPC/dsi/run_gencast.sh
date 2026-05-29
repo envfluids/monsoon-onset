@@ -1,9 +1,9 @@
 #!/bin/bash -l
-#SBATCH -p Monsoon
+#SBATCH -p general
 #SBATCH -N 1 
 #SBATCH -n 32
-#SBATCH --gres=gpu:h200:4
-#SBATCH --mem=400G
+#SBATCH --gres=gpu:a100:8
+#SBATCH --mem=350G
 #SBATCH -t 12:00:00
 
 if command -v conda >/dev/null 2>&1; then
