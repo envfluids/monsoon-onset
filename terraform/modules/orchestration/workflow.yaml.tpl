@@ -534,6 +534,12 @@ submit_batch_stage:
                       noExternalIpAddress: true
               logsPolicy:
                 destination: CLOUD_LOGGING
+            # Don't block on the Batch create LRO. The default 1800s polling
+            # timeout fires when a job sits in QUEUED waiting for capacity or
+            # image pull, even though the job itself is healthy. Job completion
+            # is tracked separately via pipeline_state markers.
+            connector_params:
+              skip_polling: true
         except:
           as: e
           steps:
