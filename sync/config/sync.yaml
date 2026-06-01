@@ -172,15 +172,6 @@ regions:
         drive_path: "{drive_root}/{date}/blend"
         date_regex: "\\d{8}T\\d{2}"
 
-      - name: blend_google
-        kind: dated_directory
-        gcs_prefix: "output/blend/{date}/"
-        gcs_date_kind: "aifs_date"
-        gcs_stage_dir: "blend/output_google/{region}/{date}"
-        local_root: "blend/output_google/{region}"
-        drive_path: "{drive_root}/{date}/blend_google"
-        date_regex: "\\d{8}T\\d{2}"
-
       - name: model_diagnostics
         kind: dated_directory
         gcs_prefix: "output/model_diagnostics/{date}/ethiopia/"

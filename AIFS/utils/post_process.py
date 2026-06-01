@@ -19,7 +19,8 @@ def calculate_sji(ds):
         lat=slice(20.0, -5.0), lon=slice(50.0, 70.0)
     )
     if wind_850.chunks is not None:
-        wind_850 = wind_850.chunk({"lat": -1, "lon": -1, "prediction_timedelta": -1})
+        if "prediction_timedelta" in wind_850.dims:
+            wind_850 = wind_850.chunk({"lat": -1, "lon": -1, "prediction_timedelta": -1})
     wind_speed = (
         wind_850.u_850**2 + wind_850.v_850**2
     ) * 0.5
@@ -88,7 +89,8 @@ def clip_to_india(ds):
         lon=slice(66.5, 100.0)
     )
     if ds.chunks:
-        ds = ds.chunk({"lat": -1, "lon": -1, "prediction_timedelta": -1})
+        if "prediction_timedelta" in ds.dims:
+            ds = ds.chunk({"lat": -1, "lon": -1, "prediction_timedelta": -1})
     logging.info(f"Clipped shape: {ds['tp'].shape}")
     logging.info(f"Lat range: {float(ds.lat.min()):.2f} to {float(ds.lat.max()):.2f}")
     logging.info(f"Lon range: {float(ds.lon.min()):.2f} to {float(ds.lon.max()):.2f}")
@@ -161,7 +163,6 @@ def post_process_india(AIFS, date, model):
         AIFS_SJI.to_netcdf(SJI_OUT_PATH)
         AIFS_SJI.close()
 
-    logging.info("Processing TCW")
     TCW_OUT_PATH = f"{output_base_path}/tcw/tcw_{date}.nc"
     if not os.path.exists(TCW_OUT_PATH):
         logging.info("Processing TCW")

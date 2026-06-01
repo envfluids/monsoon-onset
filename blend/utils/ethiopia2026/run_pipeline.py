@@ -4,6 +4,7 @@ import datetime
 from pathlib import Path
 import logging
 from operational.utils.remap_nc import batch_aggregate_to_adm3_matrix
+from operational.utils.kiremt_onset_messages import generate_messages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,30 +55,62 @@ def ensure_only_keep_files_exist(dir_path):
             return False
     return True
 
-def get_blend_params(deterministic_model, ensemble_model):
+def get_blend_params(deterministic_model, ensemble_model, onset_definition):
     blend_name = f"{deterministic_model}_{ensemble_model}"
 
+    skip = False
     if blend_name == "AIFS_single_v1p1_AIFS_ENS_v1":
         spec_dict = {
+            "--model_single": "aifs",
+            "--model_ens": "aifs_ens",
             "--aifs_spec": "aifs_2026",
             "--aifs_ens_spec": "aifs_ens_2026",
             "--combine_spec": "combine_template_clim_mok_date_2026",
             "--connect_spec": "connect_clim_mok_date_2026",
             "--blend_spec": "cv_models_clim_mok_date_2026",
-            "--coef_dir": "Monsoon_Data/results/dry_spell_aifs_aifs_ens",
         }
+        if onset_definition == "ICPAC":
+            spec_dict["--coef_dir"] =  "Monsoon_Data/results/dry_spell_aifs_aifs_ens"
+        if onset_definition == "2mm":
+            skip = True
+
+    if blend_name == "AIFS_single_v2_AIFS_ENS_v2":
+        spec_dict = {
+            "--model_single": "aifs_v2",
+            "--model_ens": "aifs_ens_v2",
+            "--aifs_spec": "aifs_2026",
+            "--aifs_ens_spec": "aifs_ens_2026",
+            "--combine_spec": "combine_template_clim_mok_date_2026",
+            "--connect_spec": "connect_clim_mok_date_2026",
+            "--blend_spec": "cv_models_clim_mok_date_2026",
+        }
+
+        if onset_definition == "ICPAC":
+            spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_v2_aifs_ens_v2"
+        if onset_definition == "2mm":
+            spec_dict["--coef_dir"] = "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/results"
 
     if blend_name == "AIFS_single_v2_NeuralGCM":
         spec_dict = {
+            "--model_single": "aifs_v2",
+            "--model_ens": "NeuralGCM",
             "--aifs_spec": "aifs_2026",
             "--aifs_ens_spec": "ngcm_2026",
             "--combine_spec": "combine_template_clim_mok_date_2026_ngcm",
             "--connect_spec": "connect_clim_mok_date_2026_ngcm",
             "--blend_spec": "cv_models_clim_mok_date_2026_ngcm",
-            "--coef_dir": "Monsoon_Data/results/dry_spell_aifs_ngcm",
         }
+        if onset_definition == "ICPAC":
+            spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_ngcm"
+        if onset_definition == "2mm":
+            skip = True
 
-    return spec_dict
+    if onset_definition == "ICPAC":
+        spec_dict["--gt_path"] = "Monsoon_Data/Processed_Data/Models/dry_spell/imd_clim_mok_date_wide.pkl"
+    if onset_definition == "2mm":
+        spec_dict["--gt_path"] = "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/imd_clim_mok_date_2mm_wide.pkl"
+
+    return spec_dict, skip
 
 def run_blending_pipeline(
     date_f,
@@ -93,102 +126,105 @@ def run_blending_pipeline(
     date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
     issue_date_f = date.strftime("%Y-%m-%d")
     year = date.year
+    onset_definitions = ["ICPAC", "2mm"]
+    for onset_definition in onset_definitions:
+        py_script_path = TARGET_WORK_DIR / "predict" / "run_operational_pipeline.py"
+        mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping.csv"
 
-    py_script_path = TARGET_WORK_DIR / "predict" / "run_operational_pipeline.py"
-    expected_out_dir = TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / "2026"
-    mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping.csv"
+        if onset_definition == "ICPAC":
+            expected_out_dir = TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / "2026"
+            work_dir = "Monsoon_Data/Processed_Data/2026"
+        if onset_definition == "2mm":
+            expected_out_dir = TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / "2026_2mm"
+            work_dir = "Monsoon_Data/Processed_Data/2026_2mm"
+        expected_out_dir.mkdir(parents=True, exist_ok=True)
 
-    expected_out_dir.mkdir(parents=True, exist_ok=True)
+        if ensure_only_keep_files_exist(expected_out_dir):
+            logging.info("Only keep files exist in the expected output directory. Proceeding with pipeline.")
+        else: 
+            logging.warning("Non-keep files exist in the expected output directory. Deleting all non-keep files to ensure a clean slate for the pipeline.")
+            delete_all_files_in_dir(expected_out_dir)
 
-    if ensure_only_keep_files_exist(expected_out_dir):
-        logging.info("Only keep files exist in the expected output directory. Proceeding with pipeline.")
-    else: 
-        logging.warning("Non-keep files exist in the expected output directory. Deleting all non-keep files to ensure a clean slate for the pipeline.")
-        delete_all_files_in_dir(expected_out_dir)
+        det_nc_file = Path(deterministic_input)
+        det_nc_file = batch_aggregate_to_adm3_matrix(deterministic_model, det_nc_file, expected_out_dir, mapping_file)
 
+        if ensemble_input == "NeuralGCM":
+            mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping_ngcm.csv"
 
-    det_nc_file = Path(deterministic_input)
-    det_nc_file = batch_aggregate_to_adm3_matrix(deterministic_model, det_nc_file, expected_out_dir, mapping_file)
+        ens_nc_file = Path(ensemble_input)
+        ens_nc_file = batch_aggregate_to_adm3_matrix(ensemble_model, ens_nc_file, expected_out_dir, mapping_file)
 
-    if ensemble_input == "NeuralGCM":
-        mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping_ngcm.csv"
+        clim_exists = ensure_all_paths_exist([expected_out_dir / f for f in KEEP_F_NAMES])
+        if clim_exists and skip_to is None:
+            logging.info("Climatology files already exist. Skipping.")
+            skip_to = 2
+        if not clim_exists:
+            skip_to = None
+            logging.warning("Climatology files do not exist. Running full pipeline.")
 
-    ens_nc_file = Path(ensemble_input)
-    ens_nc_file = batch_aggregate_to_adm3_matrix(ensemble_model, ens_nc_file, expected_out_dir, mapping_file)
+        args_dict = {
+            "--year": f"{year}",
+            "--issue_date": issue_date_f,
+            "--clim_spec": "imd_clim_mok_date_2026",
+            "--coef_tag": "clim_mok_date_2022_year2022",
+            "--blend_input": f"{work_dir}/cv_data_clim_mok_date_new_pipeline_2026.pkl",
+            "--work_dir": work_dir,
+            "--aifs_nc_file": f"{det_nc_file}",
+            "--aifs_ens_nc_file": f"{ens_nc_file}",
+        }
 
-    clim_exists = ensure_all_paths_exist([expected_out_dir / f for f in KEEP_F_NAMES])
-    if clim_exists and skip_to is None:
-        logging.info("Climatology files already exist. Skipping.")
-        skip_to = 2
-    if not clim_exists:
-        logging.warning("Climatology files do not exist. Running full pipeline.")
+        specs, skip = get_blend_params(deterministic_model, ensemble_model, onset_definition)
 
-    args_dict = {
-        "--year": f"{year}",
-        "--issue_date": issue_date_f,
-        # "--aifs_spec": "aifs_2026",
-        # "--aifs_ens_spec": "aifs_ens_2026",
-        "--clim_spec": "imd_clim_mok_date_2026",
-        # "--combine_spec": "combine_template_clim_mok_date_2026",
-        # "--connect_spec": "connect_clim_mok_date_2026",
-        # "--blend_spec": "cv_models_clim_mok_date_2026",
-        # "--coef_dir": "Monsoon_Data/results/dry_spell_aifs_aifs_ens",
-        "--coef_tag": "clim_mok_date_2022_year2022",
-        "--blend_input": "Monsoon_Data/Processed_Data/2026/cv_data_clim_mok_date_new_pipeline_2026.pkl",
-        "--work_dir": "Monsoon_Data/Processed_Data/2026",
-        "--aifs_nc_file": f"{det_nc_file}",
-        "--aifs_ens_nc_file": f"{ens_nc_file}",
-        "--gt_path": "Monsoon_Data/Processed_Data/Models/dry_spell/imd_clim_mok_date_wide.pkl",
-    }
+        if skip:
+            logging.warning(f"{onset_definition} onset definition not implemented for {deterministic_model}_{ensemble_model}")
+            continue
 
-    specs = get_blend_params(deterministic_model, ensemble_model)
-    args_dict.update(specs)
+        args_dict.update(specs)
 
-    if skip_to is not None and skip_to > 1:
-        logging.info(f"Skipping to step {skip_to} in the pipeline")
-        args_dict["--skip_to"] = str(skip_to)
+        if skip_to is not None and skip_to > 1:
+            logging.info(f"Skipping to step {skip_to} in the pipeline")
+            args_dict["--skip_to"] = str(skip_to)
 
-    cmd = ["python", str(py_script_path)]
-    for k, v in args_dict.items():
-        cmd.extend([k, v])
-    
-    logging.info(f"Running command: {' '.join(cmd)}")
-    try:
-        subprocess.run(cmd, check=True)
-    except subprocess.CalledProcessError as e:
-        logging.error(f"Command failed with error: {e}")
-        raise RuntimeError(f"Pipeline failed at step with command: {' '.join(cmd)}") from e
+        cmd = ["python", str(py_script_path)]
+        for k, v in args_dict.items():
+            cmd.extend([k, v])
+        
+        logging.info(f"Running command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Command failed with error: {e}")
+            raise RuntimeError(f"Pipeline failed at step with command: {' '.join(cmd)}") from e
 
-    file_name_date_f = date.strftime("%Y%m%d")
+        file_name_date_f = date.strftime("%Y%m%d")
 
-    keep_f_names = {
-        f"blend_output_summary_{file_name_date_f}.csv": f"blend_output_summary_{date_f}.csv",
-        f"blended_model_global_year{year}_preds.csv": f"blend_output_{date_f}.csv",
-    }
+        keep_f_names = {
+            f"blend_output_summary_{file_name_date_f}.csv": f"blend_output_summary_{date_f}.csv",
+            f"blended_model_global_year{year}_preds.csv": f"blend_output_{date_f}.csv",
+        }
 
-    expected_out_dir_maps = TARGET_WORK_DIR / "predict" / "output" / "2026" / "maps"
-    keep_f_names_maps = {
-        f"map_max_period_{issue_date_f}_zone.png": f"zone_map_max_period_{date_f}.png",
-        f"prob_weeks1-4_{issue_date_f}_zone.png": f"zone_prob_weeks1-4_{date_f}.png",
-        f"max_period_index_{file_name_date_f}.nc": f"max_period_index_{date_f}.nc",
-        f"weekly_probs_{file_name_date_f}.nc": f"weekly_probs_{date_f}.nc",
-    }
+        expected_out_dir_maps = expected_out_dir / "maps"
+        keep_f_names_maps = {
+            f"map_max_period_{issue_date_f}_zone.png": f"zone_map_max_period_{date_f}.png",
+            f"prob_weeks1-4_{issue_date_f}_zone.png": f"zone_prob_weeks1-4_{date_f}.png",
+            f"max_period_index_{file_name_date_f}.nc": f"max_period_index_{date_f}.nc",
+            f"weekly_probs_{file_name_date_f}.nc": f"weekly_probs_{date_f}.nc",
+        }
 
-    final_out_dir = Path(output_dir)
+        final_out_dir = Path(output_dir) / onset_definition
+        final_out_dir.mkdir(parents=True, exist_ok=True)
 
-    final_out_dir.mkdir(parents=True, exist_ok=True)
+        move_and_rename_files(expected_out_dir, final_out_dir, keep_f_names)
+        move_and_rename_files(expected_out_dir_maps, final_out_dir, keep_f_names_maps)
 
-    move_and_rename_files(expected_out_dir, final_out_dir, keep_f_names)
-    move_and_rename_files(expected_out_dir_maps, final_out_dir, keep_f_names_maps)
+        # generate_messages(
+        #     input_file=final_out_dir / f"blend_output_summary_{date_f}.csv",
+        #     output_file=final_out_dir / f"kiremt_onset_categories_{date_f}.csv",
+        # )
 
-    # generate_messages(
-    #     input_file=final_out_dir / f"blend_output_summary_{date_f}.csv",
-    #     output_file=final_out_dir / f"kiremt_onset_categories_{date_f}.csv",
-    # )
-
-    if not debug:
-        delete_all_files_in_dir(expected_out_dir)
-        delete_all_files_in_dir(expected_out_dir_maps)
+        if not debug:
+            delete_all_files_in_dir(expected_out_dir)
+            delete_all_files_in_dir(expected_out_dir_maps)
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Ethiopia 2026 pipeline.")
