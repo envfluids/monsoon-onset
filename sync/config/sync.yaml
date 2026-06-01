@@ -178,3 +178,24 @@ regions:
         local_root: "model_diagnostics/output/ethiopia"
         drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"
+
+  ethiopia_subset:
+    drive:
+      root: "/operational_data_ethiopia_drive/{cluster}"
+    rules:
+      - name: blend
+        kind: dated_directory
+        gcs_prefix: "output/blend/{date}/ethiopia2026/"
+        gcs_date_kind: "aifs_date"
+        local_root: "blend/output/ethiopia2026"
+        date_subpath: "AIFS_single_v2_AIFS_ENS_v2/ICPAC"
+        drive_path: "{drive_root}/{date}/operational_blend"
+        date_regex: "\\d{8}T\\d{2}"
+
+      - name: model_diagnostics
+        kind: dated_directory
+        gcs_prefix: "output/model_diagnostics/{date}/ethiopia/"
+        local_root: "model_diagnostics/output/ethiopia"
+        date_subpath: "AIFS_single_v2_AIFS_ENS_v2"
+        drive_path: "{drive_root}/{date}/model_diagnostics"
+        date_regex: "\\d{8}T\\d{2}"

@@ -14,6 +14,7 @@ class SyncRule:
     local_root: str
     drive_path: str
     date_regex: str
+    date_subpath: str | None = None
     patterns: tuple[str, ...] = field(default_factory=tuple)
     ignore_patterns: tuple[str, ...] = (".nfs*",)
     gcs_prefix: str | None = None
@@ -197,6 +198,7 @@ def _parse_rule(raw: dict[str, Any]) -> SyncRule:
         name=str(raw["name"]),
         kind=str(raw["kind"]),
         local_root=str(raw["local_root"]),
+        date_subpath=str(raw["date_subpath"]) if raw.get("date_subpath") else None,
         drive_path=str(raw["drive_path"]),
         date_regex=str(raw["date_regex"]),
         patterns=patterns,

@@ -341,12 +341,18 @@ def _discover_dated_directory_rule(config: SyncConfig, rule: SyncRule) -> list[L
         date = date_dir.name
         if not date_pattern.match(date):
             continue
+        source_dir = date_dir
+        if rule.date_subpath:
+            source_dir /= _render(rule.date_subpath, config, date=date)
+        if not source_dir.is_dir():
+            logger.debug("Skipping missing dated subpath for rule %s: %s", rule.name, source_dir)
+            continue
         for local_path in sorted(
             path
-            for path in date_dir.rglob("*")
+            for path in source_dir.rglob("*")
             if path.is_file() and not _ignored(path, local_root, rule)
         ):
-            relative = local_path.relative_to(date_dir)
+            relative = local_path.relative_to(source_dir)
             items.append(_make_item(config, rule, date, local_path, relative))
     return items
 
