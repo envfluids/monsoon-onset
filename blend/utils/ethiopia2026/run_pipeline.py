@@ -1,10 +1,14 @@
 import argparse
-import subprocess
 import datetime
-from pathlib import Path
+import fcntl
 import logging
+import os
+import subprocess
+from contextlib import contextmanager
+from pathlib import Path
+
+# from operational.utils.kiremt_onset_messages import generate_messages
 from operational.utils.remap_nc import batch_aggregate_to_adm3_matrix
-from operational.utils.kiremt_onset_messages import generate_messages
 
 logging.basicConfig(
     level=logging.INFO,
@@ -15,11 +19,46 @@ logging.basicConfig(
 
 REPO_BASE = Path(__file__).parent.parent.parent.parent
 TARGET_WORK_DIR = Path(__file__).parent / "operational"
+LOCK_FILE = Path(__file__).with_suffix(".lock")
 
 ALLOWED_DELETE_EXT = {".csv", ".nc", ".pkl", ".png"}
 
-KEEP_F_NAMES = ["imd_clim_mok_date_clim_issue.pkl",
-                "imd_clim_mok_date_clim_unc_issue.pkl"]
+KEEP_F_NAMES = [
+    "imd_clim_mok_date_clim_issue.pkl",
+    "imd_clim_mok_date_clim_unc_issue.pkl",
+]
+
+
+@contextmanager
+def ethiopia_pipeline_lock():
+    """Allow only one Ethiopia blending pipeline process to run at a time."""
+    # Keep the coordination file in place: unlinking it can let a third process
+    # lock a new inode while a waiter still holds the old one.
+    with LOCK_FILE.open("a+") as lock_file:
+        try:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            logging.info(
+                "Another Ethiopia blending process is running. Waiting for lock: %s",
+                LOCK_FILE,
+            )
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.write(f"pid={os.getpid()}\n")
+        lock_file.flush()
+        logging.info("Acquired Ethiopia blending lock: %s", LOCK_FILE)
+
+        try:
+            yield
+        finally:
+            lock_file.seek(0)
+            lock_file.truncate()
+            lock_file.flush()
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            logging.info("Released Ethiopia blending lock: %s", LOCK_FILE)
+
 
 def move_and_rename_files(src, dest, f_dict):
     for f_name, rename in f_dict.items():
@@ -34,6 +73,7 @@ def move_and_rename_files(src, dest, f_dict):
             expected_path.rename(new_path)
             logging.info(f"Moved and renamed {expected_path} to {new_path}")
 
+
 def delete_all_files_in_dir(dir_path):
     for f in dir_path.glob("*"):
         if f.is_file() and f.suffix in ALLOWED_DELETE_EXT:
@@ -44,9 +84,11 @@ def delete_all_files_in_dir(dir_path):
                 f.unlink()
                 logging.info(f"Deleted file {f}")
 
+
 def ensure_all_paths_exist(paths):
     """Return true if all paths exist, false otherwise."""
     return all(path.exists() for path in paths)
+
 
 def ensure_only_keep_files_exist(dir_path):
     """Return true i.f.f. all files in the directory are in the keep list."""
@@ -55,10 +97,11 @@ def ensure_only_keep_files_exist(dir_path):
             return False
     return True
 
+
 def get_blend_params(deterministic_model, ensemble_model, onset_definition):
     blend_name = f"{deterministic_model}_{ensemble_model}"
 
-    skip = False
+    not_implemented = False
     if blend_name == "AIFS_single_v1p1_AIFS_ENS_v1":
         spec_dict = {
             "--model_single": "aifs",
@@ -70,9 +113,15 @@ def get_blend_params(deterministic_model, ensemble_model, onset_definition):
             "--blend_spec": "cv_models_clim_mok_date_2026",
         }
         if onset_definition == "ICPAC":
-            spec_dict["--coef_dir"] =  "Monsoon_Data/results/dry_spell_aifs_aifs_ens"
+            spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_aifs_ens"
+            spec_dict["--gt_path"] = (
+                "Monsoon_Data/Processed_Data/Models/dry_spell_v1/imd_clim_mok_date_wide.pkl"
+            )
         if onset_definition == "2mm":
-            skip = True
+            not_implemented = True
+        remapping_file = (
+            TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping_v1.csv"
+        )
 
     if blend_name == "AIFS_single_v2_AIFS_ENS_v2":
         spec_dict = {
@@ -86,14 +135,28 @@ def get_blend_params(deterministic_model, ensemble_model, onset_definition):
         }
 
         if onset_definition == "ICPAC":
-            spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_v2_aifs_ens_v2"
+            spec_dict["--coef_dir"] = (
+                "Monsoon_Data/results/dry_spell_aifs_v2_aifs_ens_v2"
+            )
+            spec_dict["--gt_path"] = (
+                "Monsoon_Data/Processed_Data/Models/dry_spell_v2/imd_clim_mok_date_wide.pkl"
+            )
         if onset_definition == "2mm":
-            spec_dict["--coef_dir"] = "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/results"
+            spec_dict["--coef_dir"] = (
+                "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/results"
+            )
+            spec_dict["--gt_path"] = (
+                "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/imd_clim_mok_date_2mm_wide.pkl"
+            )
+
+        remapping_file = (
+            TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping.csv"
+        )
 
     if blend_name == "AIFS_single_v2_NeuralGCM":
         spec_dict = {
             "--model_single": "aifs_v2",
-            "--model_ens": "NeuralGCM",
+            "--model_ens": "ngcm",
             "--aifs_spec": "aifs_2026",
             "--aifs_ens_spec": "ngcm_2026",
             "--combine_spec": "combine_template_clim_mok_date_2026_ngcm",
@@ -103,14 +166,12 @@ def get_blend_params(deterministic_model, ensemble_model, onset_definition):
         if onset_definition == "ICPAC":
             spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_ngcm"
         if onset_definition == "2mm":
-            skip = True
+            not_implemented = True
 
-    if onset_definition == "ICPAC":
-        spec_dict["--gt_path"] = "Monsoon_Data/Processed_Data/Models/dry_spell/imd_clim_mok_date_wide.pkl"
-    if onset_definition == "2mm":
-        spec_dict["--gt_path"] = "Monsoon_Data/Processed_Data/train_aifs_v2_aifs_ens_v2_2mm/imd_clim_mok_date_2mm_wide.pkl"
+    expected_out_dir_head = f"{blend_name}_{onset_definition}"
 
-    return spec_dict, skip
+    return spec_dict, remapping_file, expected_out_dir_head, not_implemented
+
 
 def run_blending_pipeline(
     date_f,
@@ -122,39 +183,54 @@ def run_blending_pipeline(
     debug=False,
     skip_to=None,
 ):
-    
+
     date = datetime.datetime.strptime(date_f, "%Y%m%dT%H")
     issue_date_f = date.strftime("%Y-%m-%d")
     year = date.year
     onset_definitions = ["ICPAC", "2mm"]
     for onset_definition in onset_definitions:
         py_script_path = TARGET_WORK_DIR / "predict" / "run_operational_pipeline.py"
-        mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping.csv"
 
-        if onset_definition == "ICPAC":
-            expected_out_dir = TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / "2026"
-            work_dir = "Monsoon_Data/Processed_Data/2026"
-        if onset_definition == "2mm":
-            expected_out_dir = TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / "2026_2mm"
-            work_dir = "Monsoon_Data/Processed_Data/2026_2mm"
+        specs, remapping_file, expected_out_dir_head, not_implemented = (
+            get_blend_params(deterministic_model, ensemble_model, onset_definition)
+        )
+
+        if not_implemented:
+            logging.warning(
+                f"{onset_definition} onset definition not implemented for {deterministic_model}_{ensemble_model}"
+            )
+            continue
+
+        expected_out_dir = (
+            TARGET_WORK_DIR / "Monsoon_Data" / "Processed_Data" / expected_out_dir_head
+        )
+        work_dir = f"Monsoon_Data/Processed_Data/{expected_out_dir_head}"
+
         expected_out_dir.mkdir(parents=True, exist_ok=True)
 
         if ensure_only_keep_files_exist(expected_out_dir):
-            logging.info("Only keep files exist in the expected output directory. Proceeding with pipeline.")
-        else: 
-            logging.warning("Non-keep files exist in the expected output directory. Deleting all non-keep files to ensure a clean slate for the pipeline.")
+            logging.info(
+                "Only keep files exist in the expected output directory. Proceeding with pipeline."
+            )
+        else:
+            logging.warning(
+                "Non-keep files exist in the expected output directory. Deleting all non-keep files to ensure a clean slate for the pipeline."
+            )
             delete_all_files_in_dir(expected_out_dir)
 
         det_nc_file = Path(deterministic_input)
-        det_nc_file = batch_aggregate_to_adm3_matrix(deterministic_model, det_nc_file, expected_out_dir, mapping_file)
-
-        if ensemble_input == "NeuralGCM":
-            mapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping_ngcm.csv"
+        det_nc_file = batch_aggregate_to_adm3_matrix(
+            deterministic_model, det_nc_file, expected_out_dir, remapping_file
+        )
 
         ens_nc_file = Path(ensemble_input)
-        ens_nc_file = batch_aggregate_to_adm3_matrix(ensemble_model, ens_nc_file, expected_out_dir, mapping_file)
+        ens_nc_file = batch_aggregate_to_adm3_matrix(
+            ensemble_model, ens_nc_file, expected_out_dir, remapping_file
+        )
 
-        clim_exists = ensure_all_paths_exist([expected_out_dir / f for f in KEEP_F_NAMES])
+        clim_exists = ensure_all_paths_exist(
+            [expected_out_dir / f for f in KEEP_F_NAMES]
+        )
         if clim_exists and skip_to is None:
             logging.info("Climatology files already exist. Skipping.")
             skip_to = 2
@@ -173,12 +249,6 @@ def run_blending_pipeline(
             "--aifs_ens_nc_file": f"{ens_nc_file}",
         }
 
-        specs, skip = get_blend_params(deterministic_model, ensemble_model, onset_definition)
-
-        if skip:
-            logging.warning(f"{onset_definition} onset definition not implemented for {deterministic_model}_{ensemble_model}")
-            continue
-
         args_dict.update(specs)
 
         if skip_to is not None and skip_to > 1:
@@ -188,13 +258,15 @@ def run_blending_pipeline(
         cmd = ["python", str(py_script_path)]
         for k, v in args_dict.items():
             cmd.extend([k, v])
-        
+
         logging.info(f"Running command: {' '.join(cmd)}")
         try:
             subprocess.run(cmd, check=True)
         except subprocess.CalledProcessError as e:
             logging.error(f"Command failed with error: {e}")
-            raise RuntimeError(f"Pipeline failed at step with command: {' '.join(cmd)}") from e
+            raise RuntimeError(
+                f"Pipeline failed at step with command: {' '.join(cmd)}"
+            ) from e
 
         file_name_date_f = date.strftime("%Y%m%d")
 
@@ -225,6 +297,7 @@ def run_blending_pipeline(
         if not debug:
             delete_all_files_in_dir(expected_out_dir)
             delete_all_files_in_dir(expected_out_dir_maps)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Run the Ethiopia 2026 pipeline.")
@@ -268,16 +341,18 @@ def main():
     deterministic_model = args.deterministic_model
     debug = args.debug
     skip_to = args.skip_to
-    run_blending_pipeline(
-        date_f,
-        ensemble_model,
-        deterministic_model,
-        deterministic_input=args.deterministic_input,
-        ensemble_input=args.ensemble_input,
-        output_dir=args.output_dir,
-        debug=debug,
-        skip_to=skip_to,
-    )
+    with ethiopia_pipeline_lock():
+        run_blending_pipeline(
+            date_f,
+            ensemble_model,
+            deterministic_model,
+            deterministic_input=args.deterministic_input,
+            ensemble_input=args.ensemble_input,
+            output_dir=args.output_dir,
+            debug=debug,
+            skip_to=skip_to,
+        )
+
 
 if __name__ == "__main__":
     main()

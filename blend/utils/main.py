@@ -194,7 +194,7 @@ BLENDS: tuple[BlendConfig, ...] = (
         ),
         output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_NeuralGCM",
         # Diagnostics-only: no v2 blend coefficients are available.
-        implemented=True,
+        implemented=False,
         diagnostic_plots=False,
     ),
     BlendConfig(
@@ -391,7 +391,10 @@ def validate_blend_config(blend: BlendConfig) -> None:
         raise ValueError(f"Blend {blend.name} model names do not match its inputs.")
     if blend.diagnostic_inputs is not None:
         diagnostic_roles = {input_.role for input_ in blend.diagnostic_inputs}
-        if diagnostic_roles != {"deterministic", "ensemble"} or len(blend.diagnostic_inputs) != 2:
+        if (
+            diagnostic_roles != {"deterministic", "ensemble"}
+            or len(blend.diagnostic_inputs) != 2
+        ):
             raise ValueError(
                 f"Blend {blend.name} must define exactly one deterministic and one ensemble diagnostic input."
             )
@@ -451,7 +454,11 @@ def run_blend(
     skip_to: int | None,
 ) -> bool:
     if not blend.implemented:
-        logger.info("Blend %s/%s is disabled; no blend coefficients are configured.", blend.region, blend.name)
+        logger.info(
+            "Blend %s/%s is disabled; no blend coefficients are configured.",
+            blend.region,
+            blend.name,
+        )
         return False
 
     missing = missing_inputs(blend, date)

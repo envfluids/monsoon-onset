@@ -35,11 +35,11 @@ DOMAINS = {
         "stride": 3, "div_qscale": 400, "label": "Ethiopia",
     },
     "africa": {
-        "lon": (-26, 68), "lat": (-51, 40),
+        "lon": (-26, 73), "lat": (-56, 40),
         "stride": 8, "div_qscale": 900, "label": "Africa",
     },
     "mslp_extended": {
-        "lon": (-26, 68), "lat": (-51, 40),
+        "lon": (-26, 73), "lat": (-56, 40),
         "stride": 10, "div_qscale": 1000, "label": "Africa & Indian Ocean",
     },
 }
