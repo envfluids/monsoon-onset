@@ -47,7 +47,7 @@ DOMAINS = {
 # ── WEEK / STEP CONFIG ────────────────────────────────────────────────────────
 
 WEEKS = {"Week 1": (0, 6), "Week 2": (7, 13), "Week 3": (14, 20)}
-STEPS_PER_DAY = 4   # 6-hourly steps
+DEFAULT_STEPS_PER_DAY = 4   # 6-hourly steps
 
 WIND_LEVELS = [("850", "u_850", "v_850"), ("200", "u_200", "v_200")]
 
@@ -114,43 +114,99 @@ _DIV_CMAPS = {
 
 # ── DATA LOADING ───────────────────────────────────────────────────────────────
 
-def _load_ds(path: Path, lon_min: float, lon_max: float,
-             lat_min: float, lat_max: float) -> xr.Dataset:
+def _normalize_ds(ds: xr.Dataset) -> xr.Dataset:
+    rename = {}
+    for old, new in (
+        ("prediction_timedelta", "step"),
+        ("latitude", "lat"),
+        ("longitude", "lon"),
+        ("ensemble", "number"),
+        ("sample", "number"),
+    ):
+        if old in ds.dims or old in ds.coords:
+            if new not in ds.dims and new not in ds.coords:
+                rename[old] = new
+    if rename:
+        ds = ds.rename(rename)
+
+    if "step" not in ds.dims and "time" in ds.dims and ds.sizes["time"] > 1:
+        ds = ds.rename({"time": "step"})
+    if "time" in ds.dims and ds.sizes["time"] == 1:
+        ds = ds.squeeze("time", drop=True)
+    if "batch" in ds.dims and ds.sizes["batch"] == 1:
+        ds = ds.squeeze("batch", drop=True)
+
+    wind_vars = (
+        ("u_850", "u", "u_component_of_wind", 850),
+        ("v_850", "v", "v_component_of_wind", 850),
+        ("u_200", "u", "u_component_of_wind", 200),
+        ("v_200", "v", "v_component_of_wind", 200),
+    )
+    for output_var, short_var, long_var, level in wind_vars:
+        if output_var in ds:
+            continue
+        source_var = short_var if short_var in ds else long_var
+        if source_var in ds and "level" in ds[source_var].dims:
+            ds[output_var] = ds[source_var].sel(level=level)
+    return ds
+
+
+def _open_ds(path: Path) -> xr.Dataset:
     if path.suffix == ".zarr":
         ds = xr.open_zarr(path, chunks={})
-        if "prediction_timedelta" in ds.dims:
-            ds = ds.rename({"prediction_timedelta": "step"})
     else:
         ds = xr.open_dataset(path, chunks={})
-    if "time" in ds.dims:
-        ds = ds.squeeze("time", drop=True)
-    if float(ds.lat[0]) > float(ds.lat[-1]):
-        ds = ds.isel(lat=slice(None, None, -1))
+    return _normalize_ds(ds)
+
+
+def _subset_ds(ds: xr.Dataset, lon_min: float, lon_max: float,
+               lat_min: float, lat_max: float) -> xr.Dataset:
     if lon_min < 0 and float(ds.lon.min()) >= 0:
-        ds = ds.assign_coords(lon=((ds.lon + 180) % 360) - 180).sortby("lon")
+        ds = ds.assign_coords(lon=((ds.lon + 180) % 360) - 180)
+    ds = ds.sortby(["lat", "lon"])
     return ds.sel(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
 
 
-def _step_slice(day_start: int, day_end: int) -> slice:
-    return slice(day_start * STEPS_PER_DAY, (day_end + 1) * STEPS_PER_DAY)
+
+def _load_ds(path: Path, lon_min: float, lon_max: float,
+             lat_min: float, lat_max: float) -> xr.Dataset:
+    return _subset_ds(_open_ds(path), lon_min, lon_max, lat_min, lat_max)
+
+def _steps_per_day(ds: xr.Dataset) -> int:
+    if "step" not in ds.coords or ds.sizes.get("step", 0) < 2:
+        return DEFAULT_STEPS_PER_DAY
+    values = ds["step"].values
+    if np.issubdtype(values.dtype, np.datetime64):
+        hours = np.median(np.diff(values) / np.timedelta64(1, "h"))
+    elif np.issubdtype(values.dtype, np.timedelta64):
+        hours = np.median(np.diff(values) / np.timedelta64(1, "h"))
+    else:
+        hours = np.median(np.diff(values).astype(float))
+    if hours <= 0:
+        return DEFAULT_STEPS_PER_DAY
+    return max(1, round(24 / float(hours)))
+
+def _step_slice(ds: xr.Dataset, day_start: int, day_end: int) -> slice:
+    steps_per_day = _steps_per_day(ds)
+    return slice(day_start * steps_per_day, (day_end + 1) * steps_per_day)
 
 
 def _weekly_wind(ds, u_var, v_var, day_start, day_end):
-    sl = _step_slice(day_start, day_end)
+    sl = _step_slice(ds, day_start, day_end)
     u = ds[u_var].isel(step=sl)
     v = ds[v_var].isel(step=sl)
     if "number" in u.dims:
         u, v = u.mean("number"), v.mean("number")
-    u_m = u.mean("step").values.astype(float)
-    v_m = v.mean("step").values.astype(float)
+    u_m = u.mean("step").transpose("lat", "lon").values.astype(float)
+    v_m = v.mean("step").transpose("lat", "lon").values.astype(float)
     return u_m, v_m, np.sqrt(u_m**2 + v_m**2)
 
 def _weekly_mslp(ds, day_start, day_end):
-    sl = _step_slice(day_start, day_end)
+    sl = _step_slice(ds, day_start, day_end)
     mslp = ds["msl"].isel(step=sl)
     if "number" in mslp.dims:
         mslp = mslp.mean("number")
-    arr = mslp.mean("step").values.astype(float)
+    arr = mslp.mean("step").transpose("lat", "lon").values.astype(float)
     if arr.mean() > 10000:
         arr /= 100.0
     return arr
@@ -201,8 +257,8 @@ def _base_fig():
 # ── FIGURE FUNCTIONS ───────────────────────────────────────────────────────────
 
 def _wind_figure(
-    aifs_nc,
-    ens_nc,
+    aifs_full_ds,
+    ens_full_ds,
     level,
     u_var,
     v_var,
@@ -217,14 +273,13 @@ def _wind_figure(
     cmap, norm, levels = _WIND_CMAPS[level]
     vmax = levels[-1]
 
-    aifs_ds = _load_ds(aifs_nc, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _load_ds(ens_nc,  lon_min, lon_max, lat_min, lat_max)
-    lats, lons = aifs_ds.lat.values, aifs_ds.lon.values
-    lon2d, lat2d = np.meshgrid(lons, lats)
+    aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
+    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
 
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        lon2d, lat2d = np.meshgrid(ds.lon.values, ds.lat.values)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, ws = _weekly_wind(ds, u_var, v_var, d0, d1)
@@ -249,8 +304,8 @@ def _wind_figure(
 
 
 def _divcon_figure(
-    aifs_nc,
-    ens_nc,
+    aifs_full_ds,
+    ens_full_ds,
     level,
     u_var,
     v_var,
@@ -264,16 +319,16 @@ def _divcon_figure(
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
 
-    aifs_ds = _load_ds(aifs_nc, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _load_ds(ens_nc,  lon_min, lon_max, lat_min, lat_max)
-    lats, lons = aifs_ds.lat.values, aifs_ds.lon.values
-    lon2d, lat2d = np.meshgrid(lons, lats)
+    aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
+    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
 
     cmap_div, norm_div, levels_div = _DIV_CMAPS[level]
 
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        lats, lons = ds.lat.values, ds.lon.values
+        lon2d, lat2d = np.meshgrid(lons, lats)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, _ = _weekly_wind(ds, u_var, v_var, d0, d1)
@@ -300,8 +355,8 @@ def _divcon_figure(
     log.info(f"Saved: {save_path}")
 
 def _mslp_figure(
-    aifs_nc,
-    ens_nc,
+    aifs_full_ds,
+    ens_full_ds,
     date_str,
     save_path,
     domain,
@@ -311,14 +366,16 @@ def _mslp_figure(
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
 
-    aifs_ds = _load_ds(aifs_nc, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _load_ds(ens_nc,  lon_min, lon_max, lat_min, lat_max)
-    lats, lons = aifs_ds.lat.values, aifs_ds.lon.values
-    lon2d, lat2d = np.meshgrid(lons, lats)
+    aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
+    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
+    if "msl" not in aifs_ds or "msl" not in ens_ds:
+        log.info("Skipping MSLP plot: one or both models do not provide msl")
+        return
 
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        lon2d, lat2d = np.meshgrid(ds.lon.values, ds.lat.values)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, _ = _weekly_wind(ds, "u_850", "v_850", d0, d1)
@@ -368,8 +425,8 @@ def plot_circulation(
     deterministic_model / ensemble_model : exact configured model names.
     smooth : Gaussian sigma applied to u,v before divergence computation
     """
-    aifs_dir = base / "AIFS" / "output" / "raw" / deterministic_model
-    ens_dir = base / "AIFS" / "output" / "raw" / ensemble_model
+    aifs_nc = _full_field_path(base, deterministic_model, date)
+    ens_nc = _full_field_path(base, ensemble_model, date)
     out_dir = (
         Path(output_dir)
         if output_dir
@@ -382,27 +439,47 @@ def plot_circulation(
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    aifs_nc = aifs_dir / f"init_{date}.nc"
-    ens_nc  = ens_dir  / f"init_{date}.zarr"
-    if not ens_nc.exists():
-        ens_nc = ens_dir / f"init_{date}.nc"
-
     for p in (aifs_nc, ens_nc):
         if not p.exists():
             log.warning(f"Skipping {date}: {p} not found")
             return
 
-    for domain_name in ("ethiopia", "africa"):
-        dom = DOMAINS[domain_name]
-        prefix = f"{domain_name}_" if domain_name != "ethiopia" else ""
-        for level, u_var, v_var in WIND_LEVELS:
-            _wind_figure(aifs_nc, ens_nc, level, u_var, v_var,
-                         date, out_dir / f"{prefix}wind_{level}_{date}.png", dom,
-                         (deterministic_model, f"{ensemble_model} (mean)"))
-            _divcon_figure(aifs_nc, ens_nc, level, u_var, v_var,
-                           date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
-                           (deterministic_model, f"{ensemble_model} (mean)"), smooth)
-            
-    _mslp_figure(aifs_nc, ens_nc, date,
-                    out_dir / f"africa_mslp_{date}.png", DOMAINS["mslp_extended"],
-                    (deterministic_model, f"{ensemble_model} (mean)"))
+    aifs_ds = _open_ds(aifs_nc)
+    ens_ds = _open_ds(ens_nc)
+
+    try:
+        domain_names = (
+            ("africa",)
+            if ensemble_model.lower() == "neuralgcm"
+            else ("ethiopia", "africa")
+        )
+        for domain_name in domain_names:
+            dom = DOMAINS[domain_name]
+            prefix = f"{domain_name}_" if domain_name != "ethiopia" else ""
+            for level, u_var, v_var in WIND_LEVELS:
+                _wind_figure(aifs_ds, ens_ds, level, u_var, v_var,
+                             date, out_dir / f"{prefix}wind_{level}_{date}.png", dom,
+                             (deterministic_model, f"{ensemble_model} (mean)"))
+                _divcon_figure(aifs_ds, ens_ds, level, u_var, v_var,
+                               date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
+                               (deterministic_model, f"{ensemble_model} (mean)"), smooth)
+
+        _mslp_figure(aifs_ds, ens_ds, date,
+                     out_dir / f"africa_mslp_{date}.png", DOMAINS["mslp_extended"],
+                     (deterministic_model, f"{ensemble_model} (mean)"))
+    finally:
+        aifs_ds.close()
+        ens_ds.close()
+
+
+def _full_field_path(base: Path, model: str, date: str) -> Path:
+    if model == "NeuralGCM":
+        return base / "NeuralGCM" / "output" / "raw" / f"{date}.zarr"
+    if model == "gencast":
+        return base / "gencast" / "raw" / "output" / f"init_{date}.zarr"
+
+    model_dir = base / "AIFS" / "output" / "raw" / model
+    zarr_path = model_dir / f"init_{date}.zarr"
+    if zarr_path.exists():
+        return zarr_path
+    return model_dir / f"init_{date}.nc"
