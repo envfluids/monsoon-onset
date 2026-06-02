@@ -165,8 +165,15 @@ def get_blend_params(deterministic_model, ensemble_model, onset_definition):
         }
         if onset_definition == "ICPAC":
             spec_dict["--coef_dir"] = "Monsoon_Data/results/dry_spell_aifs_ngcm"
+            spec_dict["--gt_path"] = (
+                "Monsoon_Data/Processed_Data/Models/dry_spell_v2/imd_clim_mok_date_wide.pkl"
+            )
         if onset_definition == "2mm":
             not_implemented = True
+
+        remapping_file = (
+            TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping.csv"
+        )
 
     expected_out_dir_head = f"{blend_name}_{onset_definition}"
 
@@ -222,6 +229,9 @@ def run_blending_pipeline(
         det_nc_file = batch_aggregate_to_adm3_matrix(
             deterministic_model, det_nc_file, expected_out_dir, remapping_file
         )
+
+        if ensemble_model == "NeuralGCM":
+            remapping_file = TARGET_WORK_DIR / "Monsoon_Data" / "grid_to_district_mapping_ngcm.csv"
 
         ens_nc_file = Path(ensemble_input)
         ens_nc_file = batch_aggregate_to_adm3_matrix(
