@@ -1,7 +1,8 @@
 #!/bin/bash -l
 #SBATCH -p general
 #SBATCH -N 1
-#SBATCH -n 2
+#SBATCH -n 1
+#SBATCH --cpus-per-task=2
 #SBATCH --mem=32G
 #SBATCH -t 00:30:00
 #SBATCH --mail-user=marchakitus@uchicago.edu

@@ -31,23 +31,32 @@ log = logging.getLogger(__name__)
 
 DOMAINS = {
     "ethiopia": {
-        "lon": (33, 48), "lat": (3, 15),
-        "stride": 3, "div_qscale": 400, "label": "Ethiopia",
+        "lon": (33, 48),
+        "lat": (3, 15),
+        "stride": 3,
+        "div_qscale": 400,
+        "label": "Ethiopia",
     },
     "africa": {
-        "lon": (-26, 73), "lat": (-56, 40),
-        "stride": 8, "div_qscale": 900, "label": "Africa",
+        "lon": (-26, 73),
+        "lat": (-56, 40),
+        "stride": 8,
+        "div_qscale": 900,
+        "label": "Africa",
     },
     "mslp_extended": {
-        "lon": (-26, 73), "lat": (-56, 40),
-        "stride": 10, "div_qscale": 1000, "label": "Africa & Indian Ocean",
+        "lon": (-26, 73),
+        "lat": (-56, 40),
+        "stride": 10,
+        "div_qscale": 1000,
+        "label": "Africa & Indian Ocean",
     },
 }
 
 # ── WEEK / STEP CONFIG ────────────────────────────────────────────────────────
 
 WEEKS = {"Week 1": (0, 6), "Week 2": (7, 13), "Week 3": (14, 20)}
-DEFAULT_STEPS_PER_DAY = 4   # 6-hourly steps
+DEFAULT_STEPS_PER_DAY = 4  # 6-hourly steps
 
 WIND_LEVELS = [("850", "u_850", "v_850"), ("200", "u_200", "v_200")]
 
@@ -55,9 +64,16 @@ WIND_LEVELS = [("850", "u_850", "v_850"), ("200", "u_200", "v_200")]
 
 _LEVELS_850 = [0, 1, 2, 3, 4, 5, 6, 8, 10, 15, 20]
 _COLORS_850 = [
-    "#FFFFFF", "#D5EEFF", "#90CCFF", "#4AB4F0",
-    "#009EC8", "#00A880", "#20B848", "#70C820",
-    "#C8D800", "#FFFF00",
+    "#FFFFFF",
+    "#D5EEFF",
+    "#90CCFF",
+    "#4AB4F0",
+    "#009EC8",
+    "#00A880",
+    "#20B848",
+    "#70C820",
+    "#C8D800",
+    "#FFFF00",
 ]
 CMAP_850 = ListedColormap(_COLORS_850, name="wind_850")
 CMAP_850.set_over(_COLORS_850[-1])
@@ -65,9 +81,17 @@ NORM_850 = BoundaryNorm(_LEVELS_850, CMAP_850.N)
 
 _LEVELS_200 = [0, 2, 4, 6, 8, 10, 15, 20, 30, 40, 50, 70]
 _COLORS_200 = [
-    "#0000BB", "#0040EE", "#0090FF", "#00C8D8",
-    "#00A870", "#50C000", "#C8D800", "#FFB800",
-    "#FF6000", "#CC0000", "#880000",
+    "#0000BB",
+    "#0040EE",
+    "#0090FF",
+    "#00C8D8",
+    "#00A870",
+    "#50C000",
+    "#C8D800",
+    "#FFB800",
+    "#FF6000",
+    "#CC0000",
+    "#880000",
 ]
 CMAP_200 = ListedColormap(_COLORS_200, name="wind_200")
 CMAP_200.set_over(_COLORS_200[-1])
@@ -75,9 +99,18 @@ NORM_200 = BoundaryNorm(_LEVELS_200, CMAP_200.N)
 
 _LEVELS_DIV = [-4, -3, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 3, 4]
 _COLORS_DIV = [
-    "#004400", "#007700", "#30A830", "#70C870",
-    "#B0DDB0", "#DDEEDD", "#EEDDC8", "#D0A060",
-    "#B87030", "#904020", "#682010", "#401008",
+    "#004400",
+    "#007700",
+    "#30A830",
+    "#70C870",
+    "#B0DDB0",
+    "#DDEEDD",
+    "#EEDDC8",
+    "#D0A060",
+    "#B87030",
+    "#904020",
+    "#682010",
+    "#401008",
 ]
 CMAP_DIV_850 = ListedColormap(_COLORS_DIV, name="divcon")
 CMAP_DIV_850.set_under(_COLORS_DIV[0])
@@ -93,9 +126,17 @@ NORM_DIV_200 = BoundaryNorm(_LEVELS_DIV, CMAP_DIV_200.N)
 # MSLP: deep blue (low) → white → deep red (high)
 _LEVELS_MSLP = [950, 960, 970, 980, 990, 1000, 1005, 1010, 1015, 1020, 1025, 1030]
 _COLORS_MSLP = [
-    "#1A0090", "#0040CC", "#0080FF", "#40B8FF",
-    "#C0E8FF", "#FFFFFF", "#FFE8C0", "#FFA040",
-    "#FF5000", "#CC0000", "#800000",
+    "#1A0090",
+    "#0040CC",
+    "#0080FF",
+    "#40B8FF",
+    "#C0E8FF",
+    "#FFFFFF",
+    "#FFE8C0",
+    "#FFA040",
+    "#FF5000",
+    "#CC0000",
+    "#800000",
 ]
 CMAP_MSLP = ListedColormap(_COLORS_MSLP, name="mslp")
 CMAP_MSLP.set_under(_COLORS_MSLP[0])
@@ -113,6 +154,7 @@ _DIV_CMAPS = {
 }
 
 # ── DATA LOADING ───────────────────────────────────────────────────────────────
+
 
 def _normalize_ds(ds: xr.Dataset) -> xr.Dataset:
     rename = {}
@@ -159,18 +201,20 @@ def _open_ds(path: Path) -> xr.Dataset:
     return _normalize_ds(ds)
 
 
-def _subset_ds(ds: xr.Dataset, lon_min: float, lon_max: float,
-               lat_min: float, lat_max: float) -> xr.Dataset:
+def _subset_ds(
+    ds: xr.Dataset, lon_min: float, lon_max: float, lat_min: float, lat_max: float
+) -> xr.Dataset:
     if lon_min < 0 and float(ds.lon.min()) >= 0:
         ds = ds.assign_coords(lon=((ds.lon + 180) % 360) - 180)
     ds = ds.sortby(["lat", "lon"])
     return ds.sel(lat=slice(lat_min, lat_max), lon=slice(lon_min, lon_max))
 
 
-
-def _load_ds(path: Path, lon_min: float, lon_max: float,
-             lat_min: float, lat_max: float) -> xr.Dataset:
+def _load_ds(
+    path: Path, lon_min: float, lon_max: float, lat_min: float, lat_max: float
+) -> xr.Dataset:
     return _subset_ds(_open_ds(path), lon_min, lon_max, lat_min, lat_max)
+
 
 def _steps_per_day(ds: xr.Dataset) -> int:
     if "step" not in ds.coords or ds.sizes.get("step", 0) < 2:
@@ -185,6 +229,7 @@ def _steps_per_day(ds: xr.Dataset) -> int:
     if hours <= 0:
         return DEFAULT_STEPS_PER_DAY
     return max(1, round(24 / float(hours)))
+
 
 def _step_slice(ds: xr.Dataset, day_start: int, day_end: int) -> slice:
     steps_per_day = _steps_per_day(ds)
@@ -201,6 +246,7 @@ def _weekly_wind(ds, u_var, v_var, day_start, day_end):
     v_m = v.mean("step").transpose("lat", "lon").values.astype(float)
     return u_m, v_m, np.sqrt(u_m**2 + v_m**2)
 
+
 def _weekly_mslp(ds, day_start, day_end):
     sl = _step_slice(ds, day_start, day_end)
     mslp = ds["msl"].isel(step=sl)
@@ -210,6 +256,7 @@ def _weekly_mslp(ds, day_start, day_end):
     if arr.mean() > 10000:
         arr /= 100.0
     return arr
+
 
 def _divergence(u, v, lat, lon, smooth_sigma=0.0):
     if smooth_sigma > 0:
@@ -221,10 +268,17 @@ def _divergence(u, v, lat, lon, smooth_sigma=0.0):
     dv_dphi = np.gradient(v, np.radians(lat), axis=0)
     return (du_dlam / (R * cos_lat) + dv_dphi / R) * 1e5
 
+
 # ── PLOT HELPERS ───────────────────────────────────────────────────────────────
 
+
 def _valid_period_str(date_str, day_start, day_end):
-    y, mo, d, h = int(date_str[:4]), int(date_str[4:6]), int(date_str[6:8]), int(date_str[9:11])
+    y, mo, d, h = (
+        int(date_str[:4]),
+        int(date_str[4:6]),
+        int(date_str[6:8]),
+        int(date_str[9:11]),
+    )
     init = datetime(y, mo, d, h)
     t0 = init + timedelta(days=day_start)
     t1 = init + timedelta(days=day_end)
@@ -243,18 +297,30 @@ def _label_panels(axes, row, col, model_label, title):
     if row == 0:
         ax.set_title(title, fontsize=10, pad=4)
     if col == 0:
-        ax.text(-0.08, 0.5, model_label, transform=ax.transAxes,
-                fontsize=10, va="center", ha="right", rotation=90)
+        ax.text(
+            -0.08,
+            0.5,
+            model_label,
+            transform=ax.transAxes,
+            fontsize=10,
+            va="center",
+            ha="right",
+            rotation=90,
+        )
 
 
 def _base_fig():
     return plt.subplots(
-        2, 3, figsize=(14, 8),
+        2,
+        3,
+        figsize=(14, 8),
         subplot_kw={"projection": ccrs.PlateCarree()},
         gridspec_kw={"hspace": 0.08, "wspace": 0.04},
     )
 
+
 # ── FIGURE FUNCTIONS ───────────────────────────────────────────────────────────
+
 
 def _wind_figure(
     aifs_full_ds,
@@ -274,7 +340,7 @@ def _wind_figure(
     vmax = levels[-1]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
+    ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
 
     fig, axes = _base_fig()
     im = None
@@ -283,21 +349,46 @@ def _wind_figure(
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
             u, v, ws = _weekly_wind(ds, u_var, v_var, d0, d1)
-            im = ax.pcolormesh(lon2d, lat2d, ws, cmap=cmap, norm=norm,
-                               shading="auto", transform=ccrs.PlateCarree())
+            im = ax.pcolormesh(
+                lon2d,
+                lat2d,
+                ws,
+                cmap=cmap,
+                norm=norm,
+                shading="auto",
+                transform=ccrs.PlateCarree(),
+            )
             sl = slice(None, None, stride)
-            ax.quiver(lon2d[sl, sl], lat2d[sl, sl], u[sl, sl], v[sl, sl],
-                      transform=ccrs.PlateCarree(),
-                      scale=vmax * 20, width=0.003, headwidth=3, color="black", alpha=0.75)
+            ax.quiver(
+                lon2d[sl, sl],
+                lat2d[sl, sl],
+                u[sl, sl],
+                v[sl, sl],
+                transform=ccrs.PlateCarree(),
+                scale=vmax * 20,
+                width=0.003,
+                headwidth=3,
+                color="black",
+                alpha=0.75,
+            )
             _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
-            _label_panels(axes, row, col, label,
-                          f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}")
+            _label_panels(
+                axes,
+                row,
+                col,
+                label,
+                f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}",
+            )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
     fig.colorbar(im, cax=cbar_ax, extend="max", ticks=levels).set_label(
-        f"{level} hPa wind speed (m/s)", fontsize=10)
-    fig.suptitle(f"{domain['label']} — {level} hPa Wind Forecast  |  Init: {date_str}",
-                 fontsize=13, y=1.02)
+        f"{level} hPa wind speed (m/s)", fontsize=10
+    )
+    fig.suptitle(
+        f"{domain['label']} — {level} hPa Wind Forecast  |  Init: {date_str}",
+        fontsize=13,
+        y=1.02,
+    )
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Saved: {save_path}")
@@ -320,7 +411,7 @@ def _divcon_figure(
     stride = domain["stride"]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
+    ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
 
     cmap_div, norm_div, levels_div = _DIV_CMAPS[level]
 
@@ -333,26 +424,51 @@ def _divcon_figure(
             ax = axes[row, col]
             u, v, _ = _weekly_wind(ds, u_var, v_var, d0, d1)
             div = _divergence(u, v, lats, lons, smooth_sigma)
-            im = ax.pcolormesh(lon2d, lat2d, div, cmap=cmap_div, norm=norm_div,
-                               shading="auto", transform=ccrs.PlateCarree())
+            im = ax.pcolormesh(
+                lon2d,
+                lat2d,
+                div,
+                cmap=cmap_div,
+                norm=norm_div,
+                shading="auto",
+                transform=ccrs.PlateCarree(),
+            )
             sl = slice(None, None, stride)
-            ax.quiver(lon2d[sl, sl], lat2d[sl, sl], u[sl, sl], v[sl, sl],
-                      transform=ccrs.PlateCarree(),
-                      scale=domain["div_qscale"], width=0.003, headwidth=3,
-                      color="black", alpha=0.6)
+            ax.quiver(
+                lon2d[sl, sl],
+                lat2d[sl, sl],
+                u[sl, sl],
+                v[sl, sl],
+                transform=ccrs.PlateCarree(),
+                scale=domain["div_qscale"],
+                width=0.003,
+                headwidth=3,
+                color="black",
+                alpha=0.6,
+            )
             _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
-            _label_panels(axes, row, col, label,
-                          f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}")
+            _label_panels(
+                axes,
+                row,
+                col,
+                label,
+                f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}",
+            )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
     fig.colorbar(im, cax=cbar_ax, extend="both", ticks=levels_div).set_label(
-        f"{level} hPa divergence (×10⁻⁵ s⁻¹)\n← convergence  |  divergence →", fontsize=9)
+        f"{level} hPa divergence (×10⁻⁵ s⁻¹)\n← convergence  |  divergence →",
+        fontsize=9,
+    )
     fig.suptitle(
         f"{domain['label']} — {level} hPa Convergence/Divergence  |  Init: {date_str}",
-        fontsize=13, y=1.02)
+        fontsize=13,
+        y=1.02,
+    )
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Saved: {save_path}")
+
 
 def _mslp_figure(
     aifs_full_ds,
@@ -367,7 +483,7 @@ def _mslp_figure(
     stride = domain["stride"]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
-    ens_ds  = _subset_ds(ens_full_ds,  lon_min, lon_max, lat_min, lat_max)
+    ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
     if "msl" not in aifs_ds or "msl" not in ens_ds:
         log.info("Skipping MSLP plot: one or both models do not provide msl")
         return
@@ -380,28 +496,62 @@ def _mslp_figure(
             ax = axes[row, col]
             u, v, _ = _weekly_wind(ds, "u_850", "v_850", d0, d1)
             mslp = _weekly_mslp(ds, d0, d1)
-            im = ax.pcolormesh(lon2d, lat2d, mslp, cmap=CMAP_MSLP, norm=NORM_MSLP,
-                               shading="auto", transform=ccrs.PlateCarree())
-            ax.contour(lon2d, lat2d, mslp, levels=np.arange(950, 1036, 4),
-                       colors="black", linewidths=0.4, transform=ccrs.PlateCarree())
+            im = ax.pcolormesh(
+                lon2d,
+                lat2d,
+                mslp,
+                cmap=CMAP_MSLP,
+                norm=NORM_MSLP,
+                shading="auto",
+                transform=ccrs.PlateCarree(),
+            )
+            ax.contour(
+                lon2d,
+                lat2d,
+                mslp,
+                levels=np.arange(950, 1036, 4),
+                colors="black",
+                linewidths=0.4,
+                transform=ccrs.PlateCarree(),
+            )
             sl = slice(None, None, stride)
-            ax.quiver(lon2d[sl, sl], lat2d[sl, sl], u[sl, sl], v[sl, sl],
-                      transform=ccrs.PlateCarree(),
-                      scale=400, width=0.003, headwidth=3, color="black", alpha=0.7)
+            ax.quiver(
+                lon2d[sl, sl],
+                lat2d[sl, sl],
+                u[sl, sl],
+                v[sl, sl],
+                transform=ccrs.PlateCarree(),
+                scale=400,
+                width=0.003,
+                headwidth=3,
+                color="black",
+                alpha=0.7,
+            )
             _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
-            _label_panels(axes, row, col, label,
-                          f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}")
+            _label_panels(
+                axes,
+                row,
+                col,
+                label,
+                f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}",
+            )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
     fig.colorbar(im, cax=cbar_ax, extend="both", ticks=_LEVELS_MSLP).set_label(
-        "Mean sea level pressure (hPa)", fontsize=10)
-    fig.suptitle(f"{domain['label']} — MSLP & 850 hPa Wind  |  Init: {date_str}",
-                 fontsize=13, y=1.02)
+        "Mean sea level pressure (hPa)", fontsize=10
+    )
+    fig.suptitle(
+        f"{domain['label']} — MSLP & 850 hPa Wind  |  Init: {date_str}",
+        fontsize=13,
+        y=1.02,
+    )
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Saved: {save_path}")
 
+
 # ── PUBLIC API ─────────────────────────────────────────────────────────────────
+
 
 def plot_circulation(
     base: Path,
@@ -457,16 +607,38 @@ def plot_circulation(
             dom = DOMAINS[domain_name]
             prefix = f"{domain_name}_" if domain_name != "ethiopia" else ""
             for level, u_var, v_var in WIND_LEVELS:
-                _wind_figure(aifs_ds, ens_ds, level, u_var, v_var,
-                             date, out_dir / f"{prefix}wind_{level}_{date}.png", dom,
-                             (deterministic_model, f"{ensemble_model} (mean)"))
-                _divcon_figure(aifs_ds, ens_ds, level, u_var, v_var,
-                               date, out_dir / f"{prefix}divcon_{level}_{date}.png", dom,
-                               (deterministic_model, f"{ensemble_model} (mean)"), smooth)
+                _wind_figure(
+                    aifs_ds,
+                    ens_ds,
+                    level,
+                    u_var,
+                    v_var,
+                    date,
+                    out_dir / f"{prefix}wind_{level}_{date}.png",
+                    dom,
+                    (deterministic_model, f"{ensemble_model} (mean)"),
+                )
+                _divcon_figure(
+                    aifs_ds,
+                    ens_ds,
+                    level,
+                    u_var,
+                    v_var,
+                    date,
+                    out_dir / f"{prefix}divcon_{level}_{date}.png",
+                    dom,
+                    (deterministic_model, f"{ensemble_model} (mean)"),
+                    smooth,
+                )
 
-        _mslp_figure(aifs_ds, ens_ds, date,
-                     out_dir / f"africa_mslp_{date}.png", DOMAINS["mslp_extended"],
-                     (deterministic_model, f"{ensemble_model} (mean)"))
+        _mslp_figure(
+            aifs_ds,
+            ens_ds,
+            date,
+            out_dir / f"africa_mslp_{date}.png",
+            DOMAINS["mslp_extended"],
+            (deterministic_model, f"{ensemble_model} (mean)"),
+        )
     finally:
         aifs_ds.close()
         ens_ds.close()

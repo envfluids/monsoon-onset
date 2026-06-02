@@ -44,17 +44,31 @@ PRECIP_VMAX = 20  # mm/day colorbar max
 
 # ── COLORMAP ──────────────────────────────────────────────────────────────────
 
+
 def _get_precip_cmap():
     colors = [
-        "#FFFFFF", "#C6FFFF", "#82FFFF", "#4CE6E6",
-        "#00CCCC", "#00B2B2", "#00A000", "#1DB200",
-        "#4CD600", "#99FF00", "#CCFF00", "#FFFF00",
-        "#FFCC00", "#FF9900", "#FF0000", "#CC0000",
+        "#FFFFFF",
+        "#C6FFFF",
+        "#82FFFF",
+        "#4CE6E6",
+        "#00CCCC",
+        "#00B2B2",
+        "#00A000",
+        "#1DB200",
+        "#4CD600",
+        "#99FF00",
+        "#CCFF00",
+        "#FFFF00",
+        "#FFCC00",
+        "#FF9900",
+        "#FF0000",
+        "#CC0000",
     ]
     return ListedColormap(colors, name="precip3_16lev")
 
 
 # ── HELPERS ───────────────────────────────────────────────────────────────────
+
 
 def _parse_init_date(date: str) -> np.datetime64:
     y, mo, d, h = date[:4], date[4:6], date[6:8], date[9:11]
@@ -64,8 +78,10 @@ def _parse_init_date(date: str) -> np.datetime64:
 def _valid_period_str(init: np.datetime64, day_start: int, day_end: int) -> str:
     t0 = (init + np.timedelta64(day_start, "D")).astype("datetime64[D]")
     t1 = (init + np.timedelta64(day_end, "D")).astype("datetime64[D]")
+
     def pretty(t):
         return datetime.strptime(str(t), "%Y-%m-%d").strftime("%-d %b")
+
     year = str(t1)[:4]
     return f"{pretty(str(t0))} – {pretty(str(t1))} {year}"
 
@@ -92,6 +108,7 @@ def _weekly_mean(da: xr.DataArray, day_start: int, day_end: int) -> np.ndarray:
 
 # ── PLOT ──────────────────────────────────────────────────────────────────────
 
+
 def _make_figure(
     aifs_path: Path,
     ens_path: Path,
@@ -109,7 +126,8 @@ def _make_figure(
     das = [aifs_da, ens_da]
 
     fig, axes = plt.subplots(
-        nrows=2, ncols=3,
+        nrows=2,
+        ncols=3,
         figsize=(14, 8),
         subplot_kw={"projection": ccrs.PlateCarree()},
         gridspec_kw={"hspace": 0.08, "wspace": 0.04},
@@ -125,8 +143,13 @@ def _make_figure(
             period = _valid_period_str(init_date, d0, d1)
 
             im = ax.pcolormesh(
-                lon2d, lat2d, data,
-                cmap=cmap, shading="auto", vmin=0, vmax=PRECIP_VMAX,
+                lon2d,
+                lat2d,
+                data,
+                cmap=cmap,
+                shading="auto",
+                vmin=0,
+                vmax=PRECIP_VMAX,
                 transform=ccrs.PlateCarree(),
             )
             ax.set_extent([LON_MIN, LON_MAX, LAT_MIN, LAT_MAX], crs=ccrs.PlateCarree())
@@ -137,21 +160,31 @@ def _make_figure(
             if row == 0:
                 ax.set_title(f"{wlabel}\n{period}", fontsize=10, pad=4)
             if col == 0:
-                ax.text(-0.08, 0.5, model_label, transform=ax.transAxes,
-                        fontsize=10, va="center", ha="right", rotation=90)
+                ax.text(
+                    -0.08,
+                    0.5,
+                    model_label,
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    va="center",
+                    ha="right",
+                    rotation=90,
+                )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
     cb = fig.colorbar(im, cax=cbar_ax)
     cb.set_label("Mean daily rainfall (mm/day)", fontsize=10)
 
-    fig.suptitle(f"Ethiopia — Precipitation Forecast  |  Init: {date}",
-                 fontsize=13, y=1.02)
+    fig.suptitle(
+        f"Ethiopia — Precipitation Forecast  |  Init: {date}", fontsize=13, y=1.02
+    )
     fig.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close(fig)
     log.info(f"Saved: {save_path}")
 
 
 # ── PUBLIC API ────────────────────────────────────────────────────────────────
+
 
 def plot_precip(
     base: Path,
