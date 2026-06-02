@@ -75,6 +75,9 @@ def _load_tp(nc_path: Path) -> xr.DataArray:
     da = ds[TP_VAR]
     if TIME_DIM in da.dims:
         da = da.squeeze(TIME_DIM, drop=True)
+    if "batch" in da.dims:
+        da = da.squeeze("batch", drop=True)
+    da = da.sortby(["lat", "lon"])
     return da
 
 
@@ -100,10 +103,6 @@ def _make_figure(
     aifs_da = _load_tp(aifs_path)
     ens_da = _load_tp(ens_path)
 
-    lats = aifs_da["lat"].values
-    lons = aifs_da["lon"].values
-    lon2d, lat2d = np.meshgrid(lons, lats)
-
     cmap = _get_precip_cmap()
     week_labels = list(WEEKS.keys())
     models = list(model_labels)
@@ -118,6 +117,7 @@ def _make_figure(
 
     im = None
     for row, (model_label, da) in enumerate(zip(models, das)):
+        lon2d, lat2d = np.meshgrid(da["lon"].values, da["lat"].values)
         for col, wlabel in enumerate(week_labels):
             d0, d1 = WEEKS[wlabel]
             ax = axes[row, col]
@@ -171,6 +171,10 @@ def plot_precip(
     date  : YYYYMMDDTHH init date string
     deterministic_model / ensemble_model : exact configured model names.
     """
+    # if ensemble_model.lower() == "neuralgcm":
+    #     log.info("Skipping Ethiopia precipitation plot for NeuralGCM")
+    #     return
+
     aifs_nc = (
         Path(deterministic_input)
         if deterministic_input
