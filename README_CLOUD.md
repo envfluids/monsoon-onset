@@ -55,7 +55,7 @@ raw/
 full_field/
   aifs/{date}/init_{date}.nc                <- AIFS full-field forecast
   aifs_ens/{date}/init_{date}.zarr/         <- AIFS-ENS full-field forecast
-  neuralgcm/{date}/member_*.zarr/           <- NeuralGCM full-field member forecasts
+  neuralgcm/{date}.zarr/                    <- NeuralGCM full-field ensemble forecast
   gencast/{date}/init_{date}.zarr/          <- GenCast full-field forecast
 intermediate/
   latest_date.txt                           <- latest date marker written by downloader
@@ -292,18 +292,19 @@ Pub/Sub/Eventarc.
 **Branch B - run_neuralgcm:**
 
 Creates a Cloud Batch job with ID `neuralgcm-{region}-{date}`. Spec:
-- 1 task, 1 retry, max 7200s (2 hours)
-- 8 vCPU, 64 GiB RAM (larger than AIFS due to 30-member ensemble)
-- Same GPU and network configuration as AIFS
+- 1 task, 1 retry, max 3600s (1 hour)
+- 48 vCPU, 340 GiB RAM
+- 4 A100 GPUs by default so NeuralGCM members can run in parallel
 
 The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
 1. Downloads `gdas_{date}.pgrb2` from the common bucket
 2. Downloads the NeuralGCM checkpoint (`.pkl`) and SST/sea ice forcing file from the weights bucket
 3. Runs `preprocess.py` - NCL interpolation of GRIB2 to NetCDF in the format NeuralGCM expects
-4. Runs `run_model.py` - 30-member stochastic ensemble, 45-day forecast using JAX on GPU
+4. Runs `run_model.py` - 30-member stochastic ensemble, split across visible
+   GPUs, with asynchronous local Zarr writes mirrored through GCS FUSE
 5. Runs `post_process.py` - per-member SJI, TP, TCW computation
 6. Runs `post_process_merge.py` - merges all 30 members into ensemble statistics
-7. Uploads full-field forecasts to `gs://{common_bucket}/raw_forecast/neuralgcm/{date}/`
+7. Mirrors full-field forecasts to `gs://{common_bucket}/full_field/neuralgcm/{date}.zarr/`
 8. Uploads post-processed products to `gs://{region_bucket}/output/neuralgcm/{date}/`
 9. Writes completion markers: `gs://{common_bucket}/intermediate/neuralgcm_{region}_{date}_done`
 

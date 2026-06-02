@@ -38,7 +38,7 @@ class BlendConfig:
     inputs: tuple[ForecastInput, ...]
     output_dir_template: str
     diagnostic_inputs: tuple[ForecastInput, ...] | None = None
-    implemented: bool = True
+    blend_implemented: bool = True
     diagnostic_plots: bool = False
     diagnostic_output_dir_template: str | None = None
 
@@ -148,7 +148,7 @@ BLENDS: tuple[BlendConfig, ...] = (
             ),
         ),
         output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v1p1_AIFS_ENS_v1",
-        implemented=True,
+        blend_implemented=True,
         diagnostic_plots=True,
     ),
     BlendConfig(
@@ -171,7 +171,7 @@ BLENDS: tuple[BlendConfig, ...] = (
         ),
         output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_AIFS_ENS_v2",
         # Diagnostics-only: no v2 blend coefficients are available.
-        implemented=True,
+        blend_implemented=True,
         diagnostic_plots=True,
     ),
     BlendConfig(
@@ -194,8 +194,31 @@ BLENDS: tuple[BlendConfig, ...] = (
         ),
         output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_NeuralGCM",
         # Diagnostics-only: no v2 blend coefficients are available.
-        implemented=True,
-        diagnostic_plots=False,
+        blend_implemented=True,
+        diagnostic_plots=True,
+    ),
+    BlendConfig(
+        region="ethiopia",
+        name="AIFS_single_v2_gencast",
+        deterministic_model="AIFS_single_v2",
+        ensemble_model="gencast",
+        script=REPO_ROOT / "blend" / "utils" / "ethiopia2026" / "run_pipeline.py",
+        inputs=(
+            ForecastInput(
+                model="AIFS_single_v2",
+                role="deterministic",
+                path_template="AIFS/output/ethiopia/AIFS_single_v2/tp/tp_0p25_{date}.nc",
+            ),
+            ForecastInput(
+                model="gencast",
+                role="ensemble",
+                path_template="gencast/output/ethiopia/tp/tp_0p25_{date}.nc",
+            ),
+        ),
+        output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_gencast",
+        # Diagnostics-only: no v2 blend coefficients are available.
+        blend_implemented=False,
+        diagnostic_plots=True,
     ),
     BlendConfig(
         region="india",
@@ -221,6 +244,7 @@ BLENDS: tuple[BlendConfig, ...] = (
             ),
         ),
         output_dir_template="blend/output/india2026/{date}/AIFS_single_v1p1_NCUM",
+        blend_implemented=True,
         diagnostic_plots=False,
     ),
     BlendConfig(
@@ -259,6 +283,7 @@ BLENDS: tuple[BlendConfig, ...] = (
                 path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
             ),
         ),
+        blend_implemented=True,
         diagnostic_plots=True,
     ),
     BlendConfig(
@@ -298,7 +323,7 @@ BLENDS: tuple[BlendConfig, ...] = (
             ),
         ),
         # Diagnostics-only: no v2 blend coefficients are available.
-        implemented=False,
+        blend_implemented=False,
         diagnostic_plots=True,
     ),
 )
@@ -453,7 +478,7 @@ def run_blend(
     debug: bool,
     skip_to: int | None,
 ) -> bool:
-    if not blend.implemented:
+    if not blend.blend_implemented:
         logger.info(
             "Blend %s/%s is disabled; no blend coefficients are configured.",
             blend.region,

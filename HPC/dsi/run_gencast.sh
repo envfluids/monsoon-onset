@@ -1,7 +1,8 @@
 #!/bin/bash -l
 #SBATCH -p Monsoon
 #SBATCH -N 1 
-#SBATCH -n 32
+#SBATCH -n 1
+#SBATCH --cpus-per-task=32
 #SBATCH --gres=gpu:h200:4
 #SBATCH --mem=350G
 #SBATCH -t 12:00:00

@@ -1,26 +1,29 @@
-import xarray as xr
-import numpy as np
-import os
 import argparse
-
-# from cdo import *
-import glob
+import logging
+import os
 from concurrent.futures import (
     ProcessPoolExecutor,
     as_completed,
-)  # Import necessary components
-import logging
+)
+from pathlib import Path
+
+import numpy as np
+import xarray as xr
 
 logging.basicConfig(
     level=logging.INFO,
     format=(
-        "%(asctime)s - %(levelname)s - %(name)s - "
-        "%(pathname)s:%(lineno)d - %(message)s"
+        "%(asctime)s - %(levelname)s - %(name)s - %(pathname)s:%(lineno)d - %(message)s"
     ),
 )
 
 grid_file = "../grids/grid_2p0.txt"
-RAW_OUTPUT_BASE = os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", "../output/raw")
+RAW_OUTPUT_BASE = Path(os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", "../output/raw"))
+
+
+def raw_forecast_path(date):
+    return RAW_OUTPUT_BASE / f"{date}.zarr"
+
 
 def set_atts_tcw(ds):
     ds["lat"].attrs["standard_name"] = "latitude"
@@ -84,7 +87,6 @@ def preprocess(ds):
 
 
 def process_member(member, date):
-    # cdo = Cdo()
     logging.info(f"Processing member: {member}")
     region = "india"
     output_base = f"../output/{region}"
@@ -92,7 +94,7 @@ def process_member(member, date):
     os.makedirs(f"{output_base}/tp", exist_ok=True)
     os.makedirs(f"{output_base}/tcw", exist_ok=True)
     ds = (
-        xr.open_zarr(os.path.join(RAW_OUTPUT_BASE, date, f"member_{member}.zarr"))
+        xr.open_zarr(raw_forecast_path(date))
         .rename(
             {
                 "precipitation_cumulative_mean": "tp",
@@ -100,59 +102,71 @@ def process_member(member, date):
                 "longitude": "lon",
             }
         )
-        .isel(ensemble=0, surface=0)
+        .sel(ensemble=member)
+        .isel(surface=0)
     )
     ds = preprocess(ds)
-    ds_tcw = process_tcw(ds[["specific_humidity"]])
-    ds_tcw = set_atts_tcw(ds_tcw)
-    regrid_input_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE.nc"
-    regrid_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_2.nc"
-    ds_tcw = ds_tcw.transpose("time", "lat", "lon", ...)
-    ds_tcw.to_netcdf(regrid_input_path)
-    # cdo.remapcon(grid_file, input=regrid_input_path, output=regrid_output_path)
-    command = [
-        "cdo",
-        "-s",
-        f"remapcon,{grid_file}",
-        regrid_input_path,
-        regrid_output_path,
-    ]
-    command = " ".join(command)
-    os.system(command)
-    os.remove(regrid_input_path)
-    ds_tcw = xr.open_dataset(regrid_output_path)
-    ds_tcw = post_process_tcw(ds_tcw)
-    ds_tcw = ds_tcw.expand_dims("number")
-    ds_tcw["number"] = [member]
-    member_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_3.nc"
-    ds_tcw.to_netcdf(member_output_path)
-    ds_tcw.close()
-    os.remove(regrid_output_path)
 
-    ds_tp = set_atts_tp(ds[["tp"]])
-    regrid_input_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE.nc"
-    regrid_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_2.nc"
-    ds_tp = ds_tp.transpose("time", "lat", "lon", ...)
-    ds_tp.to_netcdf(regrid_input_path)
-    # cdo.remapcon(grid_file, input=regrid_input_path, output=regrid_output_path)
-    command = [
-        "cdo",
-        "-s",
-        f"remapcon,{grid_file}",
-        regrid_input_path,
-        regrid_output_path,
-    ]
-    command = " ".join(command)
-    os.system(command)
-    os.remove(regrid_input_path)
-    ds_tp = xr.open_dataset(regrid_output_path)
-    ds_tp = post_process_tp(ds_tp)
-    ds_tp.expand_dims("number")
-    ds_tp["number"] = [member]
-    member_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_3.nc"
-    ds_tp.to_netcdf(member_output_path)
-    ds_tp.close()
-    os.remove(regrid_output_path)
+    tcw_final_file = f"{output_base}/tcw/tcw_{date}.nc"
+    if os.path.exists(tcw_final_file):
+        logging.info(
+            f"{tcw_final_file} already exists. Skipping TCW processing for member {member}."
+        )
+    else:
+        ds_tcw = process_tcw(ds[["specific_humidity"]])
+        ds_tcw = set_atts_tcw(ds_tcw)
+        regrid_input_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE.nc"
+        regrid_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_2.nc"
+        ds_tcw = ds_tcw.transpose("time", "lat", "lon", ...)
+        ds_tcw.to_netcdf(regrid_input_path)
+        command = [
+            "cdo",
+            "-s",
+            f"remapcon,{grid_file}",
+            regrid_input_path,
+            regrid_output_path,
+        ]
+        command = " ".join(command)
+        os.system(command)
+        os.remove(regrid_input_path)
+        ds_tcw = xr.open_dataset(regrid_output_path)
+        ds_tcw = post_process_tcw(ds_tcw)
+        ds_tcw = ds_tcw.expand_dims("number")
+        ds_tcw["number"] = [member]
+        member_output_path = f"{output_base}/tcw/{member}_{date}_INTERMEDIATE_3.nc"
+        ds_tcw.to_netcdf(member_output_path)
+        ds_tcw.close()
+        os.remove(regrid_output_path)
+
+    tp_final_file = f"{output_base}/tp/tp_2p0_{date}.nc"
+    if os.path.exists(tp_final_file):
+        logging.info(
+            f"{tp_final_file} already exists. Skipping TP processing for member {member}."
+        )
+    else:
+        ds_tp = set_atts_tp(ds[["tp"]])
+        regrid_input_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE.nc"
+        regrid_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_2.nc"
+        ds_tp = ds_tp.transpose("time", "lat", "lon", ...)
+        ds_tp.to_netcdf(regrid_input_path)
+        command = [
+            "cdo",
+            "-s",
+            f"remapcon,{grid_file}",
+            regrid_input_path,
+            regrid_output_path,
+        ]
+        command = " ".join(command)
+        os.system(command)
+        os.remove(regrid_input_path)
+        ds_tp = xr.open_dataset(regrid_output_path)
+        ds_tp = post_process_tp(ds_tp)
+        ds_tp = ds_tp.expand_dims("number")
+        ds_tp["number"] = [member]
+        member_output_path = f"{output_base}/tp/{member}_{date}_INTERMEDIATE_3.nc"
+        ds_tp.to_netcdf(member_output_path)
+        ds_tp.close()
+        os.remove(regrid_output_path)
     return member
 
 
@@ -169,14 +183,17 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    n_members = len(glob.glob(os.path.join(RAW_OUTPUT_BASE, date, "member_*.zarr")))
+    raw_ds = xr.open_zarr(raw_forecast_path(date))
+    members = [int(member) for member in raw_ds["ensemble"].values]
+    raw_ds.close()
+    n_members = len(members)
     futures = []
     with ProcessPoolExecutor(max_workers=n_members) as executor:
         logging.info(
             f"Submitting tasks for {n_members} members using up to {n_members} workers..."
         )
         # Submit all tasks for the current year
-        for member in range(1, n_members + 1):
+        for member in members:
             # executor.submit schedules the function to run and returns a Future object
             future = executor.submit(process_member, member, date)
             futures.append(future)
@@ -205,9 +222,6 @@ def main():
                 )
                 # Log the specific member if possible (though future doesn't easily expose args)
                 # traceback.print_exc() # Optionally print traceback
-
-    # for member in range(1, n_members+1):
-    #     process_member(member, date)
 
 
 if __name__ == "__main__":

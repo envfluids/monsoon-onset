@@ -54,8 +54,9 @@ BLEND_MODEL_TO_PIPELINE_MODEL = {
 FULL_FIELD_MODELS = {
     "AIFS_SINGLE_V2": {"prefix": "AIFS_single_v2", "kind": "file", "suffix": ".nc"},
     "AIFS_ENS_V2": {"prefix": "AIFS_ENS_v2", "kind": "directory", "suffix": ".zarr"},
-    "NEURALGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ""},
-    "NGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ""},
+    "GENCAST": {"prefix": "gencast", "kind": "directory", "suffix": ".zarr"},
+    "NEURALGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ".zarr"},
+    "NGCM": {"prefix": "neuralgcm", "kind": "directory", "suffix": ".zarr"},
 }
 
 
@@ -149,7 +150,7 @@ def _select_blends(region: str, run_mode: str) -> list[BlendConfig]:
         blend for blend in BLENDS
         if blend.region == region
         and (
-            (run_mode in {"all", "blend"} and blend.implemented)
+            (run_mode in {"all", "blend"} and blend.blend_implemented)
             or (run_mode in {"all", "diagnostics"} and blend.diagnostic_plots)
         )
         and (not configured_models or _pipeline_models_for_blend(blend).issubset(configured_models))
@@ -205,7 +206,7 @@ def _download_inputs(
         if run_mode in {"all", "diagnostics"}:
             _download_raw_full_fields(common_bucket, blend, date)
 
-    if run_mode == "diagnostics" or not any(blend.implemented for blend in blends):
+    if run_mode == "diagnostics" or not any(blend.blend_implemented for blend in blends):
         return
 
     # Blend support/coefficient files are gitignored when too large or
@@ -237,7 +238,9 @@ def _raw_full_field_path(model: str, date: str) -> Path:
     if not config:
         raise click.ClickException(f"No full-field mapping is configured for {model}")
     if config["prefix"] == "neuralgcm":
-        return REPO_ROOT / "NeuralGCM" / "output" / "raw" / date
+        return REPO_ROOT / "NeuralGCM" / "output" / "raw" / f"{date}.zarr"
+    if config["prefix"] == "gencast":
+        return REPO_ROOT / "gencast" / "raw" / "output" / f"init_{date}.zarr"
     return (
         REPO_ROOT
         / "AIFS"
@@ -262,7 +265,9 @@ def _download_raw_full_fields(common_bucket: str, blend: BlendConfig, date: str)
         gcs_prefix = f"full_field/{config['prefix']}/{date}/"
         if config["kind"] == "directory":
             source_prefix = gcs_prefix
-            if config["prefix"] != "neuralgcm":
+            if config["prefix"] == "neuralgcm":
+                source_prefix = f"full_field/neuralgcm/{date}.zarr/"
+            else:
                 source_prefix = f"{gcs_prefix}init_{date}{config['suffix']}/"
             downloaded = download_gcs_prefix(common_bucket, source_prefix, local_path)
             if downloaded == 0:
@@ -280,7 +285,9 @@ def _download_raw_full_fields(common_bucket: str, blend: BlendConfig, date: str)
 
 def _mounted_full_field_path(config: dict, date: str) -> Path:
     base = COMMON_BUCKET_MOUNT / "full_field" / config["prefix"] / date
-    if config["kind"] == "directory" and config["prefix"] != "neuralgcm":
+    if config["prefix"] == "neuralgcm":
+        return base.with_suffix(".zarr")
+    if config["kind"] == "directory":
         return base / f"init_{date}{config['suffix']}"
     if config["kind"] == "file":
         return base / f"init_{date}{config['suffix']}"

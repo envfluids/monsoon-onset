@@ -585,7 +585,7 @@ def _blend_state_for_region(region: str, models_state: dict, fallback_date: str)
     configured = [
         blend for blend in BLENDS
         if blend.region == region
-        and blend.implemented
+        and blend.blend_implemented
         and _pipeline_models_for_blend(blend).issubset(configured_models)
     ]
     if not configured:

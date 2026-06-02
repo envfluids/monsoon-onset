@@ -19,8 +19,7 @@ Environment Variables:
     GCS_COMMON_BUCKET : Common bucket for ICs, weights, full-field, markers
     GCS_REGION_BUCKETS: JSON map {region: bucket} for post-processed outputs
     UPLOAD_FULL_FIELD : 'true' to upload raw forecast to common bucket (default false)
-    NEURALGCM_ASYNC_SAVE_WORKERS: member Zarr save threads (default 1)
-    NEURALGCM_ASYNC_SAVE_MAX_PENDING: bounded pending member saves (default 2)
+    NEURALGCM_ZARR_MIRROR_WORKERS: asynchronous GCS FUSE mirror threads per worker (default 8)
 """
 
 import json
@@ -44,6 +43,7 @@ logger = logging.getLogger(__name__)
 NGCM_UTILS = Path("/app/NeuralGCM/utils")
 IC_NCEP_DIR = Path("/app/IC/output/ncep")
 COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
+NEURALGCM_ZARR_MIRROR_WORKERS = os.environ.get("NEURALGCM_ZARR_MIRROR_WORKERS", "8")
 
 # Regions where the science layer currently produces post-processed outputs.
 NGCM_SUPPORTED_REGIONS = {"india", "ethiopia"}
@@ -97,13 +97,16 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
 
     logger.info(f"NeuralGCM shim: date={date} regions={regions} upload_full_field={upload_full_field}")
 
-    raw_output_base = _raw_output_base(upload_full_field)
+    raw_output_base = _raw_output_base()
+    zarr_mirror_target = _zarr_mirror_target(date, upload_full_field)
 
     _setup_directories(date, raw_output_base)
     _download_inputs(date, common_bucket)
-    _run_science_scripts(date, raw_output_base)
+    _run_science_scripts(date, raw_output_base, zarr_mirror_target)
 
-    if upload_full_field:
+    if zarr_mirror_target is not None:
+        logger.info("NeuralGCM full-field Zarr store was mirrored through GCS FUSE")
+    elif upload_full_field:
         _upload_full_field(date, common_bucket, raw_output_base)
     else:
         logger.info("UPLOAD_FULL_FIELD=false — skipping NeuralGCM full-field upload")
@@ -121,10 +124,21 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
         _write_completion_marker(date, region, common_bucket)
 
 
-def _raw_output_base(upload_full_field: bool) -> Path:
-    if upload_full_field:
-        return COMMON_BUCKET_MOUNT / "full_field" / "neuralgcm"
+def _raw_output_base() -> Path:
     return NGCM_UTILS.parent / "output" / "raw"
+
+
+def _zarr_mirror_target(date: str, upload_full_field: bool) -> Path | None:
+    if not upload_full_field:
+        return None
+    if not COMMON_BUCKET_MOUNT.is_dir():
+        raise RuntimeError(
+            "NeuralGCM full-field upload requires the GCS FUSE mount at "
+            f"{COMMON_BUCKET_MOUNT}, but it is unavailable."
+        )
+    target = COMMON_BUCKET_MOUNT / "full_field" / "neuralgcm" / f"{date}.zarr"
+    logger.info("NeuralGCM full-field Zarr mirror target: %s", target)
+    return target
 
 
 def _setup_directories(date: str, raw_output_base: Path) -> None:
@@ -140,7 +154,7 @@ def _setup_directories(date: str, raw_output_base: Path) -> None:
         "data/model_ds",
     ]:
         (NGCM_UTILS.parent / subdir).mkdir(parents=True, exist_ok=True)
-    (raw_output_base / date).mkdir(parents=True, exist_ok=True)
+    raw_output_base.mkdir(parents=True, exist_ok=True)
     IC_NCEP_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -152,7 +166,7 @@ def _download_inputs(date: str, common_bucket: str) -> None:
         IC_NCEP_DIR / f"gdas_{date}.pgrb2",
     )
 
-    # 2. NeuralGCM model checkpoint (loaded at run_model.py module level)
+    # 2. NeuralGCM model checkpoint
     model_name = "models_v1_precip_stochastic_precip_2_8_deg.pkl"
     download_gcs_file(
         common_bucket,
@@ -160,7 +174,7 @@ def _download_inputs(date: str, common_bucket: str) -> None:
         NGCM_UTILS.parent / "weights" / model_name,
     )
 
-    # 3. SST / Sea Ice climatology forcing (loaded at run_model.py module level)
+    # 3. SST / Sea Ice climatology forcing
     download_gcs_file(
         common_bucket,
         "weights/neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc",
@@ -168,12 +182,19 @@ def _download_inputs(date: str, common_bucket: str) -> None:
     )
 
 
-def _run_science_scripts(date: str, raw_output_base: Path) -> None:
+def _run_science_scripts(
+    date: str,
+    raw_output_base: Path,
+    zarr_mirror_target: Path | None = None,
+) -> None:
     env = {
         **os.environ,
         "PYTHONPATH": str(NGCM_UTILS),
         "NEURALGCM_RAW_OUTPUT_DIR": str(raw_output_base),
     }
+    if zarr_mirror_target is not None:
+        env["NEURALGCM_ZARR_MIRROR_TARGET"] = str(zarr_mirror_target)
+        env["NEURALGCM_ZARR_MIRROR_WORKERS"] = NEURALGCM_ZARR_MIRROR_WORKERS
 
     logger.info(f"Running preprocess_ic.py for {date}")
     subprocess.run(
@@ -232,23 +253,8 @@ def _log_gpu_runtime(env: dict[str, str]) -> None:
 
 
 def _upload_full_field(date: str, common_bucket: str, raw_output_base: Path) -> None:
-    raw_dir = raw_output_base / date
-    if _path_is_relative_to(raw_dir, COMMON_BUCKET_MOUNT):
-        logger.info(
-            "NeuralGCM full-field output was written through GCS FUSE to gs://%s/full_field/neuralgcm/%s/",
-            common_bucket,
-            date,
-        )
-        return
-    upload_directory(common_bucket, raw_dir, f"full_field/neuralgcm/{date}")
-
-
-def _path_is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.resolve().relative_to(parent.resolve())
-        return True
-    except ValueError:
-        return False
+    raw_dir = raw_output_base / f"{date}.zarr"
+    upload_directory(common_bucket, raw_dir, f"full_field/neuralgcm/{date}.zarr")
 
 
 def _upload_region_outputs(date: str, region: str, region_bucket: str) -> None:

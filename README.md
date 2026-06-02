@@ -114,7 +114,7 @@ submitted through the central orchestrator.
 | Script | Scheduler resources | Main steps |
 | --- | --- | --- |
 | `HPC/midway/run_AIFS.sh` | Slurm, `pi-pedramh`, `pedramh-gpu`, 1 node, 4 GPUs, 350G, 1 hour | `AIFS/utils/run_model.py`, `post_process.py`, `verify_completion.py`, then `blend/utils/main.py`. |
-| `HPC/midway/run_NGCM.sh` | Slurm, `pi-pedramh`, `pedramh-gpu`, 1 node, 32 tasks, 4 GPUs, 350G, 1 hour | `preprocess.py`, four background `run_model.py --mpi 0..3` processes, `post_process.py`, `post_process_merge.py`, `verify_completion.py`, then `blend/utils/main.py`. |
+| `HPC/midway/run_NGCM.sh` | Slurm, `pi-pedramh`, `pedramh-gpu`, 1 node, 32 tasks, 4 GPUs, 350G, 1 hour | `preprocess.py`, one `run_model.py` launcher with an internal GPU worker pool, `post_process.py`, `post_process_merge.py`, `verify_completion.py`, then `blend/utils/main.py`. |
 | `HPC/midway/process_IMERG.sh` | Slurm, `pi-pedramh`, `pedramh-gpu`, 1 node, 32 tasks, 350G, 30 minutes | `IMERG/utils/plot.py`. `plot_bias.py` is commented out. |
 
 ### Derecho
@@ -156,15 +156,17 @@ under `AIFS/output/{tp,sji,tcw}/`, not `AIFS/output/india/{tp,sji,tcw}/`.
 - Downloaded GDAS file: `NeuralGCM/raw/ncep_ic/download/gdas_{date}.pgrb2`
 - Processed initial condition:
   `NeuralGCM/raw/ncep_ic/processed/gdas_{date}.nc`
-- Raw member output: `NeuralGCM/raw/output/{date}/member_{member}.zarr`
+- Raw ensemble output: `NeuralGCM/output/raw/{date}.zarr`
 - Merged outputs:
   - `NeuralGCM/output/sji/sji_{date}.nc`
   - `NeuralGCM/output/tcw/tcw_{date}.nc`
   - `NeuralGCM/output/tp/tp_{date}.nc`
 
-`NeuralGCM/utils/run_model.py` uses `N_MEMBERS = 30`. On Midway the batch
-script launches four `--mpi` ranks; on DSI and Derecho the checked-in scripts
-run one process without `--mpi`.
+`NeuralGCM/utils/run_model.py` uses `N_MEMBERS = 30`. A direct invocation
+launches one GPU-isolated inference worker per visible GPU. Members are split
+into balanced fixed batches, and the writer process buffers results until they
+can be appended in ensemble order. The checked-in Midway, DSI, and Derecho
+scripts each run one direct invocation.
 
 ### IMERG and IMD
 

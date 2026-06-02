@@ -16,12 +16,7 @@ python ./preprocess.py --date $DATE_F
 
 conda deactivate
 conda activate /home/marchakitus/.conda/envs/neuralgcm
-python ./run_model.py --date $DATE_F --mpi 0 &
-python ./run_model.py --date $DATE_F --mpi 1 &
-python ./run_model.py --date $DATE_F --mpi 2 &
-python ./run_model.py --date $DATE_F --mpi 3 &
-
-wait
+python ./run_model.py --date $DATE_F
 
 conda deactivate
 conda activate /home/marchakitus/.conda/envs/ncl_stable

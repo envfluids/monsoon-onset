@@ -22,12 +22,6 @@ python ./preprocess.py --date $DATE_F
 # conda deactivate
 # conda activate /glade/work/marchakitus/conda-envs/neuralgcm
 python ./run_model.py --date $DATE_F
-# python ./run_model.py --date $DATE_F --mpi 0 &
-# python ./run_model.py --date $DATE_F --mpi 1 &
-# python ./run_model.py --date $DATE_F --mpi 2 &
-# python ./run_model.py --date $DATE_F --mpi 3 &
-
-# wait
 
 conda deactivate
 conda activate npl-2025a

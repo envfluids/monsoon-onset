@@ -1,6 +1,5 @@
 import xarray as xr
 import numpy as np
-import os
 import matplotlib.pyplot as plt
 import cartopy.crs as ccrs
 from matplotlib.colors import ListedColormap
@@ -365,9 +364,7 @@ def plot_wndspd_quiver_200(u_daily, v_daily, init_time_index, forecast_day_index
         plt.show()
 
 def plot_neuralgcm(input_path, save_dir):
-    file_pattern = os.path.join(input_path,"*.zarr")
-
-    NGCM_data = xr.open_mfdataset(file_pattern, engine='zarr', preprocess=preprocess)
+    NGCM_data = preprocess(xr.open_zarr(input_path))
 
     tp_cum = NGCM_data["precipitation_cumulative_mean"]
     u = NGCM_data["u_component_of_wind"]

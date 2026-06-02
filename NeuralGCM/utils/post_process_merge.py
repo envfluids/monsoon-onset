@@ -1,4 +1,5 @@
 import argparse
+from datetime import date
 import logging
 import os
 from pathlib import Path
@@ -57,37 +58,42 @@ def post_process_ethiopia(ds, date):
     output_base.mkdir(parents=True, exist_ok=True)
     out_dir_tp.mkdir(parents=True, exist_ok=True)
 
-    ds = (
-        ds[["precipitation_cumulative_mean"]]
-        .isel(surface=0)
-        .drop_vars("surface")
-        .rename(
-            {
-                "longitude": "lon",
-                "latitude": "lat",
-                "precipitation_cumulative_mean": "tp",
-                "ensemble": "number",
-            }
-        )
-        .sel(lat=slice(1, 16), lon=slice(30, 51), number=slice(1, 25))
-    )
-    first_step = xr.zeros_like(ds.isel(step=0))
-    ds = xr.concat([first_step, ds], dim='step')
-    if "step" in ds.coords:
-        ds = ds.rename({"step": "prediction_timedelta"})
-    ds["valid_time"] = ds["time"].values[0] + ds["prediction_timedelta"].astype(
-        "timedelta64[h]"
-    )
-    ds = ds.swap_dims({"prediction_timedelta": "valid_time"})
-    ds = ds.diff("valid_time")
-    ds = ds.resample(valid_time="1D").sum()
-    ds["valid_time"] = np.arange(len(ds["valid_time"]))
-    ds = ds.rename({"valid_time": "day"})
-    ds["tp"] = ds["tp"] * 1000  # convert from m to mm
-    ds = ds.transpose("time", "number", "day", "lon", "lat")
+    tp_out_path = out_dir_tp / f"tp_2p8_{date}.nc"
 
-    ds.to_netcdf(out_dir_tp / f"tp_2p8_{date}.nc")
-    logging.info(f"Saved tp for Ethiopia to {out_dir_tp / f'tp_2p8_{date}.nc'}")
+    if tp_out_path.exists():
+        logging.info(f"{tp_out_path} already exists. Skipping tp post-processing for Ethiopia.")
+    else:
+        ds = (
+            ds[["precipitation_cumulative_mean"]]
+            .isel(surface=0)
+            .drop_vars("surface")
+            .rename(
+                {
+                    "longitude": "lon",
+                    "latitude": "lat",
+                    "precipitation_cumulative_mean": "tp",
+                    "ensemble": "number",
+                }
+            )
+            .sel(lat=slice(1, 16), lon=slice(30, 51), number=slice(1, 25))
+        )
+        first_step = xr.zeros_like(ds.isel(step=0))
+        ds = xr.concat([first_step, ds], dim='step')
+        if "step" in ds.coords:
+            ds = ds.rename({"step": "prediction_timedelta"})
+        ds["valid_time"] = ds["time"].values[0] + ds["prediction_timedelta"].astype(
+            "timedelta64[h]"
+        )
+        ds = ds.swap_dims({"prediction_timedelta": "valid_time"})
+        ds = ds.diff("valid_time")
+        ds = ds.resample(valid_time="1D").sum()
+        ds["valid_time"] = np.arange(len(ds["valid_time"]))
+        ds = ds.rename({"valid_time": "day"})
+        ds["tp"] = ds["tp"] * 1000  # convert from m to mm
+        ds = ds.transpose("time", "number", "day", "lon", "lat")
+
+        ds.to_netcdf(out_dir_tp / f"tp_2p8_{date}.nc")
+        logging.info(f"Saved tp for Ethiopia to {out_dir_tp / f'tp_2p8_{date}.nc'}")
 
     return
 
@@ -100,41 +106,51 @@ def post_process_india(ds, date):
 
     intermediate_pattern = f"*_{date}_INTERMEDIATE_3.nc"
 
-    logging.info(f"Merging data for date: {date}")
-
-    ds = ds.rename({"latitude": "lat", "longitude": "lon"})
-    ds = (
-        ds[["v_component_of_wind", "u_component_of_wind"]]
-        .sel(level=850)
-        .drop_vars("level")
-    )
-    logging.info("Calculating & Merging SJI")
     SJI_out_path = output_base / "sji" / f"sji_{date}.nc"
-    ds = calculate_sji(ds)
-    ds.to_netcdf(SJI_out_path)
-    ds.close()
+    if SJI_out_path.exists():
+        logging.info(f"{SJI_out_path} already exists. Skipping SJI calculation.")
+    else:
+        logging.info(f"Merging data for date: {date}")
+        ds = ds.rename({"latitude": "lat", "longitude": "lon"})
+        ds = (
+            ds[["v_component_of_wind", "u_component_of_wind"]]
+            .sel(level=850)
+            .drop_vars("level")
+        )
+        logging.info("Calculating & Merging SJI")
+    
+        ds = calculate_sji(ds)
+        ds.to_netcdf(SJI_out_path)
+        ds.close()
 
-    logging.info("Merging tcwv")
     tcw_in_path = output_base / "tcw"
     tcw_out_path = tcw_in_path / f"tcw_{date}.nc"
-    tcw_files = list(tcw_in_path.glob(intermediate_pattern))
-    tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
-    tcw.to_netcdf(tcw_out_path)
-    tcw.close()
+    if tcw_out_path.exists():
+        logging.info(f"{tcw_out_path} already exists. Skipping tcw merging.")
+    else:
+        logging.info("Merging tcwv")
+        tcw_files = list(tcw_in_path.glob(intermediate_pattern))
+        tcw = xr.open_mfdataset(tcw_files, engine="h5netcdf")
+        tcw.to_netcdf(tcw_out_path)
+        tcw.close()
+        logging.info("Removing intermediate files")
+        for file in tcw_files:
+            file.unlink()
 
-    logging.info("Merging tp")
     tp_in_path = output_base / "tp"
     tp_out_path = tp_in_path / f"tp_2p0_{date}.nc"
-    tp_files = list(tp_in_path.glob(intermediate_pattern))
-    tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
-    tp.to_netcdf(tp_out_path)
-    tp.close()
+    if tp_out_path.exists():
+        logging.info(f"{tp_out_path} already exists. Skipping tp merging.")
+    else:
+        logging.info("Merging tp")
+        tp_files = list(tp_in_path.glob(intermediate_pattern))
+        tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
+        tp.to_netcdf(tp_out_path)
+        tp.close()
 
-    logging.info("Removing intermediate files")
-    for file in tcw_files:
-        file.unlink()
-    for file in tp_files:
-        file.unlink()
+        logging.info("Removing intermediate files")
+        for file in tp_files:
+            file.unlink()
 
 
 REGION_HANDLERS = {
@@ -162,10 +178,8 @@ def main():
     args = parser.parse_args()
     date = args.date
 
-    raw_dir = RAW_OUTPUT_BASE / date
-
-    fcsts = raw_dir.glob("*.zarr")
-    ds = xr.open_mfdataset(fcsts, engine="zarr", preprocess=preprocess)
+    raw_path = RAW_OUTPUT_BASE / f"{date}.zarr"
+    ds = preprocess(xr.open_zarr(raw_path))
 
     targets = [args.region] if args.region else list(REGION_HANDLERS)
     for region in targets:

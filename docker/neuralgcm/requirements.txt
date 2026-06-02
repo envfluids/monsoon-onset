@@ -8,7 +8,7 @@ h5py
 netcdf4
 h5netcdf
 gcsfs
-zarr
+zarr>=3.0
 
 # Utilities
 python-dateutil>=2.8.0

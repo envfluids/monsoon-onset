@@ -1,10 +1,11 @@
 #!/bin/bash -l
 #SBATCH -p general
 #SBATCH -N 1 
-#SBATCH -n 32
-#SBATCH --gres=gpu:a100:1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:a100:4
 #SBATCH --mem=120G
-#SBATCH -t 02:00:00
+#SBATCH -t 01:00:00
 
 if command -v conda >/dev/null 2>&1; then
     eval "$(conda shell.bash hook)"
@@ -15,14 +16,7 @@ python ./preprocess_ic.py --date $DATE_F
 
 conda deactivate
 conda activate /net/scratch2/marchakitus/conda-envs/neuralgcm
-# python ./run_model.py --date $DATE_F --mpi 0 &
-# python ./run_model.py --date $DATE_F --mpi 1 &
-# python ./run_model.py --date $DATE_F --mpi 2 &
-# python ./run_model.py --date $DATE_F --mpi 3 &
-
 python ./run_model.py --date $DATE_F
-
-wait
 
 conda deactivate
 conda activate /net/scratch2/marchakitus/conda-envs/operational

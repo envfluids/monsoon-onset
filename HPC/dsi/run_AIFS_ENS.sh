@@ -1,7 +1,8 @@
 #!/bin/bash -l
 #SBATCH -p general
-#SBATCH -N 1 
-#SBATCH -n 16
+#SBATCH -N 1
+#SBATCH -n 1
+#SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:a100:4
 #SBATCH --mem=200G
 #SBATCH -t 02:00:00

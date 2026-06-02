@@ -22,7 +22,7 @@ def plot_circulation(
     if ensemble_model != "NeuralGCM":
         logging.warning("India circulation diagnostics do not support %s.", ensemble_model)
         return
-    NGCM_path = base / "NeuralGCM" / "output" / "raw" / f"{date}"
+    NGCM_path = base / "NeuralGCM" / "output" / "raw" / f"{date}.zarr"
     output_dir = (
         Path(output_dir) / "circulation_plots"
         if output_dir
