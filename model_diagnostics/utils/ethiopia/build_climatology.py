@@ -100,6 +100,8 @@ def write_climatology(out: xr.Dataset, path: Path) -> None:
 
 # ── CLI ─────────────────────────────────────────────────────────────────────────
 def remake_climatology(output_path: Path = DEFAULT_OUTPUT):
+    output_dir = output_path.parent
+    output_dir.mkdir(parents=True, exist_ok=True)
     src = open_source(DEFAULT_SOURCE_URL)
     out = build_climatology(src, precip_var=DEFAULT_PRECIP_VAR)
     write_climatology(out, output_path)
