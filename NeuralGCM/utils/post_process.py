@@ -281,6 +281,7 @@ def main():
             futures.append(future)
 
         processed_files = []
+        failures = []
         logging.info(
             f"Waiting for {len(futures)} member tasks to complete for {date}..."
         )
@@ -296,6 +297,12 @@ def main():
                 logging.info(
                     f"ERROR retrieving result for a task in {date}: {type(e).__name__} - {e}"
                 )
+                failures.append(e)
+
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)} NeuralGCM post-processing member task(s) failed for {date}"
+            ) from failures[0]
 
 
 if __name__ == "__main__":

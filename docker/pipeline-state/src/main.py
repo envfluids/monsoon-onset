@@ -440,6 +440,9 @@ def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> s
     with the leading model/output[/region] segments removed.
     """
     model = _pipeline_model_for_blend_input(input_)
+    if model == "gencast":
+        return f"output/gencast/{date}/tp_0p25_{date}.nc"
+
     parts = PurePosixPath(input_.path_template.format(date=date)).parts
     if len(parts) < 3 or parts[1] != "output":
         raise ValueError(

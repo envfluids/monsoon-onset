@@ -259,7 +259,7 @@ module "orchestration" {
   full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]), local.disabled_model_ids)
 
   # Dev: less frequent runs
-  pipeline_schedule       = "0 */6 * * *" # Every 6 hours
+  pipeline_schedule       = "0 8,14 * * 0-3" # 00:00 and 12:00 UTC, Sun-Wed
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 

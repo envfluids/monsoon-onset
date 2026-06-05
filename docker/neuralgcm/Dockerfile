@@ -42,6 +42,7 @@ COPY docker/neuralgcm/src/ ./src/
 # Copy science scripts (unmodified) into expected directory structure
 COPY NeuralGCM/utils/ ./NeuralGCM/utils/
 COPY NeuralGCM/grids/ ./NeuralGCM/grids/
+COPY NeuralGCM/data/ ./NeuralGCM/data/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1

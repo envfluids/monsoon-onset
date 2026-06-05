@@ -508,7 +508,7 @@ submit_batch_stage:
                     computeResource:
                       cpuMilli: $${cpu_milli}
                       memoryMib: $${memory_mib}
-                    maxRetryCount: 1
+                    maxRetryCount: 3
                     maxRunDuration: $${max_run_duration}
                     runnables:
                       - container:
