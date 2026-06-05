@@ -160,7 +160,7 @@ def main():
     output_dir = BASE / "output" / "raw" / model_name
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    lead_time = 46 * 24
+    lead_time = 24 * 50
     logging.info(f"Date: {date_f}")
     logging.info(f"Lead time: {lead_time} hours")
 

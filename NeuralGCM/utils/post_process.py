@@ -18,6 +18,11 @@ logging.basicConfig(
 )
 
 grid_file = "../grids/grid_2p0.txt"
+# ── NEW ───────────────────────────────────────────────────────────────────────
+grid_0p25_india_file = "../grids/grid_0p25_india.txt"
+mask_path = "../data/india_mask.nc"
+# ─────────────────────────────────────────────────────────────────────────────
+
 RAW_OUTPUT_BASE = Path(os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", "../output/raw"))
 
 
@@ -53,7 +58,6 @@ def post_process_tp(ds_model_TS):
     ds_model_TS["step"] = ds_model_TS["step"].astype(int)
     ds_model_TS["step"] = ds_model_TS["step"] - 12
     ds_model_TS["day"] = ds_model_TS["step"] // 24
-    # Now set 'day' as a coordinate
     ds_model_TS = ds_model_TS.set_coords("day")
     ds_model_TS_daily = ds_model_TS.groupby("day").sum(dim="step")
     ds_model_TS_daily = ds_model_TS_daily.transpose("day", "time", "lat", "lon")
@@ -81,9 +85,85 @@ def preprocess(ds):
     time_first_value = ds["time"].values[0] - np.timedelta64(6, "h")
     ds = ds.rename({"time": "step"})
     ds["step"] = np.arange(6, 6 * len(ds.step) + 1, 6)
-    ds = ds.expand_dims("time")  # Ensure step is a dimension
+    ds = ds.expand_dims("time")
     ds["time"] = [time_first_value]
     return ds
+
+
+# ── NEW ───────────────────────────────────────────────────────────────────────
+def process_tp_0p25_india(ds, date, member, output_base):
+    """
+    Regrid NeuralGCM TP from native Gaussian ~2.8° to 0.25° over India,
+    apply diff (cumulative → incremental), compute daily sums,
+    and apply the India land-sea mask.
+    Saves a per-member intermediate file for later merging.
+    """
+    member_output_path = f"{output_base}/tp/{member}_{date}_0p25_INTERMEDIATE_3.nc"
+    if os.path.exists(member_output_path):
+        logging.info(
+            f"{member_output_path} already exists. "
+            f"Skipping 0.25° TP processing for member {member}."
+        )
+        return
+
+    # prepare dataset for CDO
+    ds_tp = ds[["tp"]].copy()
+    ds_tp = ds_tp.drop_vars(["surface", "ensemble"], errors="ignore")
+
+    # CF attributes so CDO recognises lat/lon as spatial coordinates
+    ds_tp["lat"].attrs = {"standard_name": "latitude",  "units": "degrees_north"}
+    ds_tp["lon"].attrs = {"standard_name": "longitude", "units": "degrees_east"}
+
+    ds_tp = set_atts_tp(ds_tp)
+    ds_tp = ds_tp.transpose("time", "step", "lat", "lon")
+    ds_tp.attrs = {}
+
+    # save intermediate → regrid → remove intermediate
+    regrid_input_path  = f"{output_base}/tp/{member}_{date}_0p25_INTERMEDIATE.nc"
+    regrid_output_path = f"{output_base}/tp/{member}_{date}_0p25_INTERMEDIATE_2.nc"
+    ds_tp.to_netcdf(regrid_input_path)
+
+    command = " ".join([
+        "cdo", "-s",
+        f"remapcon,{grid_0p25_india_file}",
+        regrid_input_path,
+        regrid_output_path,
+    ])
+    logging.info(f"Regridding TP to 0.25° for member {member}")
+    os.system(command)
+    os.remove(regrid_input_path)
+
+    # load regridded output
+    ds_tp = xr.open_dataset(regrid_output_path)
+
+    # diff: cumulative → incremental precipitation
+    ds_tp = ds_tp.diff(dim="step", label="upper")
+
+    # convert m → mm and compute daily sums
+    ds_tp["tp"] = ds_tp["tp"] * 1000
+    ds_tp["step"] = ds_tp["step"].astype(int) - 12
+    ds_tp["day"] = ds_tp["step"] // 24
+    ds_tp = ds_tp.set_coords("day")
+    ds_tp = ds_tp.groupby("day").sum(dim="step")
+    ds_tp = ds_tp.transpose("day", "time", "lat", "lon")
+
+    # apply India land-sea mask
+    mask = xr.open_dataset(mask_path)
+    mask_data = mask["lsm"]
+    mask_data["lat"] = mask_data["lat"].astype(float)
+    mask_data["lon"] = mask_data["lon"].astype(float)
+    ds_tp["tp"] = ds_tp["tp"].where(mask_data == 1.0)
+    mask.close()
+
+    # add member dimension and save
+    ds_tp = ds_tp.expand_dims("number")
+    ds_tp["number"] = [member]
+    ds_tp.to_netcdf(member_output_path)
+    ds_tp.close()
+    os.remove(regrid_output_path)
+
+    logging.info(f"Saved 0.25° India TP for member {member} to {member_output_path}")
+# ─────────────────────────────────────────────────────────────────────────────
 
 
 def process_member(member, date):
@@ -167,11 +247,15 @@ def process_member(member, date):
         ds_tp.to_netcdf(member_output_path)
         ds_tp.close()
         os.remove(regrid_output_path)
+
+    # ── NEW ───────────────────────────────────────────────────────────────────
+    process_tp_0p25_india(ds, date, member, output_base)
+    # ─────────────────────────────────────────────────────────────────────────
+
     return member
 
 
 def main():
-    # cdo = Cdo()
     parser = argparse.ArgumentParser(
         description="Process weather data for a given year"
     )
@@ -192,36 +276,26 @@ def main():
         logging.info(
             f"Submitting tasks for {n_members} members using up to {n_members} workers..."
         )
-        # Submit all tasks for the current year
         for member in members:
-            # executor.submit schedules the function to run and returns a Future object
             future = executor.submit(process_member, member, date)
             futures.append(future)
 
-        # --- Collect results ---
         processed_files = []
         logging.info(
             f"Waiting for {len(futures)} member tasks to complete for {date}..."
         )
-        # as_completed yields futures as they finish (in any order)
-        # This is useful for getting results sooner or for progress tracking
         for i, future in enumerate(as_completed(futures), 1):
             try:
-                result = (
-                    future.result()
-                )  # Get the return value from the function (file path or None)
+                result = future.result()
                 logging.info(
                     f"  Completed task {i}/{n_members} for {date}. Success: {result is not None}"
                 )
                 if result:
                     processed_files.append(result)
             except Exception as e:
-                # Catch exceptions raised *during* the execution of the task in the worker process
                 logging.info(
                     f"ERROR retrieving result for a task in {date}: {type(e).__name__} - {e}"
                 )
-                # Log the specific member if possible (though future doesn't easily expose args)
-                # traceback.print_exc() # Optionally print traceback
 
 
 if __name__ == "__main__":

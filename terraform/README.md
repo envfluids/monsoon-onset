@@ -165,7 +165,8 @@ tf output
 ```
 
 Expected outputs:
-- `storage_bucket` — main GCS data bucket name
+- `common_bucket` — common GCS bucket name (ICs, weights, full-field, intermediate markers)
+- `region_buckets` — map of forecast region to its output bucket name
 - `workflow_url` — Cloud Workflows execution endpoint
 
 Verify the Cloud Scheduler jobs and Workflow were created in the GCP console or via:
@@ -179,87 +180,103 @@ gcloud scheduler jobs list --project=<PROJECT_ID> --location=us-central1
 
 ## Staging Static Assets
 
-After `tf apply` succeeds and before the first pipeline run, several static files must be
-uploaded manually to the weights bucket. These files are not stored in the repository (size or
-licensing constraints) and are not created by Terraform.
+After `tf apply` succeeds and before the first pipeline run, model weights and blend support
+files must be uploaded once. These files are not stored in the repository (size or licensing
+constraints) and are not created by Terraform.
 
-The weights bucket name follows the pattern `monsoon-{env}-weights-{project_id}`. You can look
-it up with:
+There is **no separate weights bucket**. The storage module provisions a single **common bucket**
+(`monsoon-{env}-common-{project_id}`) plus one output bucket per region; all static assets are
+staged under the common bucket's **`weights/` prefix**, which every container reads at runtime via
+`GCS_COMMON_BUCKET`. Look up the common bucket name from the environment's Terraform output:
 
 ```bash
-tf output -raw storage_bucket   # data bucket
-# weights bucket is not an output — read it from the storage module or the GCS console
-# name: monsoon-{env}-weights-{project_id}
+cd terraform/environments/dev
+COMMON_BUCKET=$(tf output -raw common_bucket)   # e.g. monsoon-dev-common-<PROJECT_ID>
 ```
+
+The objects below mirror the repo-relative paths the science scripts expect. The lists are
+verified against each container's `docker/<image>/src/main.py` download logic.
 
 ### AIFS model weights and sparse transform matrices
 
-The AIFS science scripts load files relative to `AIFS/utils/`, so the paths inside the container
-are `../weights/` and `../EKR/mir_16_linear/`. The container shim downloads these from the weights
-bucket at runtime using the paths below.
+Only the **v2** AIFS variants run in the cloud (`config/models.json`: `aifs-v2` and `aifs-ens-v2`
+have `"run": "true"`; the v1 entries are `"false"`). Both the `aifs-v2` and `aifs-ens-v2`
+containers read their checkpoint filename from `config/models.json` and download it from
+`weights/aifs/<filename>`, plus the two shared sparse-interpolation matrices. The science scripts
+load these relative to `AIFS/utils/` (`../weights/` and `../EKR/mir_16_linear/`).
 
-| File | Weights bucket path |
+| File | Common-bucket path |
 |---|---|
-| AIFS checkpoint | `aifs/aifs-single-mse-1.1.ckpt` |
-| AIFS-ENS checkpoint | `aifs/aifs-ens-crps-1.0.ckpt` |
-| Sparse interpolation matrix (used by `download_ic.py`) | `aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz` |
-| Sparse interpolation matrix (used by `run_model.py`) | `aifs/EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz` |
+| AIFS v2 checkpoint | `weights/aifs/aifs-single-mse-2.0.ckpt` |
+| AIFS-ENS v2 checkpoint | `weights/aifs/aifs-ens-crps-2.0.ckpt` |
+| Sparse interpolation matrix (used by `preprocess_ic.py`) | `weights/aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz` |
+| Sparse interpolation matrix (used by `run_model*.py`) | `weights/aifs/EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz` |
 
 ```bash
-WEIGHTS_BUCKET="monsoon-dev-weights-<PROJECT_ID>"
+gcloud storage cp aifs-single-mse-2.0.ckpt gs://${COMMON_BUCKET}/weights/aifs/aifs-single-mse-2.0.ckpt
 
-gcloud storage cp aifs-single-mse-1.1.ckpt gs://${WEIGHTS_BUCKET}/aifs/aifs-single-mse-1.1.ckpt
-
-gcloud storage cp aifs-ens-crps-1.0.ckpt gs://${WEIGHTS_BUCKET}/aifs/aifs-ens-crps-1.0.ckpt
+gcloud storage cp aifs-ens-crps-2.0.ckpt gs://${COMMON_BUCKET}/weights/aifs/aifs-ens-crps-2.0.ckpt
 
 gcloud storage cp 9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz \
-  gs://${WEIGHTS_BUCKET}/aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz
+  gs://${COMMON_BUCKET}/weights/aifs/EKR/mir_16_linear/9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz
 
 gcloud storage cp 7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz \
-  gs://${WEIGHTS_BUCKET}/aifs/EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz
+  gs://${COMMON_BUCKET}/weights/aifs/EKR/mir_16_linear/7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz
 ```
 
-### NeuralGCM model weights and reference data
+> The two `.npz` matrices are not in the repo. If you don't have them locally, run the AIFS science
+> stack once (or the `aifs-v2` container) against any date — `earthkit-regrid`/anemoi generates
+> them under `AIFS/EKR/mir_16_linear/` — then upload the two files named above.
 
-| File | Weights bucket path |
+### NeuralGCM model weights and forcing
+
+The `neuralgcm` container downloads exactly two static files: the model checkpoint and the
+SST/sea-ice climatology forcing. (No ERA5 reference grid is needed; that file is no longer used.)
+
+| File | Common-bucket path |
 |---|---|
-| NeuralGCM model checkpoint | `neuralgcm/models_v1_precip_stochastic_precip_2_8_deg.pkl` |
-| SST/sea-ice climatology forcing | `neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc` |
-| ERA5 reference grid | `neuralgcm/data/ERA5_2018_05_16_00.nc` |
+| NeuralGCM model checkpoint | `weights/neuralgcm/models_v1_precip_stochastic_precip_2_8_deg.pkl` |
+| SST/sea-ice climatology forcing | `weights/neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc` |
 
 ```bash
 gcloud storage cp models_v1_precip_stochastic_precip_2_8_deg.pkl \
-  gs://${WEIGHTS_BUCKET}/neuralgcm/models_v1_precip_stochastic_precip_2_8_deg.pkl
+  gs://${COMMON_BUCKET}/weights/neuralgcm/models_v1_precip_stochastic_precip_2_8_deg.pkl
 
 gcloud storage cp SST-SeaIce_clim_1979_2017_no_leap.nc \
-  gs://${WEIGHTS_BUCKET}/neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc
-
-gcloud storage cp ERA5_2018_05_16_00.nc \
-  gs://${WEIGHTS_BUCKET}/neuralgcm/data/ERA5_2018_05_16_00.nc
+  gs://${COMMON_BUCKET}/weights/neuralgcm/forcings/SST-SeaIce_clim_1979_2017_no_leap.nc
 ```
 
-### Blend climatology CSVs
+### GenCast (no staging required)
 
-The blend step requires two large climatology CSV files that are too large to bundle in the
-container image. They are downloaded from the weights bucket at runtime into
-`/app/blend/data/support/large/` inside the container.
+GenCast pulls its weights and normalization statistics directly from the **public DeepMind
+bucket** at runtime, so there is nothing for the operator to stage:
 
-The small support files (`thresholds_df.csv`, `onset_clusters.csv`, `allowed_cells.csv`,
-`all_cells.csv`, `exclude_cells.csv`) and the model coefficient files under `blend/data/coefs/`
-are already bundled in the image and do not need to be staged.
+- `gs://dm_graphcast/gencast/params/GenCast 0p25deg Operational <2022.npz`
+- `gs://dm_graphcast/gencast/stats/{diffs_stddev,mean,stddev,min}_by_level.nc`
 
-| File | Weights bucket path |
-|---|---|
-| Ensemble climatology (standard) | `blend/support/large/ensemble_outputs_clim_2025.csv` |
-| Ensemble climatology (Morak onset) | `blend/support/large/ensemble_outputs_clim_2025_mok.csv` |
+Its only per-run input, the SST initial condition, is produced by the downloader job at
+`ic/gencast_sst/{date}/sst_{date}.nc` in the common bucket during each pipeline run.
+
+### Blend support files (per region)
+
+Before running a region's blend, the `blend` container mirrors the **entire** prefix
+`gs://${COMMON_BUCKET}/weights/blend/{region}/` into `/app/blend/data/`, preserving the object
+layout, so the science scripts can use their repo-local paths. Stage one tree per forecast region
+(`india`, `ethiopia`) containing that region's support and coefficient files (thresholds,
+climatology, sub-district/grid regridding weights, shapefiles, trained model coefficients, etc.) —
+i.e. the large or environment-specific files that are gitignored under
+`blend/utils/{region}2026/.../data/`. Small support files and coefficients that are committed to
+the repo are already baked into the image and do not need staging.
 
 ```bash
-gcloud storage cp ensemble_outputs_clim_2025.csv \
-  gs://${WEIGHTS_BUCKET}/blend/support/large/ensemble_outputs_clim_2025.csv
-
-gcloud storage cp ensemble_outputs_clim_2025_mok.csv \
-  gs://${WEIGHTS_BUCKET}/blend/support/large/ensemble_outputs_clim_2025_mok.csv
+# Upload each region's support tree (layout under the prefix is mirrored verbatim into blend/data/)
+gcloud storage cp -r india/    gs://${COMMON_BUCKET}/weights/blend/india/
+gcloud storage cp -r ethiopia/ gs://${COMMON_BUCKET}/weights/blend/ethiopia/
 ```
+
+> If `weights/blend/{region}/` is empty, the blend job logs a warning and then fails when a script
+> reaches for a missing support file — so stage these before the first run for each region you
+> enable in `forecast_regions`.
 
 ---
 
@@ -268,21 +285,31 @@ gcloud storage cp ensemble_outputs_clim_2025_mok.csv \
 The pipeline images are built from the `docker/` directory at the repo root.
 Cloud Build builds them in parallel using `cloudbuild.yaml`.
 
+`cloudbuild.yaml` builds nine images (the build/push of each is gated by `.image-deps.yaml`, which
+maps source paths to the images they affect):
+
 | Image | Dockerfile | Target | Description |
 |---|---|---|---|
-| `monsoon-downloader` | `docker/downloader/Dockerfile` | Cloud Run Job | Downloads ECMWF and NCEP/GDAS initial conditions |
-| `monsoon-blend` | `docker/blend/Dockerfile` | Cloud Batch | Blends model outputs, applies logistic regression, generates visualizations |
-| `monsoon-sync` | `docker/sync/Dockerfile` | Cloud Run Job | Syncs final outputs to the operational web repository |
-| `monsoon-aifs` | `docker/aifs/Dockerfile` | Cloud Batch | Runs AIFS GPU inference |
+| `monsoon-downloader` | `docker/downloader/Dockerfile` | Cloud Run Job | Downloads ECMWF and NCEP/GDAS initial conditions (+ GenCast SST) |
+| `monsoon-pipeline-state` | `docker/pipeline-state/Dockerfile` | Cloud Run Service | Inspects bucket state and the latest available ICs; queried by the workflow |
+| `monsoon-tpu-dispatch` | `docker/tpu-dispatch/Dockerfile` | Cloud Run Job | Creates and polls the GenCast TPU queued resource |
+| `monsoon-sync` | `docker/sync/Dockerfile` | Cloud Run Job | Syncs final outputs to the operational web repository / Google Drive |
+| `monsoon-blend` | `docker/blend/Dockerfile` | Cloud Batch | Blends model outputs, applies the trained model, generates diagnostics |
+| `monsoon-aifs-v2` | `docker/aifs-v2/Dockerfile` | Cloud Batch | Runs AIFS v2 deterministic GPU inference |
+| `monsoon-aifs-ens-v2` | `docker/aifs-ens-v2/Dockerfile` | Cloud Batch | Runs AIFS-ENS v2 GPU inference |
 | `monsoon-neuralgcm` | `docker/neuralgcm/Dockerfile` | Cloud Batch | Runs NeuralGCM GPU inference |
 | `monsoon-gencast` | `docker/gencast/Dockerfile` | Cloud TPU VM | Runs GenCast TPU inference |
+
+(The `docker/aifs/` (v1) and `docker/postprocess/` directories exist in the tree but are not built
+by `cloudbuild.yaml`; the cloud pipeline runs the v2 AIFS variants only.)
 
 ### Build Context
 
 All Dockerfiles use the **repository root** as the Docker build context. This allows Dockerfiles to
-`COPY` from sibling directories (e.g., the `downloader` image copies `AIFS/utils/download_ic.py`
-directly into the container). Do not change to the `docker/<name>/` directory before building —
-always build from the repo root with `-f docker/<name>/Dockerfile .`.
+`COPY` from sibling directories (e.g., the `downloader` image copies the `IC/utils/` science
+scripts — `download_ecmwf.py` and `download_ncep.py` — directly into the container). Do not change
+to the `docker/<name>/` directory before building — always build from the repo root with
+`-f docker/<name>/Dockerfile .`.
 
 ### Image Naming
 
@@ -308,16 +335,17 @@ The infrastructure is organized into five Terraform modules. Resources follow th
 Cloud Scheduler (per forecast region)
     │
     ▼
-Cloud Workflows (main pipeline)
+Cloud Workflows (main pipeline)  ──queries──►  Cloud Run Service: pipeline-state
     │
-    ├── Cloud Run Job: downloader   (ECMWF + NCEP downloads, parallel)
+    ├── Cloud Run Job: downloader      (ECMWF + NCEP + GenCast SST, parallel)
     │
-    ├── Cloud Batch Job: aifs       (GPU inference, parallel with neuralgcm)
-    ├── Cloud Batch Job: neuralgcm  (GPU inference, parallel with aifs)
-    ├── TPU queued resource: gencast (v5p-64, parallel with GPU models)
+    ├── Cloud Batch Job: aifs-v2       (GPU inference, parallel)
+    ├── Cloud Batch Job: aifs-ens-v2   (GPU inference, parallel)
+    ├── Cloud Batch Job: neuralgcm     (GPU inference, parallel)
+    ├── Cloud Run Job: tpu-dispatch ──► TPU queued resource: gencast (v5p-64, parallel)
     │
-    ├── Cloud Batch Job: blend      (CPU, event-driven when inputs are ready)
-    └── Cloud Run Job: sync         (sequential)
+    ├── Cloud Batch Job: blend         (CPU, event-driven when inputs are ready)
+    └── Cloud Run Job: sync            (sequential)
 ```
 
 ### Networking (`modules/networking`)
@@ -328,40 +356,48 @@ Cloud Workflows (main pipeline)
   health check ranges
 ### Storage (`modules/storage`)
 
-- **Common data bucket** (`monsoon-{env}-common-data-{project_id}`): stores shared initial
-  conditions, intermediate markers, and full-field raw model forecasts. Lifecycle rules delete
-  `raw/` and `intermediate/` objects after `retention_days`; `raw_forecast/` objects optionally
-  transition to Nearline after `archive_after_days`.
-- **Regional output buckets** (`monsoon-{env}-{region}-data-{project_id}`): one bucket per
-  `forecast_regions` entry. These buckets store only post-processed model products, blend
-  outputs, and each region's `latest.txt` marker.
-- **Weights bucket** (`monsoon-{env}-weights-{project_id}`): stores model weights. Versioning is
-  always enabled; `force_destroy = false` even in dev.
+- **Common bucket** (`monsoon-{env}-common-{project_id}`): the single shared bucket. It holds
+  staged model weights and blend supports (`weights/`), shared initial conditions (`ic/`),
+  full-field raw model forecasts (`full_field/`), JAX compilation cache (`jax-cache/`), and
+  intermediate markers/latest-date files (`intermediate/`). There is **no** separate weights
+  bucket. Lifecycle rules delete `ic/`, `intermediate/`, and `jax-cache/` objects after
+  `retention_days`; `full_field/` objects optionally transition to Nearline after
+  `archive_after_days`. Versioning follows `enable_versioning`.
+- **Regional output buckets** (`monsoon-{env}-{region}-{project_id}`): one bucket per
+  `forecast_regions` entry, holding only post-processed model products and blend outputs under
+  `output/`.
 - **Artifact Registry** (`monsoon-{env}-containers`): stores pipeline container images. Dev
   repositories delete old image versions after `artifact_registry_cleanup_older_than`, which
   defaults to 7 days, while retaining the 3 most recent versions per package.
-- **Pipeline service account** with `storage.objectAdmin` on the common and regional data buckets,
-  `storage.objectViewer` on the weights bucket, and `artifactregistry.reader` on the registry.
-- **GCS folder structure**: common bucket paths are `raw/`, `raw_forecast/`, and `intermediate/`;
-  regional bucket paths are `output/` and `latest.txt`.
+- **Pipeline service account** with `storage.objectAdmin` on the common and regional buckets and
+  `artifactregistry.reader` on the registry.
+- **GCS folder structure**: common-bucket prefixes are `weights/`, `ic/`, `full_field/`,
+  `intermediate/`, and `jax-cache/`; regional buckets use `output/`.
 
 ### Compute (`modules/compute`)
 
-Creates Cloud Run v2 Jobs (not Services — these are batch workloads, not HTTP servers):
+Creates Cloud Run v2 **Jobs** for the batch workloads plus one Cloud Run **Service**
+(`pipeline-state`) the workflow queries for state:
 
-| Job | Memory | CPU | Timeout |
-|---|---|---|---|
-| downloader | 2 Gi | 2 | 15 min |
-| sync | 1 Gi | 1 | 10 min |
+| Resource | Type | Memory | CPU | Timeout |
+|---|---|---|---|---|
+| downloader | Job | 4 Gi | 2 | 900 s |
+| sync | Job | 1 Gi | 1 | 600 s |
+| tpu-dispatch | Job | 1 Gi | 1 | 86400 s |
+| pipeline-state | Service | (default) | — | — |
 
-All Cloud Run Jobs:
+All Cloud Run resources:
 - Run under the pipeline service account
-- Receive `ENVIRONMENT`, `GCS_BUCKET`, `GCS_WEIGHTS_BUCKET`, `PROJECT_ID`, and `FORECAST_REGION`
-  as environment variables (region is overridden at execution time by the workflow)
+- Receive `ENVIRONMENT`, `GCS_COMMON_BUCKET`, `GCS_REGION_BUCKETS` (JSON map), `REGIONS`,
+  `REGION_MODELS`, and `PROJECT_ID` as environment variables (the workflow passes per-execution
+  values such as `DATE` and `FORECAST_REGION(S)` at run time; `sync` also gets `ENABLE_DRIVE` and
+  `MONSOON_CLUSTER`).
 
-GPU inference (AIFS and NeuralGCM) and CPU blend/diagnostics run on **Cloud Batch**. Blend uses
-`e2-highmem-4` by default. GenCast runs separately on a **Cloud TPU queued resource** using TPU
-v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host type.
+GPU inference (AIFS v2, AIFS-ENS v2, NeuralGCM) and CPU blend/diagnostics run on **Cloud Batch**.
+Blend uses `e2-highmem-4` by default; GPU stages default to a machine type derived from
+`gpu_type`, overridable per stage via `batch_model_resources`. GenCast runs separately on a
+**Cloud TPU queued resource** using TPU v5p-64 (`2x4x4`) and the `ct5p-hightpu-4t` TPU VM host
+type, created and polled by the `tpu-dispatch` job.
 
 ### Orchestration (`modules/orchestration`)
 

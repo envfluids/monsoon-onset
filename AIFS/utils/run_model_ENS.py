@@ -580,7 +580,7 @@ def main():
         "msl",
     ]
 
-    lead_time = 24 * 46
+    lead_time = 24 * 50
     n_members = 25
 
     ngpus = torch.cuda.device_count()

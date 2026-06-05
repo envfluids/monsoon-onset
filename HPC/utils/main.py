@@ -36,8 +36,6 @@ class PipelineSpec:
 
 
 ROOT = Path(__file__).resolve().parents[2]
-# AIFS_GRIB_DIR = ROOT / "AIFS" / "raw" / "ifs_ic" / "grib"
-# GENCAST_SST_DIR = ROOT / "gencast" / "raw" / "sst_ic"
 
 PIPELINES = {
     "aifs": {

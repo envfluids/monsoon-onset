@@ -20,16 +20,16 @@ RAW_OUTPUT_BASE = Path(os.environ.get("NEURALGCM_RAW_OUTPUT_DIR", BASE / "output
 def calculate_sji(ds):
     wind_850 = ds.sel(
         lat=slice(-5.0, 21.0), lon=slice(50.0, 71.0)
-    )  # select the SJI region
+    )
     wind_speed = (
         wind_850.v_component_of_wind**2 + wind_850.u_component_of_wind**2
-    ) * 0.5  # calculate the wind speed
+    ) * 0.5
     mean_wind_speed = wind_speed.mean(
         dim=["lat", "lon"]
-    )  # calculate the mean wind speed over the region
+    )
     mean_wind_speed = np.sqrt(
         mean_wind_speed * 2
-    )  # convert the wind speed to m/s, the SJI
+    )
     mean_wind_speed.name = "sji"
     mean_wind_speed = mean_wind_speed.to_dataset()
     mean_wind_speed["step"] = mean_wind_speed["step"].astype(int)
@@ -44,7 +44,7 @@ def preprocess(ds):
     time_first_value = ds["time"].values[0] - np.timedelta64(6, "h")
     ds = ds.rename({"time": "step"})
     ds["step"] = np.arange(6, 6 * len(ds.step) + 1, 6)
-    ds = ds.expand_dims("time")  # Ensure step is a dimension
+    ds = ds.expand_dims("time")
     ds["time"] = [time_first_value]
     return ds
 
@@ -88,7 +88,7 @@ def post_process_ethiopia(ds, date):
         ds = ds.resample(valid_time="1D").sum()
         ds["valid_time"] = np.arange(len(ds["valid_time"]))
         ds = ds.rename({"valid_time": "day"})
-        ds["tp"] = ds["tp"] * 1000  # convert from m to mm
+        ds["tp"] = ds["tp"] * 1000
         ds = ds.transpose("time", "number", "day", "lon", "lat")
 
         ds.to_netcdf(out_dir_tp / f"tp_2p8_{date}.nc")
@@ -117,7 +117,6 @@ def post_process_india(ds, date):
             .drop_vars("level")
         )
         logging.info("Calculating & Merging SJI")
-    
         ds = calculate_sji(ds)
         ds.to_netcdf(SJI_out_path)
         ds.close()
@@ -146,10 +145,25 @@ def post_process_india(ds, date):
         tp = xr.open_mfdataset(tp_files, engine="h5netcdf")
         tp.to_netcdf(tp_out_path)
         tp.close()
-
         logging.info("Removing intermediate files")
         for file in tp_files:
             file.unlink()
+
+    # ── NEW ───────────────────────────────────────────────────────────────────
+    tp_0p25_out_path = tp_in_path / f"tp_0p25_{date}.nc"
+    if tp_0p25_out_path.exists():
+        logging.info(f"{tp_0p25_out_path} already exists. Skipping 0.25° tp merging.")
+    else:
+        logging.info("Merging 0.25° India TP")
+        tp_0p25_pattern = f"*_{date}_0p25_INTERMEDIATE_3.nc"
+        tp_0p25_files = list(tp_in_path.glob(tp_0p25_pattern))
+        tp_0p25 = xr.open_mfdataset(tp_0p25_files, engine="h5netcdf")
+        tp_0p25.to_netcdf(tp_0p25_out_path)
+        tp_0p25.close()
+        logging.info("Removing 0.25° intermediate files")
+        for file in tp_0p25_files:
+            file.unlink()
+    # ─────────────────────────────────────────────────────────────────────────
 
 
 REGION_HANDLERS = {

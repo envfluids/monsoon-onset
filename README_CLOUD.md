@@ -41,16 +41,21 @@ terraform/
 
 ### Buckets
 
-One common data bucket, one bucket per forecast region, and one weights bucket are created per environment.
+One common bucket and one bucket per forecast region are created per environment. There is no
+separate weights bucket — staged weights live under the common bucket's `weights/` prefix.
 
-**`monsoon-{env}-common-data-{project_id}`** (common data bucket)
+**`monsoon-{env}-common-{project_id}`** (common bucket)
 
-Shared working storage for initial conditions, intermediate markers, and full-field raw model forecasts. These paths are not region-prefixed:
+Shared storage for staged static assets, initial conditions, intermediate markers, and full-field raw model forecasts. These paths are not region-prefixed:
 
 ```
-raw/
+weights/
+  aifs/...                                  <- staged AIFS v2 checkpoints + sparse matrices
+  neuralgcm/...                             <- staged NeuralGCM checkpoint + forcing
+  blend/{region}/...                        <- staged per-region blend support files
+ic/
   ecmwf/{date}/grib/*.grib2                 <- ECMWF IFS GRIB initial conditions
-  gencast/sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
+  gencast_sst/{date}/sst_{date}.nc          <- GenCast SST initial condition
   ncep/{date}/gdas_{date}.pgrb2             <- NCEP GDAS initial conditions
 full_field/
   aifs/{date}/init_{date}.nc                <- AIFS full-field forecast
@@ -60,12 +65,13 @@ full_field/
 intermediate/
   latest_date.txt                           <- latest date marker written by downloader
   latest_ecmwf_date.txt                     <- actual ECMWF date written by downloader
-  neuralgcm_{date}_done                     <- NeuralGCM completion marker
+  {model}_{region}_{date}_done              <- per-(model, region) completion markers
+jax-cache/                                  <- persistent JAX compilation cache
 ```
 
-`raw/` and `intermediate/` objects expire after 30 days (dev) per lifecycle rules. `raw_forecast/` is retained and may transition to Nearline.
+`ic/`, `intermediate/`, and `jax-cache/` objects expire after `retention_days` (30 in dev) per lifecycle rules; `weights/` is retained, and `full_field/` is retained and may transition to Nearline.
 
-**`monsoon-{env}-{region}-data-{project_id}`** (regional output buckets)
+**`monsoon-{env}-{region}-{project_id}`** (regional output buckets)
 
 Each forecast region gets its own output bucket. Only post-processed model products, blended outputs, and that region's final sync marker live here:
 
@@ -82,23 +88,25 @@ latest.txt                                  <- date of last successfully complet
 
 `output/` is retained and may transition to Nearline.
 
-**`monsoon-{env}-weights-{project_id}`** (weights bucket)
+**Staged static assets** (`weights/` prefix of the common bucket — no separate weights bucket)
 
-Read-only static files. Never auto-deleted, always versioned:
+Read-only files uploaded once before the first run (see
+[terraform/README.md → Staging Static Assets](terraform/README.md#staging-static-assets) for the
+upload commands). Grids and masks are baked into the container images, not staged here.
 
 ```
-aifs/
-  aifs-single-mse-1.1.ckpt                   <- AIFS model checkpoint
-  aifs-ens-crps-1.0.ckpt                     <- AIFS-ENS model checkpoint
-  EKR/mir_16_linear/{hash}.npz               <- sparse IFS->N320 transform matrix
-  grids/grid_2p0.txt                          <- 2-degree CDO remap grid
-  data/india_mask_2p0.nc                      <- land mask
-neuralgcm/
+weights/aifs/
+  aifs-single-mse-2.0.ckpt                   <- AIFS v2 checkpoint
+  aifs-ens-crps-2.0.ckpt                     <- AIFS-ENS v2 checkpoint
+  EKR/mir_16_linear/{hash}.npz               <- sparse IFS->N320 transform matrices (×2)
+weights/neuralgcm/
   models_v1_precip_stochastic_precip_2_8_deg.pkl  <- NeuralGCM checkpoint
   forcings/SST-SeaIce_clim_1979_2017_no_leap.nc   <- SST/sea ice climatology
-blend/
-  support/large/                              <- multinomial regression coefficient CSVs
+weights/blend/{region}/                      <- per-region blend support + coefficient files
 ```
+
+GenCast weights and stats are **not** staged — the `gencast` container reads them from the public
+`gs://dm_graphcast` bucket at runtime.
 
 ### Container Images
 
@@ -176,7 +184,7 @@ Initializes variables from the `args` map:
 - `requested_date` - `default(map.get(args, "date"), "")` - empty string if not provided by scheduler
 - `action` - `default(map.get(args, "action"), "run")` - defaults to `"run"`
 - `project_id` - hardcoded from Terraform template substitution at deploy time
-- `common_bucket` - `monsoon-{env}-common-data-{project_id}`, substituted at deploy time
+- `common_bucket` - `monsoon-{env}-common-{project_id}`, substituted at deploy time
 - `region_bucket` - looked up from Terraform's `region_buckets` map for the requested forecast region
 
 `map.get` safely handles missing keys (returns null); `default` converts null to the fallback. This avoids the `KeyError: key not found` that `args.date` would throw for absent keys.
@@ -223,8 +231,8 @@ FORECAST_REGION={region}
 
 The container fetches ECMWF IFS GRIBs, downloads the matching GenCast SST IC, and uploads shared inputs to the common bucket:
 ```
-gs://{common_bucket}/raw/ecmwf/{ecmwf_date}/grib/
-gs://{common_bucket}/raw/gencast/sst/{ecmwf_date}/sst_{ecmwf_date}.nc
+gs://{common_bucket}/ic/ecmwf/{ecmwf_date}/grib/
+gs://{common_bucket}/ic/gencast_sst/{ecmwf_date}/sst_{ecmwf_date}.nc
 ```
 
 It also writes the actual ECMWF date to:
@@ -245,7 +253,7 @@ FORECAST_REGION={region}
 
 The container fetches the NCEP GDAS GRIB2 file and uploads it to:
 ```
-gs://{common_bucket}/raw/ncep/{neuralgcm_ic_date}/gdas_{neuralgcm_ic_date}.pgrb2
+gs://{common_bucket}/ic/ncep/{neuralgcm_ic_date}/gdas_{neuralgcm_ic_date}.pgrb2
 ```
 
 Cloud Batch is used for model inference and blend/diagnostics. Model jobs need accelerators and
@@ -275,15 +283,16 @@ Common job settings:
 - Private networking only (`noExternalIpAddress: true`) within the VPC subnet
 - Logs to Cloud Logging via `logsPolicy.destination: CLOUD_LOGGING`
 
-The AIFS container (`docker/aifs/src/main.py`) does:
-1. Downloads ECMWF GRIB files from the common bucket (reads `latest_ecmwf_date.txt` to find the right filename)
-2. Downloads the requested AIFS checkpoint (`aifs-single-mse-1.1.ckpt` or `aifs-ens-crps-1.0.ckpt`) from the weights bucket
-3. Downloads the sparse transform matrices (`.npz`) from the weights bucket
-4. Runs `run_model.py` or `run_model_ENS.py`, depending on `AIFS_MODEL`
-5. Runs `post_process.py --model AIFS|AIFS_ENS`
-6. Uploads full-field forecasts to `raw_forecast/` in the common bucket and post-processed products to `output/` in the regional bucket
+The cloud runs the **v2** AIFS containers — `docker/aifs-v2/src/main.py` (deterministic,
+`AIFS_single_v2`) and `docker/aifs-ens-v2/src/main.py` (ensemble, `AIFS_ENS_v2`). Each does:
+1. Downloads ECMWF GRIB files from the common bucket under `ic/ecmwf/{date}/grib/`
+2. Downloads its checkpoint — the filename is read from `config/models.json` (`aifs-single-mse-2.0.ckpt` / `aifs-ens-crps-2.0.ckpt`) — from `weights/aifs/` in the common bucket
+3. Downloads the two sparse transform matrices (`.npz`) from `weights/aifs/EKR/mir_16_linear/` in the common bucket
+4. Runs `run_model.py` (deterministic) or `run_model_ENS.py` (ensemble)
+5. Runs `post_process.py` for each configured region
+6. Uploads full-field forecasts to `full_field/` in the common bucket and post-processed products to `output/` in the regional bucket, then writes a `intermediate/{model}_{region}_{date}_done` marker
 
-`AIFS_MODEL` defaults to `AIFS`; the cloud workflow sets it explicitly per Batch job.
+The `--model` / `MODEL` value is set per Batch job by the workflow.
 
 The workflow submits Batch jobs with `skip_polling: true`. Completion is detected from GCS output
 and common-bucket `intermediate/*_done` markers, which wake the workflow through
@@ -297,9 +306,9 @@ Creates a Cloud Batch job with ID `neuralgcm-{region}-{date}`. Spec:
 - 4 A100 GPUs by default so NeuralGCM members can run in parallel
 
 The NeuralGCM container (`docker/neuralgcm/src/main.py`) does:
-1. Downloads `gdas_{date}.pgrb2` from the common bucket
-2. Downloads the NeuralGCM checkpoint (`.pkl`) and SST/sea ice forcing file from the weights bucket
-3. Runs `preprocess.py` - NCL interpolation of GRIB2 to NetCDF in the format NeuralGCM expects
+1. Downloads `gdas_{date}.pgrb2` from the common bucket under `ic/ncep/{date}/`
+2. Downloads the NeuralGCM checkpoint (`.pkl`) and SST/sea ice forcing file from the common bucket under `weights/neuralgcm/`
+3. Runs `preprocess_ic.py` - interpolation of GRIB2 to NetCDF in the format NeuralGCM expects
 4. Runs `run_model.py` - 30-member stochastic ensemble, split across visible
    GPUs, with asynchronous local Zarr writes mirrored through GCS FUSE
 5. Runs `post_process.py` - per-member SJI, TP, TCW computation
