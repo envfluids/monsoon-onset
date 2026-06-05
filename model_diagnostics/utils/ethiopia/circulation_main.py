@@ -722,8 +722,10 @@ def plot_circulation(
             log.warning(f"Skipping {date}: {p} not found")
             return
     if not clim_file.exists():
-        log.warning(f"Skipping {date}: climatology {clim_file} not found")
-        return
+        log.warning(f"Climatology {clim_file} not found")
+        from .build_climatology import remake_climatology
+        log.info("Remaking climatology...")
+        remake_climatology(clim_file)
 
     aifs_ds = _open_ds(aifs_nc)
     ens_ds = _open_ds(ens_nc)
