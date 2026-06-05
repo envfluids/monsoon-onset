@@ -704,7 +704,7 @@ def plot_circulation(
         if ensemble_input
         else _full_field_path(base, ensemble_model, date)
     )
-    clim_file = Path(clim_path) if clim_path else base / "climatology" / CLIM_FILENAME
+    clim_file = Path(clim_path) if clim_path else base / "model_diagnostics" / "data" / "climatology" / CLIM_FILENAME
     out_dir = (
         Path(output_dir)
         if output_dir

@@ -542,10 +542,10 @@ def plot_rainfall(
     cbar = fig.colorbar(
         sm, ax=list(axes), orientation="horizontal", fraction=0.04, pad=0.08
     )
-    cbar.set_label("Daily rainfall (mm/day)")
+    cbar.set_label("Weekly accumulated rainfall (mm/week)")
 
     fig.suptitle(
-        f"Daily rainfall by week [{forecast_name.upper()}] – forecast date {ds}",
+        f"Weekly accumulated rainfall by week [{forecast_name.upper()}] – forecast date {ds}",
         fontsize=12,
     )
     fig.subplots_adjust(left=0.04, right=0.96, top=0.88, bottom=0.18)
