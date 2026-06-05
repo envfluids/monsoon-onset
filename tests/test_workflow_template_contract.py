@@ -6,6 +6,10 @@ WORKFLOW_PATH = (
     Path(__file__).resolve().parents[1]
     / "terraform/modules/orchestration/workflow.yaml.tpl"
 )
+COMPUTE_MAIN_PATH = (
+    Path(__file__).resolve().parents[1]
+    / "terraform/modules/compute/main.tf"
+)
 
 
 class WorkflowTemplateContractTest(unittest.TestCase):
@@ -132,9 +136,17 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         self.assertIn("RUN_MODE: \"diagnostics\"", self.workflow)
         self.assertIn("BLEND_NAMES: $${json.encode_to_string(blend_action.blends)}", self.workflow)
         self.assertIn("BLEND_NAMES: $${json.encode_to_string(diagnostics_action.blends)}", self.workflow)
+        self.assertIn('max_run_duration: "${batch_config.model_resources["diagnostics"].max_run_duration}"', self.workflow)
         self.assertIn("FORECAST_REGION: $${region_name}", self.workflow)
         self.assertIn("SYNC_SPEC\n                              value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
         self.assertIn("SYNC_FINGERPRINT\n                              value: $${sync_action.fingerprint}", self.workflow)
+
+    def test_diagnostics_batch_has_longer_timeout_than_blend(self):
+        compute_main = COMPUTE_MAIN_PATH.read_text()
+        self.assertIn("diagnostics = {", compute_main)
+        self.assertIn('max_run_duration    = "7200s"', compute_main)
+        diagnostics_block = compute_main.split("diagnostics = {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("provisioning_model", diagnostics_block)
 
     def test_pipeline_state_subroutine_uses_oidc_and_preserves_requested_date(self):
         self.assertInOrder(

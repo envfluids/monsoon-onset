@@ -86,6 +86,18 @@ locals {
       mount_common_bucket = true
       provisioning_model  = "STANDARD"
     }
+    diagnostics = {
+      machine_type        = "e2-highmem-4"
+      boot_disk_size_gb   = var.batch_boot_disk_size_gb
+      boot_disk_type      = var.batch_boot_disk_type
+      cpu_milli           = 4000
+      memory_mib          = 32768
+      gpu_type            = null
+      gpu_count           = null
+      install_gpu_drivers = false
+      max_run_duration    = "7200s"
+      mount_common_bucket = true
+    }
   }
 
   batch_model_resource_configs = merge(local.default_batch_model_resources, var.batch_model_resources)

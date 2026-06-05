@@ -416,16 +416,16 @@ submit_ready_work:
                 args:
                   job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-") + "-" + diagnostics_action.job_suffix}
                   image: "${model_images["blend"]}"
-                  machine_type: "${batch_config.model_resources["blend"].machine_type}"
-                  cpu_milli: ${batch_config.model_resources["blend"].cpu_milli}
-                  memory_mib: ${batch_config.model_resources["blend"].memory_mib}
-                  boot_disk_size_gb: ${batch_config.model_resources["blend"].boot_disk_size_gb}
-                  boot_disk_type: "${batch_config.model_resources["blend"].boot_disk_type}"
-                  install_gpu_drivers: ${batch_config.model_resources["blend"].install_gpu_drivers}
-                  provisioning_model: "${batch_config.model_resources["blend"].provisioning_model}"
-                  max_run_duration: "${batch_config.model_resources["blend"].max_run_duration}"
+                  machine_type: "${batch_config.model_resources["diagnostics"].machine_type}"
+                  cpu_milli: ${batch_config.model_resources["diagnostics"].cpu_milli}
+                  memory_mib: ${batch_config.model_resources["diagnostics"].memory_mib}
+                  boot_disk_size_gb: ${batch_config.model_resources["diagnostics"].boot_disk_size_gb}
+                  boot_disk_type: "${batch_config.model_resources["diagnostics"].boot_disk_type}"
+                  install_gpu_drivers: ${batch_config.model_resources["diagnostics"].install_gpu_drivers}
+                  provisioning_model: "${batch_config.model_resources["diagnostics"].provisioning_model}"
+                  max_run_duration: "${batch_config.model_resources["diagnostics"].max_run_duration}"
                   accelerators: []
-                  volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                  volumes: ${batch_config.model_resources["diagnostics"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
                   env_vars:
                     DATE: $${diagnostics_action.date}
                     FORECAST_REGION: $${region_name}
