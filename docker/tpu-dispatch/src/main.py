@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 TPU_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TERMINAL_QR_STATES = {"FAILED", "SUSPENDED", "PREEMPTED", "DELETING"}
+INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
+STALE_DISPATCH_GRACE_SECONDS = 3_600
 
 
 class DispatchError(RuntimeError):
@@ -168,10 +170,20 @@ class StatusStore:
             )
             return None
 
-    def write(self, bucket_name: str, path: str, payload: dict[str, Any]) -> None:
+    def write(
+        self,
+        bucket_name: str,
+        path: str,
+        payload: dict[str, Any],
+        if_generation_match: int | None = None,
+    ) -> None:
+        kwargs = {}
+        if if_generation_match is not None:
+            kwargs["if_generation_match"] = if_generation_match
         self._client.bucket(bucket_name).blob(path).upload_from_string(
             json.dumps(payload, sort_keys=True),
             content_type="application/json",
+            **kwargs,
         )
 
     def exists(self, bucket_name: str, path: str) -> bool:
@@ -346,7 +358,8 @@ class Controller:
 
     def run(self) -> None:
         log_dispatch_context(self.config)
-        self.write_status(0, "QUEUED", "Starting TPU dispatch")
+        if not self.claim_dispatch():
+            return
         last_result = AttemptResult(False, True, "No attempts ran")
         last_attempt = 0
         for attempt in range(1, self.config.max_attempts + 1):
@@ -360,6 +373,54 @@ class Controller:
             logger.warning("Attempt %s will be retried: %s", attempt, last_result.message)
         self.write_status(last_attempt, "FAILED", last_result.message)
         raise DispatchError(last_result.message)
+
+    def claim_dispatch(self) -> bool:
+        existing = self.status.read(self.config.common_bucket, self.config.status_path)
+        if existing and is_active_dispatch_status(
+            existing,
+            self.now(),
+            self.dispatch_stale_after_seconds(),
+        ):
+            logger.info(
+                "TPU dispatch already active for workload=%s date=%s existing_run_id=%s state=%s",
+                self.config.workload_name,
+                self.config.date,
+                existing.get("run_id", ""),
+                existing.get("state", ""),
+            )
+            return False
+
+        try:
+            self.write_status(
+                0,
+                "QUEUED",
+                "Starting TPU dispatch",
+                if_generation_match=0 if existing is None else None,
+            )
+        except google_exceptions.PreconditionFailed:
+            existing = self.status.read(self.config.common_bucket, self.config.status_path)
+            if existing and is_active_dispatch_status(
+                existing,
+                self.now(),
+                self.dispatch_stale_after_seconds(),
+            ):
+                logger.info(
+                    "TPU dispatch claim lost for workload=%s date=%s existing_run_id=%s state=%s",
+                    self.config.workload_name,
+                    self.config.date,
+                    existing.get("run_id", ""),
+                    existing.get("state", ""),
+                )
+                return False
+            self.write_status(0, "QUEUED", "Starting TPU dispatch")
+        return True
+
+    def dispatch_stale_after_seconds(self) -> int:
+        return (
+            self.config.max_attempts
+            * (self.config.queue_timeout_seconds + self.config.run_timeout_seconds)
+            + STALE_DISPATCH_GRACE_SECONDS
+        )
 
     def run_attempt(self, attempt: int) -> AttemptResult:
         queued_resource_id = self.queued_resource_id(attempt)
@@ -547,6 +608,7 @@ class Controller:
         queued_resource_id: str = "",
         node_id: str = "",
         exit_code: int | None = None,
+        if_generation_match: int | None = None,
     ) -> None:
         timestamp = self.now().isoformat()
         payload = {
@@ -563,7 +625,12 @@ class Controller:
             "message": message,
             "exit_code": exit_code,
         }
-        self.status.write(self.config.common_bucket, self.config.status_path, payload)
+        self.status.write(
+            self.config.common_bucket,
+            self.config.status_path,
+            payload,
+            if_generation_match=if_generation_match,
+        )
         if attempt > 0:
             self.status.write(self.config.common_bucket, self.config.attempt_status_path(attempt), payload)
 
@@ -932,6 +999,34 @@ def parse_timestamp(value: Any) -> dt.datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=dt.UTC)
     return parsed.astimezone(dt.UTC)
+
+
+def is_active_dispatch_status(
+    status: dict[str, Any],
+    now: dt.datetime,
+    stale_after_seconds: int,
+) -> bool:
+    state = normalize_state(status.get("state"))
+    if not state or state in INACTIVE_DISPATCH_STATES:
+        return False
+
+    updated_at = parse_timestamp(status.get("updated_at")) or parse_timestamp(status.get("started_at"))
+    if updated_at is None:
+        return True
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt.UTC)
+    age_seconds = (now.astimezone(dt.UTC) - updated_at).total_seconds()
+    if age_seconds > stale_after_seconds:
+        logger.warning(
+            "Treating stale TPU dispatch status as inactive: run_id=%s state=%s age_seconds=%s stale_after_seconds=%s",
+            status.get("run_id", ""),
+            state,
+            int(age_seconds),
+            stale_after_seconds,
+        )
+        return False
+    return True
 
 
 def operation_name(operation: Any) -> str:

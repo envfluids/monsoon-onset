@@ -43,6 +43,8 @@ class ZarrMirror:
     def __init__(self, source_root, target_root, max_workers):
         self.source_root = Path(source_root)
         self.target_root = Path(target_root)
+        self.partial_marker = self.target_root.with_name(f"{self.target_root.name}.partial")
+        self.complete_marker = self.target_root.with_name(f"{self.target_root.name}.complete")
         self.executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="zarr-mirror",
@@ -50,6 +52,27 @@ class ZarrMirror:
         self.queued_signatures = {}
         self.futures = []
         self.lock = threading.Lock()
+
+    def mark_partial(self):
+        self.target_root.parent.mkdir(parents=True, exist_ok=True)
+        if self.partial_marker.exists() and self.target_root.exists():
+            logging.warning(
+                "Removing previous partial NeuralGCM Zarr mirror target: %s",
+                self.target_root,
+            )
+            shutil.rmtree(self.target_root)
+        self.complete_marker.unlink(missing_ok=True)
+        self.partial_marker.write_text(
+            f"partial NeuralGCM Zarr mirror for {self.target_root.name}\n",
+            encoding="utf-8",
+        )
+
+    def mark_complete(self):
+        self.partial_marker.unlink(missing_ok=True)
+        self.complete_marker.write_text(
+            f"complete NeuralGCM Zarr mirror for {self.target_root.name}\n",
+            encoding="utf-8",
+        )
 
     def enqueue_changed(self, changed_root=None, *, force=False):
         changed_root = Path(changed_root or self.source_root)
@@ -360,6 +383,7 @@ def writer_loop(
     mirror = None
     if mirror_target:
         mirror = ZarrMirror(partial_path, mirror_target, mirror_workers)
+        mirror.mark_partial()
         logging.info("Streaming NeuralGCM Zarr components to %s", mirror_target)
 
     try:
@@ -443,6 +467,7 @@ def writer_loop(
             logging.info("Reconciling final NeuralGCM Zarr store to mirror target")
             mirror.enqueue_changed(final_path, force=True)
             mirror.wait()
+            mirror.mark_complete()
         status_queue.put(("done", str(final_path)))
     except BaseException:
         stop_event.set()

@@ -89,6 +89,8 @@ EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS = float(
     os.environ.get("EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS", "2")
 )
 RETRYABLE_EXTERNAL_PROBE_STATUS = {429, 500, 502, 503, 504, "timeout"}
+INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
+ACTIVE_DISPATCH_MAX_AGE_SECONDS = 30 * 60 * 60
 
 GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
@@ -261,6 +263,18 @@ def read_gcs_text(bucket: str, path: str) -> str:
         return ""
 
 
+def read_gcs_json(bucket: str, path: str) -> dict:
+    text = read_gcs_text(bucket, path)
+    if not text:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid GCS JSON: gs://%s/%s", bucket, path)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
 # ---------------------------------------------------------------------------
 # Per-stage state probes
 # ---------------------------------------------------------------------------
@@ -293,6 +307,11 @@ def ic_present(source: str, date: str) -> bool:
 
 def model_marker_path(model: str, region: str, date: str) -> str:
     return f"intermediate/{model}_{region}_{date}_done"
+
+
+def tpu_dispatch_status_path(workload: str, date: str) -> str:
+    run_id = f"{workload}-{date.replace('T', '-')}"
+    return f"intermediate/tpu-dispatch/{workload}/{date}/{run_id}/status.json"
 
 
 def blend_marker_path(region: str, date: str) -> str:
@@ -329,6 +348,51 @@ def model_region_done(model: str, region: str, date: str) -> bool:
         gcs_object_exists(GCS_COMMON_BUCKET, model_marker_path(model, region, date))
         and model_region_outputs_present(model, region, date)
     )
+
+
+def tpu_dispatch_status(model: str, date: str) -> dict:
+    if model != "gencast" or not date:
+        return {}
+    return read_gcs_json(GCS_COMMON_BUCKET, tpu_dispatch_status_path(model, date))
+
+
+def parse_status_timestamp(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def tpu_dispatch_active(status: dict, now: datetime) -> bool:
+    state = str(status.get("state", "")).upper()
+    if not state or state in INACTIVE_DISPATCH_STATES:
+        return False
+
+    updated_at = (
+        parse_status_timestamp(status.get("updated_at"))
+        or parse_status_timestamp(status.get("started_at"))
+    )
+    if updated_at is None:
+        return True
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_seconds = (now.astimezone(timezone.utc) - updated_at).total_seconds()
+    if age_seconds > ACTIVE_DISPATCH_MAX_AGE_SECONDS:
+        logger.warning(
+            "Ignoring stale TPU dispatch status: run_id=%s state=%s age_seconds=%s max_age_seconds=%s",
+            status.get("run_id", ""),
+            state,
+            int(age_seconds),
+            ACTIVE_DISPATCH_MAX_AGE_SECONDS,
+        )
+        return False
+    return True
 
 
 def blend_present(region: str, date: str) -> bool:
@@ -514,6 +578,11 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
         source = MODEL_IC_SOURCE[model]
         model_date = ic_dates.get(source, "")
         model_ic_present = bool(model_date) and ic_state.get(source, {}).get("present", False)
+        dispatch_status = tpu_dispatch_status(model, model_date)
+        dispatch_active = tpu_dispatch_active(
+            dispatch_status,
+            datetime.now(timezone.utc),
+        )
         region_results = {}
         for region in _regions_for_model(model):
             present = bool(model_date) and model_region_done(model, region, model_date)
@@ -532,6 +601,8 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             "ic_source": source,
             "ic_present": model_ic_present,
             "complete": complete,
+            "dispatch_active": dispatch_active,
+            "dispatch_status": dispatch_status,
             "regions": region_results,
         }
 
@@ -781,7 +852,16 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
             models_to_run_by_model[model] = action
             continue
         pending_regions = [r for r, info in m["regions"].items() if not info["present"]]
-        if pending_regions:
+        if pending_regions and m.get("dispatch_active"):
+            blocked.append({
+                "type": "model_in_progress",
+                "model": model,
+                "date": m["date"],
+                "regions": pending_regions,
+                "run_id": m.get("dispatch_status", {}).get("run_id", ""),
+                "state": m.get("dispatch_status", {}).get("state", ""),
+            })
+        elif pending_regions:
             action = {"model": model, "date": m["date"], "regions": pending_regions}
             models_to_run.append(action)
         models_to_run_by_model[model] = action

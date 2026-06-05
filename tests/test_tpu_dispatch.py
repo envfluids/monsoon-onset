@@ -25,8 +25,12 @@ def install_google_stubs() -> None:
     class AlreadyExists(Exception):
         pass
 
+    class PreconditionFailed(Exception):
+        pass
+
     exceptions_module.NotFound = NotFound
     exceptions_module.AlreadyExists = AlreadyExists
+    exceptions_module.PreconditionFailed = PreconditionFailed
     api_core_module.exceptions = exceptions_module
     retry_module.if_transient_error = lambda _exc: False
 
@@ -58,18 +62,22 @@ tpu_dispatch.logger.setLevel(logging.CRITICAL)
 
 
 class FakeStatusStore:
-    def __init__(self, reads=None, existing_paths=None, listed=None):
+    def __init__(self, reads=None, existing_paths=None, listed=None, objects=None):
         self.reads = list(reads or [])
         self.existing_paths = set(existing_paths or [])
         self.listed = dict(listed or {})
+        self.objects = dict(objects or {})
         self.writes = []
 
     def read(self, bucket_name, path):
         if self.reads:
             return self.reads.pop(0)
-        return None
+        return self.objects.get(path)
 
-    def write(self, bucket_name, path, payload):
+    def write(self, bucket_name, path, payload, if_generation_match=None):
+        if if_generation_match == 0 and path in self.objects:
+            raise tpu_dispatch.google_exceptions.PreconditionFailed("exists")
+        self.objects[path] = payload
         self.writes.append((bucket_name, path, payload))
 
     def exists(self, bucket_name, path):
@@ -302,6 +310,80 @@ class TpuDispatchTest(unittest.TestCase):
         result = controller.wait_for_attempt(1, "gencast-20260515-00-a1", "node")
 
         self.assertTrue(result.success)
+
+    def test_active_dispatch_status_is_active_until_terminal_or_stale(self):
+        now = dt.datetime(2026, 5, 15, 1, 0, 0, tzinfo=dt.UTC)
+
+        self.assertTrue(
+            tpu_dispatch.is_active_dispatch_status(
+                {"state": "RUNNING", "updated_at": "2026-05-15T00:59:00+00:00"},
+                now,
+                300,
+            )
+        )
+        self.assertFalse(
+            tpu_dispatch.is_active_dispatch_status(
+                {"state": "FAILED", "updated_at": "2026-05-15T00:59:00+00:00"},
+                now,
+                300,
+            )
+        )
+        self.assertFalse(
+            tpu_dispatch.is_active_dispatch_status(
+                {"state": "CLEANING_UP", "updated_at": "2026-05-15T00:59:00+00:00"},
+                now,
+                300,
+            )
+        )
+        self.assertFalse(
+            tpu_dispatch.is_active_dispatch_status(
+                {"state": "RUNNING", "updated_at": "2026-05-15T00:00:00+00:00"},
+                now,
+                300,
+            )
+        )
+
+    def test_run_exits_without_tpu_when_dispatch_status_is_active(self):
+        config = make_config()
+        active_status = {
+            "run_id": "gencast-20260515-00",
+            "state": "RUNNING",
+            "updated_at": "2026-05-15T00:59:00+00:00",
+        }
+        status = FakeStatusStore(objects={config.status_path: active_status})
+        tpu = FakeTpuClient()
+        controller = tpu_dispatch.Controller(
+            config,
+            tpu,
+            status,
+            sleep=lambda _seconds: None,
+            now=lambda: dt.datetime(2026, 5, 15, 1, 0, 0, tzinfo=dt.UTC),
+        )
+
+        controller.run()
+
+        self.assertEqual(tpu.created, [])
+        self.assertEqual(tpu.deleted, [])
+
+    def test_run_claims_missing_dispatch_status_atomically(self):
+        config = make_config()
+        status = FakeStatusStore(
+            existing_paths={"intermediate/gencast_ethiopia_20260515T00_done"}
+        )
+        tpu = FakeTpuClient()
+        controller = tpu_dispatch.Controller(
+            config,
+            tpu,
+            status,
+            sleep=lambda _seconds: None,
+            now=lambda: dt.datetime(2026, 5, 15, tzinfo=dt.UTC),
+        )
+
+        controller.run()
+
+        first_status_write = status.writes[0][2]
+        self.assertEqual(first_status_write["state"], "QUEUED")
+        self.assertEqual(tpu.created[0][0], "gencast-20260515-00-a1")
 
     def test_queue_timeout_is_retryable(self):
         times = [

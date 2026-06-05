@@ -25,6 +25,7 @@ Environment Variables:
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -101,10 +102,23 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
     zarr_mirror_target = _zarr_mirror_target(date, upload_full_field)
 
     _setup_directories(date, raw_output_base)
-    _download_inputs(date, common_bucket)
-    _run_science_scripts(date, raw_output_base, zarr_mirror_target)
+    using_existing_full_field = _prepare_existing_full_field(
+        date,
+        common_bucket,
+        raw_output_base,
+    )
+    if not using_existing_full_field:
+        _download_inputs(date, common_bucket)
+    _run_science_scripts(
+        date,
+        raw_output_base,
+        zarr_mirror_target,
+        skip_inference=using_existing_full_field,
+    )
 
-    if zarr_mirror_target is not None:
+    if using_existing_full_field:
+        logger.info("NeuralGCM full-field Zarr store already exists; skipping upload")
+    elif zarr_mirror_target is not None:
         logger.info("NeuralGCM full-field Zarr store was mirrored through GCS FUSE")
     elif upload_full_field:
         _upload_full_field(date, common_bucket, raw_output_base)
@@ -139,6 +153,98 @@ def _zarr_mirror_target(date: str, upload_full_field: bool) -> Path | None:
     target = COMMON_BUCKET_MOUNT / "full_field" / "neuralgcm" / f"{date}.zarr"
     logger.info("NeuralGCM full-field Zarr mirror target: %s", target)
     return target
+
+
+def _full_field_zarr_prefix(date: str) -> str:
+    return f"full_field/neuralgcm/{date}.zarr"
+
+
+def _full_field_partial_marker_path(date: str) -> str:
+    return f"{_full_field_zarr_prefix(date)}.partial"
+
+
+def _mounted_full_field_zarr_path(date: str) -> Path:
+    return COMMON_BUCKET_MOUNT / _full_field_zarr_prefix(date)
+
+
+def _mounted_full_field_partial_marker_path(date: str) -> Path:
+    return COMMON_BUCKET_MOUNT / _full_field_partial_marker_path(date)
+
+
+def _gcs_object_exists(bucket_name: str, gcs_path: str) -> bool:
+    return _client().bucket(bucket_name).blob(gcs_path).exists()
+
+
+def _gcs_full_field_zarr_complete(date: str, common_bucket: str) -> bool:
+    prefix = _full_field_zarr_prefix(date)
+    return (
+        _gcs_object_exists(common_bucket, f"{prefix}/zarr.json")
+        and not _gcs_object_exists(common_bucket, _full_field_partial_marker_path(date))
+    )
+
+
+def _mounted_full_field_zarr_complete(date: str) -> bool:
+    zarr_path = _mounted_full_field_zarr_path(date)
+    return (
+        zarr_path.is_dir()
+        and (zarr_path / "zarr.json").is_file()
+        and not _mounted_full_field_partial_marker_path(date).exists()
+    )
+
+
+def _prepare_existing_full_field(
+    date: str,
+    common_bucket: str,
+    raw_output_base: Path,
+) -> bool:
+    raw_dir = raw_output_base / f"{date}.zarr"
+    if raw_dir.is_dir() and (raw_dir / "zarr.json").is_file():
+        logger.info("Using existing local NeuralGCM full-field Zarr store: %s", raw_dir)
+        return True
+
+    if not _gcs_full_field_zarr_complete(date, common_bucket):
+        _remove_incomplete_local_full_field(raw_dir)
+        return False
+
+    if not COMMON_BUCKET_MOUNT.is_dir():
+        logger.warning(
+            "Complete NeuralGCM full-field Zarr exists in gs://%s/%s, but %s is not mounted; "
+            "running inference instead of downloading the full store.",
+            common_bucket,
+            _full_field_zarr_prefix(date),
+            COMMON_BUCKET_MOUNT,
+        )
+        return False
+
+    mounted_path = _mounted_full_field_zarr_path(date)
+    if not _mounted_full_field_zarr_complete(date):
+        logger.warning(
+            "Complete NeuralGCM full-field Zarr metadata exists in GCS, but mounted path "
+            "%s is not ready; running inference.",
+            mounted_path,
+        )
+        return False
+
+    _remove_incomplete_local_full_field(raw_dir)
+    raw_dir.parent.mkdir(parents=True, exist_ok=True)
+    raw_dir.symlink_to(mounted_path, target_is_directory=True)
+    logger.info(
+        "Using mounted NeuralGCM full-field Zarr store %s -> %s",
+        raw_dir,
+        mounted_path,
+    )
+    return True
+
+
+def _remove_incomplete_local_full_field(raw_dir: Path) -> None:
+    if raw_dir.is_symlink():
+        raw_dir.unlink()
+    elif raw_dir.exists():
+        logger.warning("Removing incomplete local NeuralGCM raw output path: %s", raw_dir)
+        if raw_dir.is_dir():
+            shutil.rmtree(raw_dir)
+        else:
+            raw_dir.unlink()
 
 
 def _setup_directories(date: str, raw_output_base: Path) -> None:
@@ -186,6 +292,7 @@ def _run_science_scripts(
     date: str,
     raw_output_base: Path,
     zarr_mirror_target: Path | None = None,
+    skip_inference: bool = False,
 ) -> None:
     env = {
         **os.environ,
@@ -196,18 +303,25 @@ def _run_science_scripts(
         env["NEURALGCM_ZARR_MIRROR_TARGET"] = str(zarr_mirror_target)
         env["NEURALGCM_ZARR_MIRROR_WORKERS"] = NEURALGCM_ZARR_MIRROR_WORKERS
 
-    logger.info(f"Running preprocess_ic.py for {date}")
-    subprocess.run(
-        [sys.executable, "preprocess_ic.py", "--date", date],
-        cwd=NGCM_UTILS, check=True, env=env,
-    )
+    if skip_inference:
+        logger.info(
+            "Skipping NeuralGCM preprocess and inference for %s because a complete "
+            "full-field Zarr store already exists",
+            date,
+        )
+    else:
+        logger.info(f"Running preprocess_ic.py for {date}")
+        subprocess.run(
+            [sys.executable, "preprocess_ic.py", "--date", date],
+            cwd=NGCM_UTILS, check=True, env=env,
+        )
 
-    logger.info(f"Running run_model.py for {date}")
-    _log_gpu_runtime(env)
-    subprocess.run(
-        [sys.executable, "run_model.py", "--date", date],
-        cwd=NGCM_UTILS, check=True, env=env,
-    )
+        logger.info(f"Running run_model.py for {date}")
+        _log_gpu_runtime(env)
+        subprocess.run(
+            [sys.executable, "run_model.py", "--date", date],
+            cwd=NGCM_UTILS, check=True, env=env,
+        )
 
     logger.info(f"Running post_process.py for {date}")
     subprocess.run(
