@@ -84,9 +84,11 @@ class BlendConfig:
     deterministic_model: str
     ensemble_model: str
     inputs: tuple[ForecastInput, ...]
+    output_dir_template: str = "blend/output/{region}/{date}/{name}"
     diagnostic_inputs: tuple[ForecastInput, ...] | None = None
     blend_implemented: bool = True
     diagnostic_plots: bool = False
+    diagnostic_output_dir_template: str | None = None
 
     def models(self):
         return {self.deterministic_model, self.ensemble_model}
@@ -153,6 +155,7 @@ def default_blends():
             deterministic_model="AIFS_single_v2",
             ensemble_model="NeuralGCM",
             diagnostic_plots=True,
+            output_dir_template="blend/output/india2026/{date}/AIFS_single_v2_NeuralGCM",
             inputs=(
                 ForecastInput(
                     "AIFS_single_v2",
@@ -172,6 +175,7 @@ def default_blends():
             deterministic_model="AIFS_single_v2",
             ensemble_model="AIFS_ENS_v2",
             diagnostic_plots=True,
+            output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_AIFS_ENS_v2",
             inputs=(
                 ForecastInput(
                     "AIFS_single_v2",
@@ -187,10 +191,32 @@ def default_blends():
         ),
         BlendConfig(
             region="ethiopia",
+            name="AIFS_single_v2_NeuralGCM",
+            deterministic_model="AIFS_single_v2",
+            ensemble_model="NeuralGCM",
+            diagnostic_plots=True,
+            output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_NeuralGCM",
+            inputs=(
+                ForecastInput(
+                    "AIFS_single_v2",
+                    "deterministic",
+                    "AIFS/output/ethiopia/AIFS_single_v2/tp/tp_0p25_{date}.nc",
+                ),
+                ForecastInput(
+                    "NeuralGCM",
+                    "ensemble",
+                    "NeuralGCM/output/ethiopia/tp/tp_2p8_{date}.nc",
+                ),
+            ),
+        ),
+        BlendConfig(
+            region="ethiopia",
             name="AIFS_single_v2_gencast",
             deterministic_model="AIFS_single_v2",
             ensemble_model="gencast",
             diagnostic_plots=True,
+            blend_implemented=False,
+            output_dir_template="blend/output/ethiopia2026/{date}/AIFS_single_v2_gencast",
             inputs=(
                 ForecastInput(
                     "AIFS_single_v2",
@@ -215,6 +241,7 @@ def workflow_blend():
         ensemble_model="NeuralGCM",
         blend_implemented=True,
         diagnostic_plots=False,
+        output_dir_template="blend/output/india2026/{date}/AIFS_single_v2_NeuralGCM",
         inputs=(
             ForecastInput(
                 "AIFS_single_v2",
@@ -273,17 +300,42 @@ class PipelineStateActionsTest(unittest.TestCase):
             self.storage.put(bucket, f"output/gencast/{DATE}/tp_0p25_{DATE}.nc")
 
     def add_diagnostics_done(self, region):
-        self.storage.put(COMMON_BUCKET, self.module.diagnostics_marker_path(region, DATE), "done")
         names = [
             blend.name
             for blend in self.module.BLENDS
             if blend.region == region and blend.diagnostic_plots
         ]
         for name in names:
-            self.storage.put(
-                self.module.REGION_BUCKETS[region],
-                f"output/model_diagnostics/{DATE}/{region}/{DATE}/{name}/plot.png",
-            )
+            self.add_diagnostics_config_done(region, name)
+
+    def add_diagnostics_config_done(self, region, name):
+        self.storage.put(
+            COMMON_BUCKET,
+            self.module.diagnostics_config_marker_path(region, name, DATE),
+            "done",
+        )
+        self.storage.put(
+            self.module.REGION_BUCKETS[region],
+            f"output/model_diagnostics/{DATE}/{region}/{DATE}/{name}/plot.png",
+        )
+
+    def add_blend_config_done(self, region, name):
+        self.storage.put(
+            COMMON_BUCKET,
+            self.module.blend_config_marker_path(region, name, DATE),
+            "done",
+        )
+        self.storage.put(
+            self.module.REGION_BUCKETS[region],
+            f"output/blend/{DATE}/{region}2026/{DATE}/{name}/forecast.csv",
+        )
+
+    def add_sync_state(self, region, state):
+        self.storage.put(
+            self.module.REGION_BUCKETS[region],
+            self.module.sync_state_path(DATE),
+            state["per_region"][region]["sync"]["fingerprint"],
+        )
 
     def set_gencast_dispatch_status(self, state, updated_at=None):
         payload = {
@@ -412,7 +464,7 @@ class PipelineStateActionsTest(unittest.TestCase):
             {"model": "gencast", "date": DATE, "regions": ["ethiopia"]},
         )
 
-    def test_diagnostics_blocked_until_all_inputs_and_markers_exist(self):
+    def test_diagnostics_schedules_ready_pairs_without_waiting_for_all_inputs(self):
         self.add_ic()
         self.add_model_done("AIFS_single_v2", "india")
         self.add_model_done("AIFS_single_v2", "ethiopia")
@@ -425,18 +477,21 @@ class PipelineStateActionsTest(unittest.TestCase):
             for item in state["actions"]["blocked"]
         }
         self.assertIn(("model_diagnostics_blocked", "india", "inputs_missing"), blocked)
-        self.assertIn(("model_diagnostics_blocked", "ethiopia", "inputs_missing"), blocked)
         ethiopia_diagnostics = state["per_region"]["ethiopia"]["model_diagnostics"]
         gencast_input = next(
             item
-            for item in ethiopia_diagnostics["missing"]
+            for item in ethiopia_diagnostics["inputs"]
             if item["model"] == "gencast"
         )
         self.assertEqual(
             gencast_input["path"],
             f"gs://{ETHIOPIA_BUCKET}/output/gencast/{DATE}/tp_0p25_{DATE}.nc",
         )
-        self.assertEqual(state["actions"]["regions_to_diagnose"], [])
+        self.assertFalse(gencast_input["present"])
+        self.assertEqual(
+            state["actions"]["regions_to_diagnose_by_region"]["ethiopia"]["blends"],
+            ["AIFS_single_v2_AIFS_ENS_v2"],
+        )
 
     def test_diagnostics_and_sync_run_after_region_inputs_are_complete(self):
         self.module.REGIONS = {
@@ -455,10 +510,18 @@ class PipelineStateActionsTest(unittest.TestCase):
         state = self.compute()
 
         self.assertEqual(
-            state["actions"]["regions_to_diagnose_by_region"]["india"],
-            {"region": "india", "date": DATE},
+            {
+                key: state["actions"]["regions_to_diagnose_by_region"]["india"][key]
+                for key in ("region", "date", "blends")
+            },
+            {
+                "region": "india",
+                "date": DATE,
+                "blends": ["AIFS_single_v2_NeuralGCM"],
+            },
         )
-        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["india"]["date"], "")
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["india"]["date"], DATE)
+        self.add_sync_state("india", state)
 
         self.add_diagnostics_done("india")
         self.storage.put(INDIA_BUCKET, "latest.txt", "20260601T00")
@@ -468,7 +531,11 @@ class PipelineStateActionsTest(unittest.TestCase):
         self.assertEqual(state["per_region"]["india"]["sync"]["date"], DATE)
         self.assertEqual(
             state["actions"]["regions_to_sync_by_region"]["india"],
-            {"region": "india", "date": DATE},
+            {
+                "region": "india",
+                "date": DATE,
+                "fingerprint": state["per_region"]["india"]["sync"]["fingerprint"],
+            },
         )
 
     def test_ethiopia_gencast_diagnostics_use_flat_output_path(self):
@@ -479,7 +546,7 @@ class PipelineStateActionsTest(unittest.TestCase):
             }
         }
         self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
-        self.module.BLENDS = [default_blends()[2]]
+        self.module.BLENDS = [default_blends()[3]]
         self.add_ic("ecmwf")
         self.add_model_done("AIFS_single_v2", "ethiopia")
         self.add_model_done("gencast", "ethiopia")
@@ -498,8 +565,15 @@ class PipelineStateActionsTest(unittest.TestCase):
         )
         self.assertTrue(gencast_input["present"])
         self.assertEqual(
-            state["actions"]["regions_to_diagnose_by_region"]["ethiopia"],
-            {"region": "ethiopia", "date": DATE},
+            {
+                key: state["actions"]["regions_to_diagnose_by_region"]["ethiopia"][key]
+                for key in ("region", "date", "blends")
+            },
+            {
+                "region": "ethiopia",
+                "date": DATE,
+                "blends": ["AIFS_single_v2_gencast"],
+            },
         )
 
     def test_blend_action_waits_for_configured_inputs_and_existing_output(self):
@@ -530,15 +604,108 @@ class PipelineStateActionsTest(unittest.TestCase):
         state = self.compute()
 
         self.assertEqual(
-            state["actions"]["regions_to_blend_by_region"]["india"],
-            {"region": "india", "date": DATE},
+            {
+                key: state["actions"]["regions_to_blend_by_region"]["india"][key]
+                for key in ("region", "date", "blends")
+            },
+            {
+                "region": "india",
+                "date": DATE,
+                "blends": ["AIFS_single_v2_NeuralGCM"],
+            },
         )
 
-        self.storage.put(COMMON_BUCKET, self.module.blend_marker_path("india", DATE), "done")
-        self.storage.put(INDIA_BUCKET, f"output/blend/{DATE}/forecast.nc")
+        self.add_blend_config_done("india", "AIFS_single_v2_NeuralGCM")
         state = self.compute()
 
         self.assertEqual(state["actions"]["regions_to_blend_by_region"]["india"]["date"], "")
+
+    def test_ethiopia_blend_does_not_assume_aifs_is_ready_first(self):
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2"],
+                "stages": ["blend"],
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1]]
+        self.add_ic("ecmwf")
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+
+        state = self.compute()
+
+        self.assertEqual(
+            state["actions"]["regions_to_blend_by_region"]["ethiopia"]["date"],
+            "",
+        )
+        missing_models = {
+            item["model"]
+            for item in state["per_region"]["ethiopia"]["blend"]["missing"]
+        }
+        self.assertIn("AIFS_single_v2", missing_models)
+
+    def test_ethiopia_blend_schedules_ready_configs_independently(self):
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"],
+                "stages": ["blend"],
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1], default_blends()[2]]
+        self.add_ic()
+        self.add_model_done("AIFS_single_v2", "ethiopia")
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+
+        state = self.compute()
+
+        self.assertEqual(
+            state["actions"]["regions_to_blend_by_region"]["ethiopia"]["blends"],
+            ["AIFS_single_v2_AIFS_ENS_v2"],
+        )
+
+        self.add_blend_config_done("ethiopia", "AIFS_single_v2_AIFS_ENS_v2")
+        self.add_model_done("neuralgcm", "ethiopia")
+
+        state = self.compute()
+
+        self.assertEqual(
+            state["actions"]["regions_to_blend_by_region"]["ethiopia"]["blends"],
+            ["AIFS_single_v2_NeuralGCM"],
+        )
+
+    def test_sync_runs_again_after_later_same_date_diagnostics_completion(self):
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2", "gencast"],
+                "stages": ["model_diagnostics", "sync"],
+                "sync": {"date_kind": "aifs_date"},
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1], default_blends()[3]]
+        self.add_ic("ecmwf")
+        self.add_model_done("AIFS_single_v2", "ethiopia")
+        self.add_model_done("gencast", "ethiopia")
+        self.add_diagnostics_config_done("ethiopia", "AIFS_single_v2_gencast")
+
+        state = self.compute()
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
+        self.add_sync_state("ethiopia", state)
+
+        state = self.compute()
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], "")
+
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+        self.add_diagnostics_config_done("ethiopia", "AIFS_single_v2_AIFS_ENS_v2")
+
+        state = self.compute()
+
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
+        self.assertIn(
+            {"type": "model_diagnostics", "name": "AIFS_single_v2_AIFS_ENS_v2"},
+            state["per_region"]["ethiopia"]["sync"]["items"],
+        )
 
 
 if __name__ == "__main__":

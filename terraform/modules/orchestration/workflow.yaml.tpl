@@ -214,6 +214,9 @@ submit_ready_work:
           - default_region_action:
               region: ""
               date: ""
+              blends: []
+              job_suffix: ""
+              fingerprint: ""
 
     - submit_batch_models:
         parallel:
@@ -368,7 +371,7 @@ submit_ready_work:
             - submit_blend_batch:
                 call: submit_batch_stage
                 args:
-                  job_id: $${"blend-" + region_name + "-" + text.replace_all(blend_action.date, "T", "-")}
+                  job_id: $${"blend-" + region_name + "-" + text.replace_all(blend_action.date, "T", "-") + "-" + blend_action.job_suffix}
                   image: "${model_images["blend"]}"
                   machine_type: "${batch_config.model_resources["blend"].machine_type}"
                   cpu_milli: ${batch_config.model_resources["blend"].cpu_milli}
@@ -384,6 +387,7 @@ submit_ready_work:
                     DATE: $${blend_action.date}
                     FORECAST_REGION: $${region_name}
                     RUN_MODE: "blend"
+                    BLEND_NAMES: $${json.encode_to_string(blend_action.blends)}
                     GCS_COMMON_BUCKET: $${common_bucket}
                     GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
                     REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
@@ -410,7 +414,7 @@ submit_ready_work:
             - submit_diagnostics_batch:
                 call: submit_batch_stage
                 args:
-                  job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-")}
+                  job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-") + "-" + diagnostics_action.job_suffix}
                   image: "${model_images["blend"]}"
                   machine_type: "${batch_config.model_resources["blend"].machine_type}"
                   cpu_milli: ${batch_config.model_resources["blend"].cpu_milli}
@@ -426,6 +430,7 @@ submit_ready_work:
                     DATE: $${diagnostics_action.date}
                     FORECAST_REGION: $${region_name}
                     RUN_MODE: "diagnostics"
+                    BLEND_NAMES: $${json.encode_to_string(diagnostics_action.blends)}
                     GCS_COMMON_BUCKET: $${common_bucket}
                     GCS_REGION_BUCKETS: $${json.encode_to_string(region_buckets)}
                     REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
@@ -466,6 +471,8 @@ submit_ready_work:
                               value: $${json.encode_to_string(region_buckets)}
                             - name: SYNC_SPEC
                               value: $${json.encode_to_string(region_cfg.sync)}
+                            - name: SYNC_FINGERPRINT
+                              value: $${sync_action.fingerprint}
             - end_sync_iteration:
                 assign:
                   - last_sync_region_checked: $${region_name}

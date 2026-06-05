@@ -121,7 +121,7 @@ locals {
     }
     ethiopia = {
       models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"]
-      stages = ["model_diagnostics", "sync"]
+      stages = ["blend", "model_diagnostics", "sync"]
       sync = {
         rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "model_diagnostics"]
         git_push  = false

@@ -24,6 +24,7 @@ Environment Variables:
     SYNC_SPEC         : JSON copy of regions[region].sync from terraform
                         (selects sync.yaml rule names and git behavior)
     ENABLE_DRIVE      : 'true' to enable Google Drive sync (default false)
+    SYNC_FINGERPRINT  : Serialized sync inventory fingerprint to persist after success
     MONSOON_SYNC_CONFIG : Path to sync.yaml (default /app/sync/config/sync.yaml)
     MONSOON_CLUSTER     : Cluster name passed to sync config (default 'gcp')
     MONSOON_DRIVE_ROOT  : Override drive root (optional)
@@ -92,10 +93,21 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 @click.option("--sync-spec", envvar="SYNC_SPEC", required=True,
               help="JSON copy of regions[region].sync from terraform")
 @click.option("--enable-drive/--no-drive", envvar="ENABLE_DRIVE", default=False)
+@click.option("--sync-fingerprint", envvar="SYNC_FINGERPRINT", default="")
 @click.option("--config",     envvar="MONSOON_SYNC_CONFIG", default="/app/sync/config/sync.yaml")
 @click.option("--cluster",    envvar="MONSOON_CLUSTER",     default="gcp")
 @click.option("--drive-root", envvar="MONSOON_DRIVE_ROOT",  default=None)
-def main(date, region, region_buckets, sync_spec, enable_drive, config, cluster, drive_root):
+def main(
+    date,
+    region,
+    region_buckets,
+    sync_spec,
+    enable_drive,
+    sync_fingerprint,
+    config,
+    cluster,
+    drive_root,
+):
     region_buckets = json.loads(region_buckets)
     spec = json.loads(sync_spec)
     if region not in region_buckets:
@@ -119,11 +131,11 @@ def main(date, region, region_buckets, sync_spec, enable_drive, config, cluster,
             region=region,
         )
 
-        _stage_sync_rules(region_bucket, sync_config, rule_names, date)
+        staged_rule_names = _stage_sync_rules(region_bucket, sync_config, rule_names, date)
 
         if enable_drive:
             _materialize_drive_auth()
-            _run_sync_engine(sync_config, rule_names, {date})
+            _run_sync_engine(sync_config, staged_rule_names, {date})
         else:
             logger.info("ENABLE_DRIVE=false — skipping Google Drive sync")
 
@@ -133,6 +145,8 @@ def main(date, region, region_buckets, sync_spec, enable_drive, config, cluster,
             logger.info("git_push=false for region %s — skipping operational repo push", region)
 
     write_gcs_text(region_bucket, "latest.txt", date)
+    if sync_fingerprint:
+        write_gcs_text(region_bucket, f"sync-state/{date}.json", sync_fingerprint)
     logger.info(f"Sync complete for region={region} date={date}")
 
 
@@ -159,7 +173,7 @@ def _stage_sync_rules(
     sync_config: SyncConfig,
     rule_names: set[str],
     date: str,
-) -> None:
+) -> set[str]:
     rules_by_name = {rule.name: rule for rule in sync_config.rules}
     missing_rules = sorted(rule_names - set(rules_by_name))
     if missing_rules:
@@ -167,6 +181,7 @@ def _stage_sync_rules(
             f"SYNC_SPEC requested rule(s) not defined for {sync_config.region}: {missing_rules}"
         )
 
+    staged_rule_names = set()
     for rule_name in sorted(rule_names):
         rule = rules_by_name[rule_name]
         if not rule.gcs_prefix:
@@ -187,10 +202,21 @@ def _stage_sync_rules(
         )
         downloaded = download_gcs_prefix(region_bucket, gcs_prefix, local_dir)
         if downloaded == 0:
-            raise click.ClickException(
-                f"Sync rule {sync_config.region}/{rule.name} found no GCS objects at "
-                f"gs://{region_bucket}/{gcs_prefix}"
+            logger.info(
+                "Skipping sync rule %s/%s; no GCS objects at gs://%s/%s",
+                sync_config.region,
+                rule.name,
+                region_bucket,
+                gcs_prefix,
             )
+            continue
+        staged_rule_names.add(rule.name)
+
+    if not staged_rule_names:
+        raise click.ClickException(
+            f"None of the requested sync rules had GCS objects for {sync_config.region}/{date}"
+        )
+    return staged_rule_names
 
 
 def _date_for_rule(rule: SyncRule, date: str) -> str:

@@ -74,9 +74,18 @@ def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None
     logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} → {local_path}")
 
 
+def gcs_object_exists(bucket_name: str, gcs_path: str) -> bool:
+    return _client().bucket(bucket_name).blob(gcs_path).exists()
+
+
 def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
     _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
     logger.info("Wrote gs://%s/%s", bucket_name, gcs_path)
+
+
+def upload_gcs_file(bucket_name: str, local_path: Path, gcs_path: str) -> None:
+    _client().bucket(bucket_name).blob(gcs_path).upload_from_filename(str(local_path))
+    logger.info("Uploaded %s → gs://%s/%s", local_path, bucket_name, gcs_path)
 
 
 def download_gcs_prefix(bucket_name: str, gcs_prefix: str, local_dir: Path) -> int:
@@ -121,7 +130,8 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
 @click.option("--common-bucket", envvar="GCS_COMMON_BUCKET", required=True)
 @click.option("--region-buckets", envvar="GCS_REGION_BUCKETS", required=True,
               help="JSON map {region: bucket}")
-def main(date, region, run_mode, common_bucket, region_buckets):
+@click.option("--blend-names", envvar="BLEND_NAMES", default="")
+def main(date, region, run_mode, common_bucket, region_buckets, blend_names):
     region_buckets = json.loads(region_buckets)
     if region not in region_buckets:
         raise click.ClickException(f"No bucket configured for region {region!r}")
@@ -129,12 +139,18 @@ def main(date, region, run_mode, common_bucket, region_buckets):
 
     logger.info("Blend shim: region=%s date=%s run_mode=%s", region, date, run_mode)
 
-    blends = _select_blends(region, run_mode)
+    selected_names = _parse_blend_names(blend_names)
+    blends = _select_blends(region, run_mode, selected_names)
 
     _setup_directories(blends, date, run_mode)
-    _download_inputs(date, region, region_bucket, common_bucket, blends, run_mode)
-    _run_blend(date, region, run_mode, blends)
-    _upload_outputs(date, region, region_bucket, run_mode)
+    _download_cached_climatologies(common_bucket, region, run_mode, blends)
+    ready_blends = _download_inputs(date, region, region_bucket, common_bucket, blends, run_mode)
+    if not ready_blends:
+        logger.info("No selected %s configs are ready for %s/%s", run_mode, region, date)
+        return
+    ran_blends = _run_blend(date, region, run_mode, ready_blends)
+    _upload_cached_climatologies(common_bucket, region, run_mode, ran_blends)
+    _upload_outputs(date, region, region_bucket, common_bucket, run_mode, ran_blends)
 
 
 def _pipeline_models_for_blend(blend: BlendConfig) -> set[str]:
@@ -144,17 +160,142 @@ def _pipeline_models_for_blend(blend: BlendConfig) -> set[str]:
     }
 
 
-def _select_blends(region: str, run_mode: str) -> list[BlendConfig]:
+ETHIOPIA_BLEND_CLIMATOLOGY_FILES = (
+    "imd_clim_mok_date_clim_issue.pkl",
+    "imd_clim_mok_date_clim_unc_issue.pkl",
+)
+ETHIOPIA_BLEND_ONSET_DEFINITIONS_BY_NAME = {
+    "AIFS_single_v1p1_AIFS_ENS_v1": ("ICPAC",),
+    "AIFS_single_v2_AIFS_ENS_v2": ("ICPAC", "2mm"),
+    "AIFS_single_v2_NeuralGCM": ("ICPAC",),
+}
+ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR = (
+    REPO_ROOT
+    / "model_diagnostics"
+    / "data"
+    / "climatology"
+    / "era5_clim_africa_1990-2019.zarr"
+)
+CACHE_PREFIX = "cache"
+
+
+def _repo_relative(path: Path) -> str:
+    return path.relative_to(REPO_ROOT).as_posix()
+
+
+def _cache_prefix_for_path(path: Path) -> str:
+    return f"{CACHE_PREFIX}/{_repo_relative(path)}"
+
+
+def _ethiopia_blend_climatology_dirs(blends: list[BlendConfig]) -> list[Path]:
+    dirs = []
+    for blend in blends:
+        onset_definitions = ETHIOPIA_BLEND_ONSET_DEFINITIONS_BY_NAME.get(blend.name, ())
+        for onset_definition in onset_definitions:
+            dirs.append(
+                REPO_ROOT
+                / "blend"
+                / "utils"
+                / "ethiopia2026"
+                / "operational"
+                / "Monsoon_Data"
+                / "Processed_Data"
+                / f"{blend.name}_{onset_definition}"
+            )
+    return dirs
+
+
+def _download_cached_climatologies(
+    common_bucket: str,
+    region: str,
+    run_mode: str,
+    blends: list[BlendConfig],
+) -> None:
+    if region != "ethiopia":
+        return
+    if run_mode in {"all", "blend"}:
+        for clim_dir in _ethiopia_blend_climatology_dirs(blends):
+            clim_dir.mkdir(parents=True, exist_ok=True)
+            for filename in ETHIOPIA_BLEND_CLIMATOLOGY_FILES:
+                local_path = clim_dir / filename
+                if local_path.exists():
+                    continue
+                gcs_path = f"{_cache_prefix_for_path(clim_dir)}/{filename}"
+                if gcs_object_exists(common_bucket, gcs_path):
+                    download_gcs_file(common_bucket, gcs_path, local_path)
+    if run_mode in {"all", "diagnostics"} and not _path_has_files(ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR):
+        downloaded = download_gcs_prefix(
+            common_bucket,
+            f"{_cache_prefix_for_path(ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR)}/",
+            ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR,
+        )
+        if downloaded:
+            logger.info(
+                "Restored Ethiopia diagnostics climatology from gs://%s/%s/",
+                common_bucket,
+                _cache_prefix_for_path(ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR),
+            )
+
+
+def _upload_cached_climatologies(
+    common_bucket: str,
+    region: str,
+    run_mode: str,
+    blends: list[BlendConfig],
+) -> None:
+    if region != "ethiopia":
+        return
+    if run_mode in {"all", "blend"}:
+        for clim_dir in _ethiopia_blend_climatology_dirs(blends):
+            for filename in ETHIOPIA_BLEND_CLIMATOLOGY_FILES:
+                local_path = clim_dir / filename
+                if not local_path.exists():
+                    continue
+                upload_gcs_file(
+                    common_bucket,
+                    local_path,
+                    f"{_cache_prefix_for_path(clim_dir)}/{filename}",
+                )
+    if run_mode in {"all", "diagnostics"}:
+        upload_directory(
+            common_bucket,
+            ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR,
+            _cache_prefix_for_path(ETHIOPIA_DIAGNOSTICS_CLIMATOLOGY_DIR),
+        )
+
+
+def _parse_blend_names(raw: str) -> set[str]:
+    if not raw:
+        return set()
+    stripped = raw.strip()
+    if not stripped:
+        return set()
+    if stripped.startswith("["):
+        parsed = json.loads(stripped)
+        if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+            raise click.ClickException("BLEND_NAMES JSON must be a list of strings")
+        return set(parsed)
+    return {item.strip() for item in stripped.split(",") if item.strip()}
+
+
+def _select_blends(region: str, run_mode: str, selected_names: set[str]) -> list[BlendConfig]:
     configured_models = set(REGIONS.get(region, {}).get("models", []))
     blends = [
         blend for blend in BLENDS
         if blend.region == region
+        and (not selected_names or blend.name in selected_names)
         and (
             (run_mode in {"all", "blend"} and blend.blend_implemented)
             or (run_mode in {"all", "diagnostics"} and blend.diagnostic_plots)
         )
         and (not configured_models or _pipeline_models_for_blend(blend).issubset(configured_models))
     ]
+    matched = {blend.name for blend in blends}
+    missing = selected_names - matched
+    if missing:
+        raise click.ClickException(
+            f"Selected {run_mode} configuration(s) are not available for {region}: {sorted(missing)}"
+        )
     if not blends:
         raise click.ClickException(
             f"No {run_mode} configuration matched region {region!r}"
@@ -195,8 +336,26 @@ def _download_inputs(
     common_bucket: str,
     blends: list[BlendConfig],
     run_mode: str,
-) -> None:
+) -> list[BlendConfig]:
+    ready_blends = []
     for blend in blends:
+        missing = [
+            f"gs://{region_bucket}/{_blend_input_bucket_path(region, input_, date)}"
+            for input_ in _inputs_for_mode(blend, run_mode)
+            if not gcs_object_exists(
+                region_bucket,
+                _blend_input_bucket_path(region, input_, date),
+            )
+        ]
+        if missing:
+            logger.warning(
+                "Skipping %s/%s for %s; missing selected input(s): %s",
+                region,
+                blend.name,
+                date,
+                ", ".join(missing),
+            )
+            continue
         for input_ in _inputs_for_mode(blend, run_mode):
             download_gcs_file(
                 region_bucket,
@@ -204,10 +363,21 @@ def _download_inputs(
                 input_.path(date),
             )
         if run_mode in {"all", "diagnostics"}:
-            _download_raw_full_fields(common_bucket, blend, date)
+            try:
+                _download_raw_full_fields(common_bucket, blend, date)
+            except click.ClickException as exc:
+                logger.warning(
+                    "Skipping %s/%s diagnostics for %s; %s",
+                    region,
+                    blend.name,
+                    date,
+                    exc,
+                )
+                continue
+        ready_blends.append(blend)
 
-    if run_mode == "diagnostics" or not any(blend.blend_implemented for blend in blends):
-        return
+    if run_mode == "diagnostics" or not any(blend.blend_implemented for blend in ready_blends):
+        return ready_blends
 
     # Blend support/coefficient files are gitignored when too large or
     # environment-specific. Preserve the object layout below weights/blend/{region}
@@ -223,6 +393,7 @@ def _download_inputs(
             "blend will fail if it needs these files",
             common_bucket, region,
         )
+    return ready_blends
 
 
 def _pipeline_model_for_blend_input(input_: ForecastInput) -> str:
@@ -321,8 +492,14 @@ def _blend_input_bucket_path(region: str, input_: ForecastInput, date: str) -> s
     return "/".join(("output", model, date, *relative_parts))
 
 
-def _run_blend(date: str, region: str, run_mode: str, blends: list[BlendConfig]) -> None:
+def _run_blend(
+    date: str,
+    region: str,
+    run_mode: str,
+    blends: list[BlendConfig],
+) -> list[BlendConfig]:
     env = {**os.environ, "PYTHONPATH": str(BLEND_UTILS)}
+    ran_blends = []
     for blend in blends:
         command = [
             sys.executable,
@@ -340,18 +517,59 @@ def _run_blend(date: str, region: str, run_mode: str, blends: list[BlendConfig])
             command.append("--diagnostics-only")
         logger.info("Running blend utility: %s", " ".join(command))
         subprocess.run(command, cwd=BLEND_UTILS, check=True, env=env)
+        ran_blends.append(blend)
+    return ran_blends
 
 
-def _upload_outputs(date: str, region: str, region_bucket: str, run_mode: str) -> None:
+def _path_has_files(path: Path) -> bool:
+    return path.exists() and any(child.is_file() for child in path.rglob("*"))
+
+
+def _write_config_markers(
+    common_bucket: str,
+    date: str,
+    region: str,
+    run_mode: str,
+    blends: list[BlendConfig],
+) -> None:
+    if run_mode in {"all", "blend"}:
+        for blend in blends:
+            if not _path_has_files(blend.output_dir(date)):
+                raise click.ClickException(
+                    f"Blend {region}/{blend.name} completed but no output files were found at "
+                    f"{blend.output_dir(date)}"
+                )
+            write_gcs_text(
+                common_bucket,
+                f"intermediate/blend_{region}_{blend.name}_{date}_done",
+                "done",
+            )
+    if run_mode in {"all", "diagnostics"}:
+        for blend in blends:
+            if not _path_has_files(blend.diagnostic_output_dir(date)):
+                raise click.ClickException(
+                    f"Diagnostics {region}/{blend.name} completed but no output files were found at "
+                    f"{blend.diagnostic_output_dir(date)}"
+                )
+            write_gcs_text(
+                common_bucket,
+                f"intermediate/model_diagnostics_{region}_{blend.name}_{date}_done",
+                "done",
+            )
+
+
+def _upload_outputs(
+    date: str,
+    region: str,
+    region_bucket: str,
+    common_bucket: str,
+    run_mode: str,
+    blends: list[BlendConfig],
+) -> None:
     # india2025 writes to blend/output/india2025/ — upload everything under blend/output
     if run_mode in {"all", "blend"}:
         upload_directory(region_bucket, LOCAL_BLEND_OUT_BASE, f"output/blend/{date}")
         logger.info("Blend outputs uploaded to gs://%s/output/blend/%s/", region_bucket, date)
-        write_gcs_text(
-            os.environ["GCS_COMMON_BUCKET"],
-            f"intermediate/blend_{region}_{date}_done",
-            "done",
-        )
     if run_mode in {"all", "diagnostics"}:
         upload_directory(
             region_bucket,
@@ -364,11 +582,8 @@ def _upload_outputs(date: str, region: str, region_bucket: str, run_mode: str) -
             date,
             region,
         )
-        write_gcs_text(
-            os.environ["GCS_COMMON_BUCKET"],
-            f"intermediate/model_diagnostics_{region}_{date}_done",
-            "done",
-        )
+
+    _write_config_markers(common_bucket, date, region, run_mode, blends)
 
 
 if __name__ == "__main__":

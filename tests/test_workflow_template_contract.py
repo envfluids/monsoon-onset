@@ -126,12 +126,15 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         ):
             self.assertIn(f"- maybe_submit_{stage}:", self.workflow)
             self.assertIn(f"condition: $${{{action}.date == \"\"}}", self.workflow)
-        self.assertIn('job_id: $${"blend-" + region_name + "-" + text.replace_all(blend_action.date, "T", "-")}', self.workflow)
-        self.assertIn('job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-")}', self.workflow)
+        self.assertIn('job_id: $${"blend-" + region_name + "-" + text.replace_all(blend_action.date, "T", "-") + "-" + blend_action.job_suffix}', self.workflow)
+        self.assertIn('job_id: $${"diagnostics-" + region_name + "-" + text.replace_all(diagnostics_action.date, "T", "-") + "-" + diagnostics_action.job_suffix}', self.workflow)
         self.assertIn("RUN_MODE: \"blend\"", self.workflow)
         self.assertIn("RUN_MODE: \"diagnostics\"", self.workflow)
+        self.assertIn("BLEND_NAMES: $${json.encode_to_string(blend_action.blends)}", self.workflow)
+        self.assertIn("BLEND_NAMES: $${json.encode_to_string(diagnostics_action.blends)}", self.workflow)
         self.assertIn("FORECAST_REGION: $${region_name}", self.workflow)
         self.assertIn("SYNC_SPEC\n                              value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
+        self.assertIn("SYNC_FINGERPRINT\n                              value: $${sync_action.fingerprint}", self.workflow)
 
     def test_pipeline_state_subroutine_uses_oidc_and_preserves_requested_date(self):
         self.assertInOrder(

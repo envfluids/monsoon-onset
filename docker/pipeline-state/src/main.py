@@ -54,6 +54,7 @@ import logging
 import os
 import sys
 import time
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import PurePosixPath
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -322,6 +323,18 @@ def diagnostics_marker_path(region: str, date: str) -> str:
     return f"intermediate/model_diagnostics_{region}_{date}_done"
 
 
+def blend_config_marker_path(region: str, blend_name: str, date: str) -> str:
+    return f"intermediate/blend_{region}_{blend_name}_{date}_done"
+
+
+def diagnostics_config_marker_path(region: str, blend_name: str, date: str) -> str:
+    return f"intermediate/model_diagnostics_{region}_{blend_name}_{date}_done"
+
+
+def sync_state_path(date: str) -> str:
+    return f"sync-state/{date}.json"
+
+
 def model_region_outputs_present(model: str, region: str, date: str) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
@@ -405,6 +418,25 @@ def blend_present(region: str, date: str) -> bool:
     )
 
 
+def _blend_output_prefix(blend: BlendConfig, date: str) -> str:
+    parts = PurePosixPath(blend.output_dir_template.format(date=date)).parts
+    if len(parts) < 3 or parts[0:2] != ("blend", "output"):
+        raise ValueError(
+            f"Unsupported blend output path for {blend.name}: {blend.output_dir_template}"
+        )
+    return "/".join(("output", "blend", date, *parts[2:]))
+
+
+def blend_config_present(region: str, date: str, blend: BlendConfig) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return False
+    return (
+        gcs_object_exists(GCS_COMMON_BUCKET, blend_config_marker_path(region, blend.name, date))
+        and gcs_prefix_has_objects(bucket, _blend_output_prefix(blend, date))
+    )
+
+
 def diagnostics_present(region: str, date: str, blends: list[BlendConfig]) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
@@ -417,6 +449,22 @@ def diagnostics_present(region: str, date: str, blends: list[BlendConfig]) -> bo
                 f"output/model_diagnostics/{date}/{region}/{date}/{blend.name}/",
             )
             for blend in blends
+        )
+    )
+
+
+def diagnostics_config_present(region: str, date: str, blend: BlendConfig) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket:
+        return False
+    return (
+        gcs_object_exists(
+            GCS_COMMON_BUCKET,
+            diagnostics_config_marker_path(region, blend.name, date),
+        )
+        and gcs_prefix_has_objects(
+            bucket,
+            f"output/model_diagnostics/{date}/{region}/{date}/{blend.name}/",
         )
     )
 
@@ -618,12 +666,28 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
         if "model_diagnostics" in stages:
             block["model_diagnostics"] = _diagnostics_state_for_region(region, models_state, primary_date)
         if "sync" in stages:
-            sync_target = _sync_date_for_region(region, cfg, models_state, per_region_block=block)
+            sync_inventory = _sync_inventory_for_region(
+                region,
+                cfg,
+                models_state,
+                per_region_block=block,
+            )
+            sync_target = sync_inventory.get("date", "")
             latest = latest_synced(region)
+            synced_fingerprint = (
+                read_gcs_text(REGION_BUCKETS.get(region, ""), sync_state_path(sync_target))
+                if sync_target
+                else ""
+            )
             block["sync"] = {
                 "date": sync_target,
                 "latest": latest,
-                "needs_run": bool(sync_target) and sync_target != latest,
+                "fingerprint": sync_inventory.get("fingerprint", ""),
+                "items": sync_inventory.get("items", []),
+                "synced_fingerprint": synced_fingerprint,
+                "needs_run": bool(sync_target)
+                and bool(sync_inventory.get("fingerprint", ""))
+                and sync_inventory.get("fingerprint", "") != synced_fingerprint,
             }
         per_region[region] = block
 
@@ -655,6 +719,7 @@ def _missing_ic_paths(source: str, date: str) -> list[str]:
 
 def _blend_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
     """Blend readiness follows the configured blend/utils/main.py inputs."""
+    _ = fallback_date
     configured_models = set(REGIONS.get(region, {}).get("models", []))
     configured = [
         blend for blend in BLENDS
@@ -667,45 +732,53 @@ def _blend_state_for_region(region: str, models_state: dict, fallback_date: str)
             "date": "",
             "present": False,
             "configured": False,
+            "names": [],
+            "ready": [],
+            "complete": [],
             "inputs": [],
             "missing": [],
         }
 
-    for blend in configured:
-        candidate_date = _candidate_date_for_blend(blend, models_state, fallback_date)
-        if not candidate_date:
-            continue
-        input_states = _blend_input_state(region, blend, candidate_date, models_state)
-        missing = [state for state in input_states if not state["present"]]
-        if missing:
-            continue
-        return {
-            "date": candidate_date,
-            "present": blend_present(region, candidate_date),
-            "configured": True,
-            "name": blend.name,
-            "inputs": input_states,
-            "missing": [],
-        }
-
-    candidate = _candidate_date_for_blend(configured[0], models_state, fallback_date)
-    input_states = (
-        _blend_input_state(region, configured[0], candidate, models_state)
-        if candidate
-        else []
-    )
+    items = [
+        _config_state_for_region(
+            region,
+            blend,
+            tuple(blend.inputs),
+            models_state,
+            present_fn=blend_config_present,
+        )
+        for blend in configured
+    ]
+    ready = [item for item in items if item["ready"]]
+    complete = [item for item in items if item["present"]]
+    missing = [
+        state
+        for item in items
+        if not item["present"] and not item["ready"]
+        for state in item.get("missing", [])
+    ]
+    action_items = ready or [
+        item
+        for item in items
+        if item["date"] and not item["present"] and not item["ready"]
+    ][:1]
+    action_date = _single_action_date(action_items)
     return {
-        "date": "",
-        "present": False,
+        "date": action_date if ready else "",
+        "present": len(complete) == len(items),
         "configured": True,
-        "name": configured[0].name,
-        "inputs": input_states,
-        "missing": [state for state in input_states if not state["present"]],
+        "names": [blend.name for blend in configured],
+        "ready": ready,
+        "complete": complete,
+        "items": items,
+        "inputs": [state for item in items for state in item.get("inputs", [])],
+        "missing": missing,
     }
 
 
 def _diagnostics_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
     """Diagnostics readiness follows blend/utils/main.py diagnostic definitions."""
+    _ = fallback_date
     configured_models = set(REGIONS.get(region, {}).get("models", []))
     configured = [
         blend for blend in BLENDS
@@ -718,104 +791,155 @@ def _diagnostics_state_for_region(region: str, models_state: dict, fallback_date
             "date": "",
             "present": False,
             "configured": False,
+            "names": [],
+            "ready": [],
+            "complete": [],
             "inputs": [],
             "missing": [],
         }
 
-    candidate_dates = {
-        _candidate_date_for_blend(blend, models_state, fallback_date)
+    items = [
+        _config_state_for_region(
+            region,
+            blend,
+            blend.diagnostic_inputs or blend.inputs,
+            models_state,
+            present_fn=diagnostics_config_present,
+        )
         for blend in configured
-    }
-    candidate_dates.discard("")
-    if len(candidate_dates) != 1:
-        return {
-            "date": "",
-            "present": False,
-            "configured": True,
-            "names": [blend.name for blend in configured],
-            "inputs": [],
-            "missing": [],
-        }
-
-    candidate = next(iter(candidate_dates))
-    input_states = [
-        state
-        for blend in configured
-        for state in _diagnostic_input_state(region, blend, candidate, models_state)
     ]
-    missing = [state for state in input_states if not state["present"]]
-    if missing:
-        return {
-            "date": "",
-            "present": False,
-            "configured": True,
-            "names": [blend.name for blend in configured],
-            "inputs": input_states,
-            "missing": missing,
-        }
-
+    ready = [item for item in items if item["ready"]]
+    complete = [item for item in items if item["present"]]
+    missing = [
+        state
+        for item in items
+        if not item["present"] and not item["ready"]
+        for state in item.get("missing", [])
+    ]
+    action_items = ready or [
+        item
+        for item in items
+        if item["date"] and not item["present"] and not item["ready"]
+    ][:1]
+    action_date = _single_action_date(action_items)
     return {
-        "date": candidate,
-        "present": diagnostics_present(region, candidate, configured),
+        "date": action_date if ready else "",
+        "present": len(complete) == len(items),
         "configured": True,
         "names": [blend.name for blend in configured],
-        "inputs": input_states,
-        "missing": [],
+        "ready": ready,
+        "complete": complete,
+        "items": items,
+        "inputs": [state for item in items for state in item.get("inputs", [])],
+        "missing": missing,
     }
 
 
-def _candidate_date_for_blend(
+def _config_state_for_region(
+    region: str,
     blend: BlendConfig,
+    inputs: tuple[ForecastInput, ...],
     models_state: dict,
-    fallback_date: str,
+    present_fn,
+) -> dict:
+    candidate = _candidate_date_for_inputs(inputs, models_state)
+    input_states = _forecast_input_state(region, inputs, candidate, models_state) if candidate else []
+    missing = [state for state in input_states if not state["present"]]
+    present = bool(candidate) and present_fn(region, candidate, blend)
+    ready = bool(candidate) and not present and not missing
+    return {
+        "name": blend.name,
+        "date": candidate,
+        "present": present,
+        "ready": ready,
+        "inputs": input_states,
+        "missing": missing,
+    }
+
+
+def _candidate_date_for_inputs(
+    inputs: tuple[ForecastInput, ...],
+    models_state: dict,
 ) -> str:
     known_dates = []
-    for input_ in blend.inputs:
+    for input_ in inputs:
         model = _pipeline_model_for_blend_input(input_)
         model_date = models_state.get(model, {}).get("date", "")
-        if model_date:
-            known_dates.append(model_date)
-    if known_dates:
-        if len(set(known_dates)) != 1:
+        if not model_date:
             return ""
-        return known_dates[0]
-    return fallback_date
+        known_dates.append(model_date)
+    if len(set(known_dates)) != 1:
+        return ""
+    return known_dates[0] if known_dates else ""
 
 
-def _sync_date_for_region(
+def _single_action_date(items: list[dict]) -> str:
+    dates = {item.get("date", "") for item in items}
+    dates.discard("")
+    return next(iter(dates)) if len(dates) == 1 else ""
+
+
+def _ready_items_for_action(items: list[dict]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+    for item in items:
+        date = item.get("date", "")
+        if date:
+            grouped.setdefault(date, []).append(item)
+    if not grouped:
+        return []
+    return grouped[sorted(grouped)[-1]]
+
+
+def _job_suffix(items: list[dict]) -> str:
+    names = sorted(item["name"] for item in items)
+    return hashlib.sha1(",".join(names).encode("utf-8")).hexdigest()[:8]
+
+
+def _sync_inventory_for_region(
     region: str,
     cfg: dict,
     models_state: dict,
     per_region_block: dict,
-) -> str:
-    """Date to sync for the region — depends on the region's date_kind:
-    - 'date': use the latest date where the region's blend output is present.
-              (Today: india.)
-    - 'aifs_date': use the AIFS date where AIFS markers for this region exist.
-              (Today: ethiopia.)
-    The region's own model set determines which marker(s) are required.
+) -> dict:
+    """Return the latest completed sync-relevant inventory for a region.
+
+    Sync is intentionally incremental: any completed model, blend, or
+    diagnostics item can advance the inventory fingerprint for a date and
+    trigger another same-date sync pass.
     """
-    date_kind = cfg.get("sync", {}).get("date_kind", "date")
-    if "blend" in cfg.get("stages", []) and "blend" in per_region_block:
-        candidate = per_region_block["blend"].get("date", "")
-        if candidate and per_region_block["blend"].get("present"):
-            return candidate
-        return ""
-    if "model_diagnostics" in cfg.get("stages", []) and "model_diagnostics" in per_region_block:
-        candidate = per_region_block["model_diagnostics"].get("date", "")
-        if not candidate or not per_region_block["model_diagnostics"].get("present"):
-            return ""
-    # No blend stage — pick the latest date where every model for the region
-    # has its completion marker.
-    region_models = cfg.get("models", [])
-    dates = {models_state.get(m, {}).get("date", "") for m in region_models}
-    if "" in dates or len(dates) != 1:
-        return ""
-    date = next(iter(dates))
-    if all(model_region_done(m, region, date) for m in region_models):
-        return date
-    _ = date_kind  # retained for future use when dates diverge
-    return ""
+    if region not in REGION_BUCKETS:
+        return {"date": "", "items": [], "fingerprint": ""}
+
+    items_by_date: dict[str, list[dict]] = {}
+    for model in cfg.get("models", []):
+        model_date = models_state.get(model, {}).get("date", "")
+        if model_date and model_region_done(model, region, model_date):
+            items_by_date.setdefault(model_date, []).append({
+                "type": "model",
+                "name": model,
+            })
+
+    for stage_name, block_name in (
+        ("blend", "blend"),
+        ("model_diagnostics", "model_diagnostics"),
+    ):
+        block = per_region_block.get(block_name, {})
+        for item in block.get("complete", []):
+            item_date = item.get("date", "")
+            item_name = item.get("name", "")
+            if item_date and item_name:
+                items_by_date.setdefault(item_date, []).append({
+                    "type": stage_name,
+                    "name": item_name,
+                })
+
+    if not items_by_date:
+        return {"date": "", "items": [], "fingerprint": ""}
+
+    date = sorted(items_by_date)[-1]
+    items = sorted(items_by_date[date], key=lambda item: (item["type"], item["name"]))
+    fingerprint = json.dumps(items, sort_keys=True, separators=(",", ":"))
+    return {"date": date, "items": items, "fingerprint": fingerprint}
 
 
 def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dict:
@@ -872,15 +996,22 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
     regions_to_blend = []
     regions_to_blend_by_region = {}
     for region, block in per_region.items():
-        action = {"region": region, "date": ""}
-        if "blend" in block and block["blend"].get("date") and not block["blend"].get("present"):
-            action = {"region": region, "date": block["blend"]["date"]}
+        action = {"region": region, "date": "", "blends": [], "job_suffix": ""}
+        ready = _ready_items_for_action(block.get("blend", {}).get("ready", []))
+        ready_date = _single_action_date(ready)
+        if ready and ready_date:
+            action = {
+                "region": region,
+                "date": ready_date,
+                "blends": [item["name"] for item in ready],
+                "job_suffix": _job_suffix(ready),
+            }
             regions_to_blend.append(action)
         elif "blend" in block and block["blend"].get("configured") and block["blend"].get("missing"):
             blocked.append({
                 "type": "blend_blocked",
                 "region": region,
-                "blend": block["blend"].get("name", ""),
+                "blends": block["blend"].get("names", []),
                 "reason": "inputs_missing",
                 "missing": block["blend"].get("missing", []),
             })
@@ -889,10 +1020,17 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
     regions_to_diagnose = []
     regions_to_diagnose_by_region = {}
     for region, block in per_region.items():
-        action = {"region": region, "date": ""}
+        action = {"region": region, "date": "", "blends": [], "job_suffix": ""}
         diagnostics = block.get("model_diagnostics")
-        if diagnostics and diagnostics.get("date") and not diagnostics.get("present"):
-            action = {"region": region, "date": diagnostics["date"]}
+        ready = _ready_items_for_action(diagnostics.get("ready", []) if diagnostics else [])
+        ready_date = _single_action_date(ready)
+        if ready and ready_date:
+            action = {
+                "region": region,
+                "date": ready_date,
+                "blends": [item["name"] for item in ready],
+                "job_suffix": _job_suffix(ready),
+            }
             regions_to_diagnose.append(action)
         elif diagnostics and diagnostics.get("configured") and diagnostics.get("missing"):
             blocked.append({
@@ -907,9 +1045,13 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
     regions_to_sync = []
     regions_to_sync_by_region = {}
     for region, block in per_region.items():
-        action = {"region": region, "date": ""}
+        action = {"region": region, "date": "", "fingerprint": ""}
         if "sync" in block and block["sync"].get("needs_run"):
-            action = {"region": region, "date": block["sync"]["date"]}
+            action = {
+                "region": region,
+                "date": block["sync"]["date"],
+                "fingerprint": block["sync"].get("fingerprint", ""),
+            }
             regions_to_sync.append(action)
         regions_to_sync_by_region[region] = action
 
