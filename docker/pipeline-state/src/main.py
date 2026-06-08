@@ -92,6 +92,7 @@ EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS = float(
 RETRYABLE_EXTERNAL_PROBE_STATUS = {429, 500, 502, 503, 504, "timeout"}
 INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
 ACTIVE_DISPATCH_MAX_AGE_SECONDS = 30 * 60 * 60
+ACTIVE_SYNC_MAX_AGE_SECONDS = int(os.environ.get("ACTIVE_SYNC_MAX_AGE_SECONDS", str(6 * 60 * 60)))
 
 GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
@@ -335,6 +336,14 @@ def sync_state_path(date: str) -> str:
     return f"sync-state/{date}.json"
 
 
+def sync_item_marker_path(date: str, item: dict, state: str) -> str:
+    return f"sync-items/{date}/{item['type']}/{_safe_marker_name(item['name'])}.{state}.json"
+
+
+def _safe_marker_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+
+
 def model_region_outputs_present(model: str, region: str, date: str) -> bool:
     bucket = REGION_BUCKETS.get(region)
     if not bucket:
@@ -403,6 +412,45 @@ def tpu_dispatch_active(status: dict, now: datetime) -> bool:
             state,
             int(age_seconds),
             ACTIVE_DISPATCH_MAX_AGE_SECONDS,
+        )
+        return False
+    return True
+
+
+def sync_item_done(region: str, date: str, item: dict) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket or item.get("type") not in {"blend", "model_diagnostics"}:
+        return False
+    return gcs_object_exists(bucket, sync_item_marker_path(date, item, "done"))
+
+
+def sync_item_active(region: str, date: str, item: dict, now: datetime) -> bool:
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket or item.get("type") not in {"blend", "model_diagnostics"}:
+        return False
+
+    marker = read_gcs_json(bucket, sync_item_marker_path(date, item, "active"))
+    if not marker:
+        return False
+
+    updated_at = parse_status_timestamp(marker.get("updated_at")) or parse_status_timestamp(
+        marker.get("started_at")
+    )
+    if updated_at is None:
+        return True
+
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    age_seconds = (now.astimezone(timezone.utc) - updated_at).total_seconds()
+    if age_seconds > ACTIVE_SYNC_MAX_AGE_SECONDS:
+        logger.warning(
+            "Ignoring stale sync item claim: region=%s date=%s type=%s name=%s age_seconds=%s max_age_seconds=%s",
+            region,
+            date,
+            item.get("type", ""),
+            item.get("name", ""),
+            int(age_seconds),
+            ACTIVE_SYNC_MAX_AGE_SECONDS,
         )
         return False
     return True
@@ -657,6 +705,7 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             "regions": region_results,
         }
 
+    now = datetime.now(timezone.utc)
     per_region = {}
     for region, cfg in REGIONS.items():
         block: dict = {}
@@ -681,16 +730,21 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             )
             synced_items = _decode_sync_fingerprint(synced_fingerprint)
             current_items = sync_inventory.get("items", [])
+            unsynced_items = _unsynced_sync_items(
+                region,
+                sync_target,
+                current_items,
+                synced_items,
+                now,
+            )
             block["sync"] = {
                 "date": sync_target,
                 "latest": latest,
                 "fingerprint": sync_inventory.get("fingerprint", ""),
                 "items": current_items,
-                "unsynced_items": _unsynced_sync_items(current_items, synced_items),
+                "unsynced_items": unsynced_items,
                 "synced_fingerprint": synced_fingerprint,
-                "needs_run": bool(sync_target)
-                and bool(sync_inventory.get("fingerprint", ""))
-                and sync_inventory.get("fingerprint", "") != synced_fingerprint,
+                "needs_run": bool(sync_target) and bool(unsynced_items),
             }
         per_region[region] = block
 
@@ -906,22 +960,13 @@ def _sync_inventory_for_region(
 ) -> dict:
     """Return the latest completed sync-relevant inventory for a region.
 
-    Sync is intentionally incremental: any completed model, blend, or
-    diagnostics item can advance the inventory fingerprint for a date and
-    trigger another same-date sync pass.
+    Sync is intentionally incremental: each completed blend or diagnostics
+    combination can trigger one same-date sync pass for that combination.
     """
     if region not in REGION_BUCKETS:
         return {"date": "", "items": [], "fingerprint": ""}
 
     items_by_date: dict[str, list[dict]] = {}
-    for model in cfg.get("models", []):
-        model_date = models_state.get(model, {}).get("date", "")
-        if model_date and model_region_done(model, region, model_date):
-            items_by_date.setdefault(model_date, []).append({
-                "type": "model",
-                "name": model,
-            })
-
     for stage_name, block_name in (
         ("blend", "blend"),
         ("model_diagnostics", "model_diagnostics"),
@@ -961,16 +1006,32 @@ def _decode_sync_fingerprint(fingerprint: str) -> list[dict]:
     ]
 
 
-def _unsynced_sync_items(current_items: list[dict], synced_items: list[dict]) -> list[dict]:
+def _unsynced_sync_items(
+    region: str,
+    date: str,
+    current_items: list[dict],
+    synced_items: list[dict],
+    now: datetime,
+) -> list[dict]:
     synced_keys = {
         (item.get("type", ""), item.get("name", ""))
         for item in synced_items
     }
-    return [
-        item
-        for item in current_items
-        if (item.get("type", ""), item.get("name", "")) not in synced_keys
-    ]
+    unsynced = []
+    for item in current_items:
+        key = (item.get("type", ""), item.get("name", ""))
+        if item.get("type") in {"blend", "model_diagnostics"}:
+            if sync_item_done(region, date, item):
+                continue
+            if key in synced_keys:
+                continue
+            if sync_item_active(region, date, item, now):
+                continue
+            unsynced.append(item)
+            continue
+        if key not in synced_keys:
+            unsynced.append(item)
+    return unsynced
 
 
 def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dict:

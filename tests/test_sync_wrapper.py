@@ -33,7 +33,14 @@ class FakeConfig:
 def load_sync_wrapper():
     google_module = sys.modules.setdefault("google", types.ModuleType("google"))
     cloud_module = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
+    api_core_module = sys.modules.setdefault("google.api_core", types.ModuleType("google.api_core"))
+    exceptions_module = sys.modules.setdefault(
+        "google.api_core.exceptions", types.ModuleType("google.api_core.exceptions")
+    )
     storage_module = sys.modules.setdefault("google.cloud.storage", types.ModuleType("google.cloud.storage"))
+    exceptions_module.NotFound = type("NotFound", (Exception,), {})
+    exceptions_module.PreconditionFailed = type("PreconditionFailed", (Exception,), {})
+    api_core_module.exceptions = exceptions_module
     storage_module.Client = FakeStorageClient
     cloud_module.storage = storage_module
     google_module.cloud = cloud_module
@@ -141,6 +148,41 @@ class SyncWrapperTest(unittest.TestCase):
                 '[{"type":"blend","name":"AIFS_single_v2_AIFS_ENS_v2"}]'
             ),
             [{"type": "blend", "name": "AIFS_single_v2_AIFS_ENS_v2"}],
+        )
+
+    def test_sync_items_limit_rules_to_matching_blend_and_diagnostics_rules(self):
+        self.assertEqual(
+            self.module._rule_names_for_sync(
+                ["AIFS_single_v2", "blend", "model_diagnostics"],
+                [{"type": "model_diagnostics", "name": "AIFS_single_v2_gencast"}],
+            ),
+            {"model_diagnostics"},
+        )
+        self.assertEqual(
+            self.module._rule_names_for_sync(
+                ["AIFS_single_v2", "blend", "model_diagnostics"],
+                [{"type": "blend", "name": "AIFS_single_v2_AIFS_ENS_v2"}],
+            ),
+            {"blend"},
+        )
+
+    def test_empty_sync_items_keep_legacy_rule_set(self):
+        self.assertEqual(
+            self.module._rule_names_for_sync(
+                ["AIFS_single_v2", "blend", "model_diagnostics"],
+                [],
+            ),
+            {"AIFS_single_v2", "blend", "model_diagnostics"},
+        )
+
+    def test_sync_item_marker_path_is_per_date_type_and_name(self):
+        self.assertEqual(
+            self.module._sync_item_marker_path(
+                "20260605T00",
+                {"type": "blend", "name": "AIFS_single_v2/AIFS_ENS_v2"},
+                "done",
+            ),
+            "sync-items/20260605T00/blend/AIFS_single_v2_AIFS_ENS_v2.done.json",
         )
 
 

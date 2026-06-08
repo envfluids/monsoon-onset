@@ -92,6 +92,9 @@ class DispatchConfig:
     def attempt_node_startup_log_path(self, attempt: int) -> str:
         return f"{self.status_prefix}/attempts/{attempt}/logs/__HOSTNAME__-startup.log"
 
+    def attempt_node_shutdown_marker_path(self, attempt: int) -> str:
+        return f"{self.status_prefix}/attempts/{attempt}/shutdown/__HOSTNAME__.json"
+
     @classmethod
     def from_env(cls) -> "DispatchConfig":
         project_id = os.getenv("PROJECT_ID") or default_project_id()
@@ -574,6 +577,7 @@ class Controller:
     ) -> dict[str, str]:
         return {
             "startup-script": build_startup_script(),
+            "shutdown-script": build_shutdown_script(),
             "workload-name": self.config.workload_name,
             "run-id": self.config.run_id,
             "attempt": str(attempt),
@@ -588,6 +592,9 @@ class Controller:
                 attempt
             ),
             "node-startup-log-path": self.config.attempt_node_startup_log_path(attempt),
+            "node-shutdown-marker-path": self.config.attempt_node_shutdown_marker_path(
+                attempt
+            ),
             "dispatch-queued-resource-id": queued_resource_id,
             "node-id": node_id,
             "zone": self.config.tpu_zone,
@@ -633,6 +640,90 @@ class Controller:
         )
         if attempt > 0:
             self.status.write(self.config.common_bucket, self.config.attempt_status_path(attempt), payload)
+
+
+def build_shutdown_script() -> str:
+    return r'''#!/bin/bash
+set +euo pipefail
+
+python3 <<'PY'
+import datetime as dt
+import json
+import socket
+import sys
+import urllib.parse
+import urllib.request
+
+
+def metadata(path, default=""):
+    request = urllib.request.Request(
+        f"http://metadata.google.internal/computeMetadata/v1/{path}",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=2) as response:
+            return response.read().decode("utf-8")
+    except Exception as exc:
+        return f"{default or 'unavailable'}:{exc.__class__.__name__}"
+
+
+def attribute(name, default=""):
+    return metadata(f"instance/attributes/{name}", default)
+
+
+def access_token():
+    request = urllib.request.Request(
+        "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+        headers={"Metadata-Flavor": "Google"},
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        return json.loads(response.read().decode("utf-8"))["access_token"]
+
+
+def upload_json(bucket, path, payload):
+    name = urllib.parse.quote(path, safe="")
+    request = urllib.request.Request(
+        f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o?uploadType=media&name={name}",
+        data=json.dumps(payload, sort_keys=True).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {access_token()}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=5):
+        return
+
+
+hostname = socket.gethostname()
+bucket = attribute("common-bucket")
+marker_path = attribute("node-shutdown-marker-path").replace("__HOSTNAME__", hostname)
+workload_log_path = attribute("node-workload-log-path").replace("__HOSTNAME__", hostname)
+startup_log_path = attribute("node-startup-log-path").replace("__HOSTNAME__", hostname)
+
+payload = {
+    "run_id": attribute("run-id"),
+    "attempt": int(attribute("attempt", "0") or 0),
+    "workload": attribute("workload-name"),
+    "date": attribute("date"),
+    "queued_resource_id": attribute("dispatch-queued-resource-id"),
+    "node_id": attribute("node-id"),
+    "zone": attribute("zone"),
+    "instance_id": metadata("instance/id"),
+    "worker_hostname": hostname,
+    "timestamp": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "preempted": metadata("instance/preempted", "unknown"),
+    "maintenance_event": metadata("instance/maintenance-event", "unknown"),
+    "startup_log_uri": f"gs://{bucket}/{startup_log_path}" if bucket else "",
+    "workload_log_uri": f"gs://{bucket}/{workload_log_path}" if bucket else "",
+}
+
+try:
+    upload_json(bucket, marker_path, payload)
+except Exception as exc:
+    print(f"failed to upload monsoon TPU shutdown marker: {exc}", file=sys.stderr)
+PY
+'''
 
 
 def build_startup_script() -> str:

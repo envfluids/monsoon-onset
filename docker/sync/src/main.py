@@ -39,9 +39,11 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
+from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 
 from sync.utils.sync_config import SyncConfig, SyncRule, load_sync_config
@@ -61,6 +63,9 @@ DRIVE_AUTH_ENV_FILES = {
     "GOOGLE_DRIVE_CREDENTIALS_JSON": "credentials.json",
     "GOOGLE_DRIVE_TOKEN_JSON": "token.json",
 }
+SYNC_ITEM_TYPES = {"blend", "model_diagnostics"}
+SYNC_ITEM_CLAIM_TTL_SECONDS = int(os.environ.get("SYNC_ITEM_CLAIM_TTL_SECONDS", str(6 * 60 * 60)))
+SYNC_WORKERS = int(os.environ.get("SYNC_WORKERS", "1"))
 
 
 def _client():
@@ -86,6 +91,20 @@ def download_gcs_prefix(bucket_name: str, gcs_prefix: str, local_dir: Path) -> i
 def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
     _client().bucket(bucket_name).blob(gcs_path).upload_from_string(content)
     logger.info(f"Wrote to gs://{bucket_name}/{gcs_path}: {content!r}")
+
+
+def read_gcs_json(bucket_name: str, gcs_path: str) -> dict:
+    blob = _client().bucket(bucket_name).blob(gcs_path)
+    try:
+        text = blob.download_as_text()
+    except NotFound:
+        return {}
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("Ignoring invalid sync marker JSON: gs://%s/%s", bucket_name, gcs_path)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 @click.command()
@@ -127,7 +146,17 @@ def main(
     with tempfile.TemporaryDirectory() as tmp:
         sync_root = Path(tmp) / "sync-root"
         sync_root.mkdir(parents=True)
-        rule_names = set(spec["rules"])
+        requested_sync_items = _parse_sync_items(sync_items)
+        claimed_sync_items = _claim_sync_items(region_bucket, region, date, requested_sync_items)
+        if requested_sync_items and not claimed_sync_items:
+            logger.info(
+                "No unclaimed sync items for region=%s date=%s; another execution already synced or claimed them",
+                region,
+                date,
+            )
+            return
+
+        rule_names = _rule_names_for_sync(spec["rules"], claimed_sync_items or requested_sync_items)
         sync_config = load_sync_config(
             config,
             sync_root=sync_root,
@@ -141,7 +170,7 @@ def main(
             sync_config,
             rule_names,
             date,
-            _parse_sync_items(sync_items),
+            claimed_sync_items or requested_sync_items,
         )
 
         if enable_drive:
@@ -155,8 +184,11 @@ def main(
         else:
             logger.info("git_push=false for region %s — skipping operational repo push", region)
 
+    if claimed_sync_items:
+        _mark_sync_items_done(region_bucket, region, date, claimed_sync_items)
+
     write_gcs_text(region_bucket, "latest.txt", date)
-    if sync_fingerprint:
+    if sync_fingerprint and not requested_sync_items:
         write_gcs_text(region_bucket, f"sync-state/{date}.json", sync_fingerprint)
     logger.info(f"Sync complete for region={region} date={date}")
 
@@ -253,6 +285,142 @@ def _parse_sync_items(raw: str) -> list[dict]:
     return items
 
 
+def _rule_names_for_sync(configured_rules: list[str], sync_items: list[dict]) -> set[str]:
+    if not sync_items:
+        return set(configured_rules)
+    requested_rules = {
+        item["type"]
+        for item in sync_items
+        if item.get("type") in SYNC_ITEM_TYPES
+    }
+    return set(configured_rules) & requested_rules
+
+
+def _claim_sync_items(
+    bucket_name: str,
+    region: str,
+    date: str,
+    sync_items: list[dict],
+) -> list[dict]:
+    if not sync_items:
+        return []
+
+    claimed = []
+    for item in sync_items:
+        if item.get("type") not in SYNC_ITEM_TYPES:
+            claimed.append(item)
+            continue
+        if _sync_item_done(bucket_name, date, item):
+            logger.info(
+                "Skipping already-synced item: region=%s date=%s type=%s name=%s",
+                region,
+                date,
+                item["type"],
+                item["name"],
+            )
+            continue
+        if _claim_sync_item(bucket_name, region, date, item):
+            claimed.append(item)
+    return claimed
+
+
+def _sync_item_done(bucket_name: str, date: str, item: dict) -> bool:
+    return _client().bucket(bucket_name).blob(_sync_item_marker_path(date, item, "done")).exists()
+
+
+def _claim_sync_item(bucket_name: str, region: str, date: str, item: dict) -> bool:
+    active_path = _sync_item_marker_path(date, item, "active")
+    blob = _client().bucket(bucket_name).blob(active_path)
+    payload = _sync_item_marker_payload(region, date, item)
+    try:
+        blob.upload_from_string(payload, if_generation_match=0)
+        logger.info(
+            "Claimed sync item: region=%s date=%s type=%s name=%s",
+            region,
+            date,
+            item["type"],
+            item["name"],
+        )
+        return True
+    except PreconditionFailed:
+        if not _sync_item_claim_is_stale(bucket_name, active_path):
+            logger.info(
+                "Skipping active sync item: region=%s date=%s type=%s name=%s",
+                region,
+                date,
+                item["type"],
+                item["name"],
+            )
+            return False
+        blob.reload()
+        blob.upload_from_string(payload, if_generation_match=blob.generation)
+        logger.warning(
+            "Reclaimed stale sync item: region=%s date=%s type=%s name=%s",
+            region,
+            date,
+            item["type"],
+            item["name"],
+        )
+        return True
+
+
+def _sync_item_claim_is_stale(bucket_name: str, active_path: str) -> bool:
+    marker = read_gcs_json(bucket_name, active_path)
+    updated_at = _parse_marker_time(marker.get("updated_at")) or _parse_marker_time(
+        marker.get("started_at")
+    )
+    if updated_at is None:
+        return False
+    age_seconds = (datetime.now(timezone.utc) - updated_at).total_seconds()
+    return age_seconds > SYNC_ITEM_CLAIM_TTL_SECONDS
+
+
+def _mark_sync_items_done(bucket_name: str, region: str, date: str, sync_items: list[dict]) -> None:
+    for item in sync_items:
+        if item.get("type") not in SYNC_ITEM_TYPES:
+            continue
+        write_gcs_text(
+            bucket_name,
+            _sync_item_marker_path(date, item, "done"),
+            _sync_item_marker_payload(region, date, item),
+        )
+
+
+def _sync_item_marker_payload(region: str, date: str, item: dict) -> str:
+    now = datetime.now(timezone.utc).isoformat()
+    return json.dumps(
+        {
+            "region": region,
+            "date": date,
+            "type": item["type"],
+            "name": item["name"],
+            "started_at": now,
+            "updated_at": now,
+        },
+        sort_keys=True,
+    )
+
+
+def _sync_item_marker_path(date: str, item: dict, state: str) -> str:
+    return f"sync-items/{date}/{item['type']}/{_safe_marker_name(item['name'])}.{state}.json"
+
+
+def _safe_marker_name(value: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_", "."} else "_" for ch in value)
+
+
+def _parse_marker_time(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 def _staging_targets_for_rule(
     rule: SyncRule,
     sync_config: SyncConfig,
@@ -312,7 +480,7 @@ def _run_sync_engine(
             raise click.ClickException(
                 f"Sync discovered no local files for requested rule(s): {empty_rules}"
             )
-        summary = engine.sync(dates=dates, rule_names=rule_names)
+        summary = engine.sync(dates=dates, rule_names=rule_names, workers=SYNC_WORKERS)
         if summary.errors:
             raise click.ClickException(
                 f"Google Drive sync finished with {summary.errors} error(s)"

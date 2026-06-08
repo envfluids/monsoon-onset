@@ -357,6 +357,15 @@ class GoogleDriveClient:
             raise RuntimeError(f"Could not resolve Drive path: {drive_path}")
 
         file_path = Path(local_file_path)
+        existing_file = self._find_file_in_folder(file_path.name, folder_id)
+        if existing_file:
+            logging.info(
+                "Drive file already exists; skipping upload: %s/%s",
+                drive_path.rstrip("/"),
+                file_path.name,
+            )
+            return existing_file
+
         media = MediaFileUpload(
             str(file_path),
             mimetype="application/octet-stream",
@@ -373,6 +382,28 @@ class GoogleDriveClient:
             )
             .execute()
         )
+
+    def _find_file_in_folder(self, file_name, folder_id):
+        safe_file_name = file_name.replace("'", "\\'")
+        response = (
+            self.service.files()
+            .list(
+                q=(
+                    f"name='{safe_file_name}' and "
+                    f"'{folder_id}' in parents and "
+                    "trashed=false and "
+                    "mimeType!='application/vnd.google-apps.folder'"
+                ),
+                spaces="drive",
+                fields="files(id, name, size, modifiedTime, md5Checksum)",
+                pageSize=1,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        files = response.get("files", [])
+        return files[0] if files else None
 
     def list_tree(self, drive_path):
         folder_id = self._resolve_folder_path(drive_path, create=False)

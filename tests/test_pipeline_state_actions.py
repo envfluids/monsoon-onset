@@ -337,12 +337,29 @@ class PipelineStateActionsTest(unittest.TestCase):
             state["per_region"][region]["sync"]["fingerprint"],
         )
 
+    def add_sync_item_marker(self, region, item, state="done", updated_at=None):
+        marker_time = updated_at or datetime.now(timezone.utc).isoformat()
+        payload = {
+            "region": region,
+            "date": DATE,
+            "type": item["type"],
+            "name": item["name"],
+            "started_at": marker_time,
+            "updated_at": marker_time,
+        }
+        self.storage.put_json(
+            self.module.REGION_BUCKETS[region],
+            self.module.sync_item_marker_path(DATE, item, state),
+            payload,
+        )
+
     def set_gencast_dispatch_status(self, state, updated_at=None):
+        marker_time = updated_at or datetime.now(timezone.utc).isoformat()
         payload = {
             "run_id": f"gencast-{DATE.replace('T', '-')}",
             "date": DATE,
             "state": state,
-            "updated_at": updated_at or self.today.isoformat(),
+            "updated_at": marker_time,
         }
         self.storage.put_json(
             COMMON_BUCKET,
@@ -493,7 +510,7 @@ class PipelineStateActionsTest(unittest.TestCase):
             ["AIFS_single_v2_AIFS_ENS_v2"],
         )
 
-    def test_diagnostics_and_sync_run_after_region_inputs_are_complete(self):
+    def test_diagnostics_sync_runs_per_completed_combination(self):
         self.module.REGIONS = {
             "india": {
                 "models": ["AIFS_single_v2", "neuralgcm"],
@@ -520,8 +537,7 @@ class PipelineStateActionsTest(unittest.TestCase):
                 "blends": ["AIFS_single_v2_NeuralGCM"],
             },
         )
-        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["india"]["date"], DATE)
-        self.add_sync_state("india", state)
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["india"]["date"], "")
 
         self.add_diagnostics_done("india")
         self.storage.put(INDIA_BUCKET, "latest.txt", "20260601T00")
@@ -535,9 +551,24 @@ class PipelineStateActionsTest(unittest.TestCase):
                 "region": "india",
                 "date": DATE,
                 "fingerprint": state["per_region"]["india"]["sync"]["fingerprint"],
-                "items": state["per_region"]["india"]["sync"]["unsynced_items"],
+                "items": [
+                    {
+                        "type": "model_diagnostics",
+                        "name": "AIFS_single_v2_NeuralGCM",
+                    }
+                ],
             },
         )
+
+        self.add_sync_item_marker(
+            "india",
+            {
+                "type": "model_diagnostics",
+                "name": "AIFS_single_v2_NeuralGCM",
+            },
+        )
+        state = self.compute()
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["india"]["date"], "")
 
     def test_ethiopia_gencast_diagnostics_use_flat_output_path(self):
         self.module.REGIONS = {
@@ -715,6 +746,52 @@ class PipelineStateActionsTest(unittest.TestCase):
             {"type": "model_diagnostics", "name": "AIFS_single_v2_AIFS_ENS_v2"},
             state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"],
         )
+
+    def test_active_sync_item_suppresses_duplicate_sync_action(self):
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2"],
+                "stages": ["blend", "sync"],
+                "sync": {"date_kind": "aifs_date"},
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1]]
+        self.add_ic("ecmwf")
+        self.add_model_done("AIFS_single_v2", "ethiopia")
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+        self.add_blend_config_done("ethiopia", "AIFS_single_v2_AIFS_ENS_v2")
+
+        item = {"type": "blend", "name": "AIFS_single_v2_AIFS_ENS_v2"}
+        self.add_sync_item_marker("ethiopia", item, state="active")
+
+        state = self.compute()
+
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], "")
+
+    def test_stale_active_sync_item_allows_resubmission(self):
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2"],
+                "stages": ["blend", "sync"],
+                "sync": {"date_kind": "aifs_date"},
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1]]
+        self.add_ic("ecmwf")
+        self.add_model_done("AIFS_single_v2", "ethiopia")
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+        self.add_blend_config_done("ethiopia", "AIFS_single_v2_AIFS_ENS_v2")
+
+        stale = (self.today - timedelta(hours=7)).isoformat()
+        item = {"type": "blend", "name": "AIFS_single_v2_AIFS_ENS_v2"}
+        self.add_sync_item_marker("ethiopia", item, state="active", updated_at=stale)
+
+        state = self.compute()
+
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
+        self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"], [item])
 
 
 if __name__ == "__main__":

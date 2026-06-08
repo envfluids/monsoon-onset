@@ -162,6 +162,16 @@ class TpuDispatchTest(unittest.TestCase):
         self.assertIn(
             '"workload_log_uri": os.environ["NODE_WORKLOAD_LOG_URI"]', script
         )
+        self.assertNotIn("monsoon-tpu-shutdown-marker.service", script)
+
+    def test_shutdown_script_uploads_preemption_marker(self):
+        script = tpu_dispatch.build_shutdown_script()
+
+        self.assertIn('attribute("node-shutdown-marker-path")', script)
+        self.assertIn('metadata("instance/preempted", "unknown")', script)
+        self.assertIn('metadata("instance/maintenance-event", "unknown")', script)
+        self.assertIn("https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o", script)
+        self.assertIn("Metadata-Flavor", script)
 
     def test_attempt_node_log_paths_include_hostname_placeholder(self):
         config = make_config()
@@ -175,6 +185,11 @@ class TpuDispatchTest(unittest.TestCase):
             config.attempt_node_startup_log_path(2),
             "intermediate/tpu-dispatch/gencast/20260515T00/"
             "gencast-20260515-00/attempts/2/logs/__HOSTNAME__-startup.log",
+        )
+        self.assertEqual(
+            config.attempt_node_shutdown_marker_path(2),
+            "intermediate/tpu-dispatch/gencast/20260515T00/"
+            "gencast-20260515-00/attempts/2/shutdown/__HOSTNAME__.json",
         )
 
     def test_startup_metadata_includes_node_log_paths(self):
@@ -200,6 +215,15 @@ class TpuDispatchTest(unittest.TestCase):
         self.assertEqual(
             metadata["node-startup-log-path"],
             config.attempt_node_startup_log_path(2),
+        )
+        self.assertEqual(
+            metadata["node-shutdown-marker-path"],
+            config.attempt_node_shutdown_marker_path(2),
+        )
+        self.assertIn("shutdown-script", metadata)
+        self.assertIn(
+            'metadata("instance/preempted", "unknown")',
+            metadata["shutdown-script"],
         )
 
     def test_workload_failure_retry_decision_defaults_to_non_retryable(self):
