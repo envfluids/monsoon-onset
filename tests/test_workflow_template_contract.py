@@ -73,6 +73,10 @@ class WorkflowTemplateContractTest(unittest.TestCase):
             'UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"',
         ):
             self.assertIn(expected, self.workflow)
+        self.assertIn(
+            'mountOptions = batch_config.model_resources[model].gcs_mount_options',
+            self.workflow,
+        )
 
     def test_batch_jobs_are_private_idempotent_and_retryable(self):
         self.assertInOrder(
@@ -139,6 +143,14 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         self.assertIn("BLEND_NAMES: $${json.encode_to_string(blend_action.blends)}", self.workflow)
         self.assertIn("BLEND_NAMES: $${json.encode_to_string(diagnostics_action.blends)}", self.workflow)
         self.assertIn('max_run_duration: "${batch_config.model_resources["diagnostics"].max_run_duration}"', self.workflow)
+        self.assertIn(
+            'mountOptions = batch_config.model_resources["blend"].gcs_mount_options',
+            self.workflow,
+        )
+        self.assertIn(
+            'mountOptions = batch_config.model_resources["diagnostics"].gcs_mount_options',
+            self.workflow,
+        )
         self.assertIn("FORECAST_REGION: $${region_name}", self.workflow)
         self.assertIn("SYNC_SPEC\n                              value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
         self.assertIn("SYNC_FINGERPRINT\n                              value: $${sync_action.fingerprint}", self.workflow)
@@ -149,7 +161,35 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         self.assertIn("diagnostics = {", compute_main)
         self.assertIn('max_run_duration    = "7200s"', compute_main)
         diagnostics_block = compute_main.split("diagnostics = {", 1)[1].split("}", 1)[0]
+        self.assertIn('machine_type        = "e2-highmem-8"', diagnostics_block)
+        self.assertIn("memory_mib          = 65536", diagnostics_block)
+        self.assertIn("gcs_mount_options   = local.gcs_fuse_read_cache_mount_options", diagnostics_block)
         self.assertNotIn("provisioning_model", diagnostics_block)
+
+    def test_blend_batch_has_more_memory_for_fuse_read_cache(self):
+        compute_main = COMPUTE_MAIN_PATH.read_text()
+        blend_block = compute_main.split("blend = {", 1)[1].split("}", 1)[0]
+
+        self.assertIn('machine_type        = "e2-highmem-8"', blend_block)
+        self.assertIn("cpu_milli           = 8000", blend_block)
+        self.assertIn("memory_mib          = 65536", blend_block)
+
+    def test_aifs_v2_does_not_mount_common_bucket_when_using_gcs_api_upload(self):
+        compute_main = COMPUTE_MAIN_PATH.read_text()
+        aifs_v2_block = compute_main.split("AIFS_single_v2 = {", 1)[1].split("}", 1)[0]
+
+        self.assertIn("mount_common_bucket = false", aifs_v2_block)
+        self.assertIn("gcs_mount_options   = []", aifs_v2_block)
+
+    def test_gcs_fuse_mount_options_use_checkpointing_and_bounded_read_cache(self):
+        compute_main = COMPUTE_MAIN_PATH.read_text()
+
+        self.assertIn("--profile=aiml-checkpointing", compute_main)
+        self.assertIn("--metadata-cache-negative-ttl-secs=0", compute_main)
+        self.assertIn("--cache-dir=/tmp/gcsfuse-cache", compute_main)
+        self.assertIn("--file-cache-max-size-mb=49152", compute_main)
+        self.assertIn("--file-cache-cache-file-for-range-read=true", compute_main)
+        self.assertIn("--file-cache-enable-parallel-downloads=true", compute_main)
 
     def test_ethiopia_blend_stage_has_matching_sync_rule(self):
         for path in (DEV_MAIN_PATH, PROD_MAIN_PATH):

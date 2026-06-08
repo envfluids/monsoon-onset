@@ -253,7 +253,7 @@ submit_ready_work:
                         provisioning_model: "${batch_config.model_resources[model].provisioning_model}"
                         max_run_duration: "${batch_config.model_resources[model].max_run_duration}"
                         accelerators: ${batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ? jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = batch_config.model_resources[model].gpu_count }]) : "[]"}
-                        volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                        volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
                         env_vars:
                           DATE: $${${model}_action.date}
                           MODEL: "${model}"
@@ -383,7 +383,7 @@ submit_ready_work:
                   provisioning_model: "${batch_config.model_resources["blend"].provisioning_model}"
                   max_run_duration: "${batch_config.model_resources["blend"].max_run_duration}"
                   accelerators: []
-                  volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                  volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["blend"].gcs_mount_options }]) : "[]"}
                   env_vars:
                     DATE: $${blend_action.date}
                     FORECAST_REGION: $${region_name}
@@ -426,7 +426,7 @@ submit_ready_work:
                   provisioning_model: "${batch_config.model_resources["diagnostics"].provisioning_model}"
                   max_run_duration: "${batch_config.model_resources["diagnostics"].max_run_duration}"
                   accelerators: []
-                  volumes: ${batch_config.model_resources["diagnostics"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common" }]) : "[]"}
+                  volumes: ${batch_config.model_resources["diagnostics"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["diagnostics"].gcs_mount_options }]) : "[]"}
                   env_vars:
                     DATE: $${diagnostics_action.date}
                     FORECAST_REGION: $${region_name}

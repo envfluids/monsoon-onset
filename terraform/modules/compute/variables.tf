@@ -221,6 +221,7 @@ variable "batch_model_resources" {
     install_gpu_drivers = optional(bool)
     max_run_duration    = optional(string)
     mount_common_bucket = optional(bool)
+    gcs_mount_options   = optional(list(string))
     provisioning_model  = optional(string)
   }))
   default = {
@@ -232,6 +233,11 @@ variable "batch_model_resources" {
       install_gpu_drivers = true
       max_run_duration    = "7200s"
       mount_common_bucket = true
+      gcs_mount_options = [
+        "--implicit-dirs",
+        "--metadata-cache-negative-ttl-secs=0",
+        "--profile=aiml-checkpointing",
+      ]
     }
   }
 }

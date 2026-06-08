@@ -466,10 +466,14 @@ Cloud Run Job memory/CPU and Cloud Batch machine types are set in `modules/compu
 environment's `main.tf` and pass them into the module. For Batch stages, use
 `batch_model_resources` to override per-stage VM settings such as `machine_type`,
 `boot_disk_size_gb`, `boot_disk_type`, `cpu_milli`, `memory_mib`, `gpu_type`, `gpu_count`,
-`install_gpu_drivers`, `max_run_duration`, `mount_common_bucket`, and `provisioning_model`.
+`install_gpu_drivers`, `max_run_duration`, `mount_common_bucket`, `gcs_mount_options`, and
+`provisioning_model`.
 Unset CPU, memory, and GPU fields use known machine-type defaults when available. For GenCast TPU
 placement, set `gencast_tpu_zone`; it defaults to
 `us-central1-a` and supports `us-east5-a` when TPU capacity must move east.
+FUSE-backed full-field writer stages default to Cloud Storage FUSE's `aiml-checkpointing`
+profile. Read-heavy blend and diagnostics stages use a bounded `/tmp/gcsfuse-cache`
+file cache with parallel downloads enabled.
 
 ### Updating Container Images Without Terraform
 

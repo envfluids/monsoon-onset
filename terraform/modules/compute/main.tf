@@ -4,6 +4,21 @@
 # -----------------------------------------------------------------------------
 
 locals {
+  gcs_fuse_checkpointing_mount_options = [
+    "--implicit-dirs",
+    "--metadata-cache-negative-ttl-secs=0",
+    "--profile=aiml-checkpointing",
+  ]
+
+  gcs_fuse_read_cache_mount_options = [
+    "--implicit-dirs",
+    "--metadata-cache-negative-ttl-secs=0",
+    "--cache-dir=/tmp/gcsfuse-cache",
+    "--file-cache-max-size-mb=49152",
+    "--file-cache-cache-file-for-range-read=true",
+    "--file-cache-enable-parallel-downloads=true",
+  ]
+
   gpu_machine_type_defaults = {
     nvidia-tesla-a100 = "a2-highgpu-1g"
     nvidia-l4         = "g2-standard-16"
@@ -63,7 +78,8 @@ locals {
       boot_disk_type      = var.batch_boot_disk_type
       install_gpu_drivers = true
       max_run_duration    = "1800s"
-      mount_common_bucket = true
+      mount_common_bucket = false
+      gcs_mount_options   = []
     }
     neuralgcm = {
       machine_type        = local.gpu_machine_type
@@ -72,31 +88,34 @@ locals {
       install_gpu_drivers = true
       max_run_duration    = "3600s"
       mount_common_bucket = true
+      gcs_mount_options   = local.gcs_fuse_checkpointing_mount_options
     }
     blend = {
-      machine_type        = "e2-highmem-4"
+      machine_type        = "e2-highmem-8"
       boot_disk_size_gb   = var.batch_boot_disk_size_gb
       boot_disk_type      = var.batch_boot_disk_type
-      cpu_milli           = 4000
-      memory_mib          = 32768
+      cpu_milli           = 8000
+      memory_mib          = 65536
       gpu_type            = null
       gpu_count           = null
       install_gpu_drivers = false
       max_run_duration    = "3600s"
       mount_common_bucket = true
+      gcs_mount_options   = local.gcs_fuse_read_cache_mount_options
       provisioning_model  = "STANDARD"
     }
     diagnostics = {
-      machine_type        = "e2-highmem-4"
+      machine_type        = "e2-highmem-8"
       boot_disk_size_gb   = var.batch_boot_disk_size_gb
       boot_disk_type      = var.batch_boot_disk_type
-      cpu_milli           = 4000
-      memory_mib          = 32768
+      cpu_milli           = 8000
+      memory_mib          = 65536
       gpu_type            = null
       gpu_count           = null
       install_gpu_drivers = false
       max_run_duration    = "7200s"
       mount_common_bucket = true
+      gcs_mount_options   = local.gcs_fuse_read_cache_mount_options
     }
   }
 
@@ -138,6 +157,10 @@ locals {
       mount_common_bucket = coalesce(
         try(config.mount_common_bucket, null),
         false
+      )
+      gcs_mount_options = coalesce(
+        try(config.gcs_mount_options, null),
+        []
       )
       provisioning_model = coalesce(
         try(config.provisioning_model, null),

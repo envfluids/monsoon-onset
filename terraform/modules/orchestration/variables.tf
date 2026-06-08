@@ -121,6 +121,7 @@ variable "batch_job_template" {
       install_gpu_drivers = bool
       max_run_duration    = string
       mount_common_bucket = bool
+      gcs_mount_options   = list(string)
       provisioning_model  = string
     }))
     image_streaming   = bool
