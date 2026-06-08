@@ -679,11 +679,14 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
                 if sync_target
                 else ""
             )
+            synced_items = _decode_sync_fingerprint(synced_fingerprint)
+            current_items = sync_inventory.get("items", [])
             block["sync"] = {
                 "date": sync_target,
                 "latest": latest,
                 "fingerprint": sync_inventory.get("fingerprint", ""),
-                "items": sync_inventory.get("items", []),
+                "items": current_items,
+                "unsynced_items": _unsynced_sync_items(current_items, synced_items),
                 "synced_fingerprint": synced_fingerprint,
                 "needs_run": bool(sync_target)
                 and bool(sync_inventory.get("fingerprint", ""))
@@ -942,6 +945,34 @@ def _sync_inventory_for_region(
     return {"date": date, "items": items, "fingerprint": fingerprint}
 
 
+def _decode_sync_fingerprint(fingerprint: str) -> list[dict]:
+    if not fingerprint:
+        return []
+    try:
+        parsed = json.loads(fingerprint)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        {"type": item.get("type", ""), "name": item.get("name", "")}
+        for item in parsed
+        if isinstance(item, dict) and item.get("type") and item.get("name")
+    ]
+
+
+def _unsynced_sync_items(current_items: list[dict], synced_items: list[dict]) -> list[dict]:
+    synced_keys = {
+        (item.get("type", ""), item.get("name", ""))
+        for item in synced_items
+    }
+    return [
+        item
+        for item in current_items
+        if (item.get("type", ""), item.get("name", "")) not in synced_keys
+    ]
+
+
 def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dict:
     ic_to_download = []
     ic_to_download_by_source = {}
@@ -1045,12 +1076,13 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
     regions_to_sync = []
     regions_to_sync_by_region = {}
     for region, block in per_region.items():
-        action = {"region": region, "date": "", "fingerprint": ""}
+        action = {"region": region, "date": "", "fingerprint": "", "items": []}
         if "sync" in block and block["sync"].get("needs_run"):
             action = {
                 "region": region,
                 "date": block["sync"]["date"],
                 "fingerprint": block["sync"].get("fingerprint", ""),
+                "items": block["sync"].get("unsynced_items", []),
             }
             regions_to_sync.append(action)
         regions_to_sync_by_region[region] = action

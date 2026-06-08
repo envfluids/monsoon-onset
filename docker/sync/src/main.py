@@ -25,6 +25,9 @@ Environment Variables:
                         (selects sync.yaml rule names and git behavior)
     ENABLE_DRIVE      : 'true' to enable Google Drive sync (default false)
     SYNC_FINGERPRINT  : Serialized sync inventory fingerprint to persist after success
+    SYNC_ITEMS        : JSON list of incremental items to sync; blend and
+                        model_diagnostics items narrow those rules to one
+                        completed config output subtree.
     MONSOON_SYNC_CONFIG : Path to sync.yaml (default /app/sync/config/sync.yaml)
     MONSOON_CLUSTER     : Cluster name passed to sync config (default 'gcp')
     MONSOON_DRIVE_ROOT  : Override drive root (optional)
@@ -94,6 +97,7 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
               help="JSON copy of regions[region].sync from terraform")
 @click.option("--enable-drive/--no-drive", envvar="ENABLE_DRIVE", default=False)
 @click.option("--sync-fingerprint", envvar="SYNC_FINGERPRINT", default="")
+@click.option("--sync-items", envvar="SYNC_ITEMS", default="")
 @click.option("--config",     envvar="MONSOON_SYNC_CONFIG", default="/app/sync/config/sync.yaml")
 @click.option("--cluster",    envvar="MONSOON_CLUSTER",     default="gcp")
 @click.option("--drive-root", envvar="MONSOON_DRIVE_ROOT",  default=None)
@@ -104,6 +108,7 @@ def main(
     sync_spec,
     enable_drive,
     sync_fingerprint,
+    sync_items,
     config,
     cluster,
     drive_root,
@@ -131,7 +136,13 @@ def main(
             region=region,
         )
 
-        staged_rule_names = _stage_sync_rules(region_bucket, sync_config, rule_names, date)
+        staged_rule_names = _stage_sync_rules(
+            region_bucket,
+            sync_config,
+            rule_names,
+            date,
+            _parse_sync_items(sync_items),
+        )
 
         if enable_drive:
             _materialize_drive_auth()
@@ -173,6 +184,7 @@ def _stage_sync_rules(
     sync_config: SyncConfig,
     rule_names: set[str],
     date: str,
+    sync_items: list[dict],
 ) -> set[str]:
     rules_by_name = {rule.name: rule for rule in sync_config.rules}
     missing_rules = sorted(rule_names - set(rules_by_name))
@@ -189,34 +201,82 @@ def _stage_sync_rules(
                 f"Sync rule {sync_config.region}/{rule.name} is missing gcs_prefix; "
                 "cloud sync cannot stage it from GCS."
             )
-        gcs_date = _date_for_rule(rule, date)
-        gcs_prefix = _render_template(rule.gcs_prefix, sync_config, date=gcs_date)
-        stage_template = rule.gcs_stage_dir or rule.local_root
-        local_dir = sync_config.sync_root / _render_template(stage_template, sync_config, date=date)
-        logger.info(
-            "Staging rule=%s gs://%s/%s → %s",
-            rule.name,
-            region_bucket,
-            gcs_prefix,
-            local_dir,
-        )
-        downloaded = download_gcs_prefix(region_bucket, gcs_prefix, local_dir)
-        if downloaded == 0:
+        downloaded_any = False
+        for gcs_prefix, local_dir in _staging_targets_for_rule(
+            rule,
+            sync_config,
+            date,
+            sync_items,
+        ):
             logger.info(
-                "Skipping sync rule %s/%s; no GCS objects at gs://%s/%s",
-                sync_config.region,
+                "Staging rule=%s gs://%s/%s → %s",
                 rule.name,
                 region_bucket,
                 gcs_prefix,
+                local_dir,
             )
-            continue
-        staged_rule_names.add(rule.name)
+            downloaded = download_gcs_prefix(region_bucket, gcs_prefix, local_dir)
+            if downloaded == 0:
+                logger.info(
+                    "Skipping sync rule %s/%s; no GCS objects at gs://%s/%s",
+                    sync_config.region,
+                    rule.name,
+                    region_bucket,
+                    gcs_prefix,
+                )
+                continue
+            downloaded_any = True
+        if downloaded_any:
+            staged_rule_names.add(rule.name)
 
     if not staged_rule_names:
         raise click.ClickException(
             f"None of the requested sync rules had GCS objects for {sync_config.region}/{date}"
         )
     return staged_rule_names
+
+
+def _parse_sync_items(raw: str) -> list[dict]:
+    if not raw:
+        return []
+    parsed = json.loads(raw)
+    if not isinstance(parsed, list):
+        raise click.ClickException("SYNC_ITEMS must be a JSON list")
+    items = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            raise click.ClickException("SYNC_ITEMS entries must be objects")
+        item_type = item.get("type", "")
+        item_name = item.get("name", "")
+        if isinstance(item_type, str) and isinstance(item_name, str) and item_type and item_name:
+            items.append({"type": item_type, "name": item_name})
+    return items
+
+
+def _staging_targets_for_rule(
+    rule: SyncRule,
+    sync_config: SyncConfig,
+    date: str,
+    sync_items: list[dict],
+) -> list[tuple[str, Path]]:
+    gcs_date = _date_for_rule(rule, date)
+    gcs_prefix = _render_template(rule.gcs_prefix, sync_config, date=gcs_date)
+    stage_template = rule.gcs_stage_dir or rule.local_root
+    local_dir = sync_config.sync_root / _render_template(stage_template, sync_config, date=date)
+
+    if rule.name not in {"blend", "model_diagnostics"}:
+        return [(gcs_prefix, local_dir)]
+
+    item_type = "model_diagnostics" if rule.name == "model_diagnostics" else "blend"
+    selected = [item["name"] for item in sync_items if item.get("type") == item_type]
+    if not selected:
+        return [(gcs_prefix, local_dir)]
+
+    targets = []
+    for name in sorted(set(selected)):
+        subpath = f"{date}/{name}/"
+        targets.append((f"{gcs_prefix.rstrip('/')}/{subpath}", local_dir / date / name))
+    return targets
 
 
 def _date_for_rule(rule: SyncRule, date: str) -> str:

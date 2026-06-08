@@ -217,6 +217,7 @@ submit_ready_work:
               blends: []
               job_suffix: ""
               fingerprint: ""
+              items: []
 
     - submit_batch_models:
         parallel:
@@ -473,6 +474,8 @@ submit_ready_work:
                               value: $${json.encode_to_string(region_cfg.sync)}
                             - name: SYNC_FINGERPRINT
                               value: $${sync_action.fingerprint}
+                            - name: SYNC_ITEMS
+                              value: $${json.encode_to_string(sync_action.items)}
             - end_sync_iteration:
                 assign:
                   - last_sync_region_checked: $${region_name}

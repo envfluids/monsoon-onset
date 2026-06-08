@@ -535,6 +535,7 @@ class PipelineStateActionsTest(unittest.TestCase):
                 "region": "india",
                 "date": DATE,
                 "fingerprint": state["per_region"]["india"]["sync"]["fingerprint"],
+                "items": state["per_region"]["india"]["sync"]["unsynced_items"],
             },
         )
 
@@ -691,6 +692,10 @@ class PipelineStateActionsTest(unittest.TestCase):
 
         state = self.compute()
         self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
+        self.assertIn(
+            {"type": "model_diagnostics", "name": "AIFS_single_v2_gencast"},
+            state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"],
+        )
         self.add_sync_state("ethiopia", state)
 
         state = self.compute()
@@ -702,9 +707,13 @@ class PipelineStateActionsTest(unittest.TestCase):
         state = self.compute()
 
         self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
+        self.assertNotIn(
+            {"type": "model_diagnostics", "name": "AIFS_single_v2_gencast"},
+            state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"],
+        )
         self.assertIn(
             {"type": "model_diagnostics", "name": "AIFS_single_v2_AIFS_ENS_v2"},
-            state["per_region"]["ethiopia"]["sync"]["items"],
+            state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"],
         )
 
 

@@ -123,7 +123,7 @@ locals {
       models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"]
       stages = ["blend", "model_diagnostics", "sync"]
       sync = {
-        rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "model_diagnostics"]
+        rules     = ["AIFS_single_v2", "AIFS_ENS_v2", "NeuralGCM", "GenCast", "blend", "model_diagnostics"]
         git_push  = false
         date_kind = "aifs_date"
       }

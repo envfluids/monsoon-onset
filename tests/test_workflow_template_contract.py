@@ -10,6 +10,8 @@ COMPUTE_MAIN_PATH = (
     Path(__file__).resolve().parents[1]
     / "terraform/modules/compute/main.tf"
 )
+DEV_MAIN_PATH = Path(__file__).resolve().parents[1] / "terraform/environments/dev/main.tf"
+PROD_MAIN_PATH = Path(__file__).resolve().parents[1] / "terraform/environments/prod/main.tf"
 
 
 class WorkflowTemplateContractTest(unittest.TestCase):
@@ -140,6 +142,7 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         self.assertIn("FORECAST_REGION: $${region_name}", self.workflow)
         self.assertIn("SYNC_SPEC\n                              value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
         self.assertIn("SYNC_FINGERPRINT\n                              value: $${sync_action.fingerprint}", self.workflow)
+        self.assertIn("SYNC_ITEMS\n                              value: $${json.encode_to_string(sync_action.items)}", self.workflow)
 
     def test_diagnostics_batch_has_longer_timeout_than_blend(self):
         compute_main = COMPUTE_MAIN_PATH.read_text()
@@ -147,6 +150,14 @@ class WorkflowTemplateContractTest(unittest.TestCase):
         self.assertIn('max_run_duration    = "7200s"', compute_main)
         diagnostics_block = compute_main.split("diagnostics = {", 1)[1].split("}", 1)[0]
         self.assertNotIn("provisioning_model", diagnostics_block)
+
+    def test_ethiopia_blend_stage_has_matching_sync_rule(self):
+        for path in (DEV_MAIN_PATH, PROD_MAIN_PATH):
+            with self.subTest(path=path.name):
+                content = path.read_text()
+                ethiopia_block = content.split("ethiopia = {", 1)[1].split("disabled_stages_by_region", 1)[0]
+                self.assertIn('stages = ["blend", "model_diagnostics", "sync"]', ethiopia_block)
+                self.assertIn('"blend"', ethiopia_block)
 
     def test_pipeline_state_subroutine_uses_oidc_and_preserves_requested_date(self):
         self.assertInOrder(
