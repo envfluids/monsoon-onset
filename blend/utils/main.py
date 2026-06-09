@@ -295,7 +295,7 @@ BLENDS: tuple[BlendConfig, ...] = (
         / "blend"
         / "utils"
         / "india2026"
-        / "AIFS_NGCM_blend"
+        / "AIFSv2_NGCM_blend"
         / "main.py",
         inputs=(
             ForecastInput(
@@ -306,7 +306,7 @@ BLENDS: tuple[BlendConfig, ...] = (
             ForecastInput(
                 model="NeuralGCM",
                 role="ensemble",
-                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+                path_template="NeuralGCM/output/india/tp/tp_0p25_{date}.nc",
             ),
         ),
         output_dir_template="blend/output/india2026/{date}/AIFS_single_v2_NeuralGCM",
@@ -322,8 +322,7 @@ BLENDS: tuple[BlendConfig, ...] = (
                 path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
             ),
         ),
-        # Diagnostics-only: no v2 blend coefficients are available.
-        blend_implemented=False,
+        blend_implemented=True,
         diagnostic_plots=True,
     ),
 )

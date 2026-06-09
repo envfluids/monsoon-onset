@@ -350,7 +350,10 @@ def model_region_outputs_present(model: str, region: str, date: str) -> bool:
         return False
 
     if model == "AIFS_single_v2" and region == "india":
-        return gcs_object_exists(bucket, f"output/{model}/{date}/{model}/tp/tp_2p0_{date}.nc")
+        return all(
+            gcs_object_exists(bucket, f"output/{model}/{date}/{model}/tp/tp_{resolution}_{date}.nc")
+            for resolution in ("2p0", "0p25")
+        )
     if model == "AIFS_single_v2" and region == "ethiopia":
         return gcs_prefix_has_objects(bucket, f"output/{model}/{date}/{model}/")
     if model == "AIFS_ENS_v2" and region == "ethiopia":

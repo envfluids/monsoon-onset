@@ -1,8 +1,8 @@
 """
 NGCM model configuration.
 
-NGCM is a deterministic global NWP model, which for this test has already been regridded to 2-degree resolution.  The corresponding regridding weights map each
-2-degree grid cell to subdistrict IDs.
+NGCM is a deterministic global NWP model, which for this test has already been regridded to 0.25-degree resolution.  The corresponding regridding weights map each
+0.25-degree grid cell to subdistrict IDs.
 """
 
 from pathlib import Path
@@ -15,7 +15,7 @@ NGCM_CONFIG = ModelConfig(
     label="ngcm",
     precip_var="tp",
     is_ensemble=True,
-    weights_file=_BLEND_DIR / "data" / "india2026" / "AIFS_NGCM_blend" / "data" / "coefs" / "subdistrict_ngcm_weights.csv",
+    weights_file=_BLEND_DIR / "data" / "india2026" / "AIFS_NGCM_blend" / "data" / "coefs" / "subdistrict_0p25deg_weights.csv",
     date_offset_hours=0,
     skip_first_day=False,
     file_template="NeuralGCM/output/india/tp/tp_0p25_{date}.nc",

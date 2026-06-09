@@ -288,6 +288,7 @@ class PipelineStateActionsTest(unittest.TestCase):
         bucket = self.module.REGION_BUCKETS[region]
         if model == "AIFS_single_v2" and region == "india":
             self.storage.put(bucket, f"output/{model}/{DATE}/{model}/tp/tp_2p0_{DATE}.nc")
+            self.storage.put(bucket, f"output/{model}/{DATE}/{model}/tp/tp_0p25_{DATE}.nc")
         elif model == "AIFS_single_v2" and region == "ethiopia":
             self.storage.put(bucket, f"output/{model}/{DATE}/{model}/tp/tp_0p25_{DATE}.nc")
         elif model == "AIFS_ENS_v2":
