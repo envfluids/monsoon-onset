@@ -749,6 +749,74 @@ python ./main.py
 
 Work top to bottom. Most incidents are resolved by step 2 or 3.
 
+### Step 0 — Take inventory with `scripts/check_pipeline.py`
+
+Before reading any logs, ask the repo what actually exists. `scripts/check_pipeline.py`
+checks every expected artifact for a date — downloaded inputs, raw model output, per-region
+post-processed products, blend output, and model diagnostics — across **all models and blends**,
+and tells you exactly which stage is the first to come up empty. It reads the blend/diagnostics
+layout straight from `blend/utils/main.py` (`BLENDS`) and the model/observation paths from the
+static patterns in §5, so it stays in sync with the pipeline. Discovery is read-only; it never
+deletes unless you ask it to.
+
+```bash
+conda activate /net/scratch2/marchakitus/conda-envs/operational   # any env with the repo on it
+
+# Full inventory for one date (run from the repo root):
+python ./scripts/check_pipeline.py --date 20260604T00
+
+# Just the gaps — the fastest "where did it break?" view:
+python ./scripts/check_pipeline.py --date 20260604T00 --missing-only
+
+# Narrow to one model / region / stage when you already suspect where:
+python ./scripts/check_pipeline.py --date 20260604T00 --model NeuralGCM --stage raw
+python ./scripts/check_pipeline.py --date 20260604T00 --region india --stage postprocessed
+
+# Sweep a back-fill range, or emit JSON for scripting:
+python ./scripts/check_pipeline.py --start-date 20260601 --end-date 20260604 --missing-only
+python ./scripts/check_pipeline.py --date 20260604T00 --json
+```
+
+Each row prints a status and the path it checked:
+
+```
+  [raw]
+    [ok] AIFS_single_v2/-/raw: AIFS/output/raw/AIFS_single_v2/init_20260604T00.nc
+  [postprocessed]
+    [--] NeuralGCM/india/tp_0p25: NeuralGCM/output/india/tp/tp_0p25_20260604T00.nc
+```
+
+`[ok]` present · `[--]` missing but expected (a real gap — start here) · `[..]` absent and not
+required (e.g. the diagnostics-only GenCast blend has no blend output). The first stage showing
+`[--]` is where to focus; jump to that stage's manual command in §4.
+
+**Granularity filters** (all repeatable, combine freely): `--stage`
+{`inputs`,`raw`,`postprocessed`,`blend`,`diagnostics`}, `--model NAME` (a model or observation
+group: `AIFS_single_v2`, `NeuralGCM`, `gencast`, `NCUM`, `IMERG`, `IMD`, `S2S`, `ecmwf`, `ncep`),
+`--blend NAME`, `--region` {`india`,`ethiopia`}, `--label PRODUCT` (e.g. `tp_0p25`, `sji`, `raw`).
+Dates come from `--date` (repeatable, accepts `YYYYMMDD[THH]`) or a `--start-date`/`--end-date`
+range. Output: `--missing-only`, `--present-only`, `--json`.
+
+**Deleting a bad stage so it can be re-run cleanly.** Add `--delete` to remove the *existing*
+artifacts that match your filters. It is off by default, requires an explicit date, lists every
+target and asks for confirmation first, warns loudly on shared inputs (one ECMWF/GDAS file feeds
+every model for that cycle), and refuses any path outside the repo. Use `--dry-run` to preview and
+`--yes` to skip the prompt in scripts.
+
+```bash
+# Preview what a delete would remove (changes nothing):
+python ./scripts/check_pipeline.py --date 20260604T00 --model NeuralGCM --stage raw --delete --dry-run
+
+# Drop just the raw NeuralGCM Zarr for one date, then re-drive from §4.4 / §3.2:
+python ./scripts/check_pipeline.py --date 20260604T00 --model NeuralGCM --stage raw --delete
+
+# Wipe everything for a hopelessly broken date (lists + confirms first):
+python ./scripts/check_pipeline.py --date 20260604T00 --delete
+```
+
+After deleting, re-run the relevant stage by hand (§4) or re-drive the whole stream (§3.2 / Step 5
+below). Then re-run `check_pipeline.py` to confirm the gaps are filled.
+
 ### Step 1 — Is it actually missing, or just not due yet?
 - AIFS/NGCM/GenCast run on the **00Z** cycle; ECMWF/GDAS publish hours after 00Z. A 06:00-local
   gap is normal. Check the cron logs (§2) for `no new data was found` (benign).
@@ -795,6 +863,9 @@ the batch scripts are just these commands in sequence.
 - Model output exists but **blend** is missing: `blend/utils/main.py --date <date> --force` (§6.3).
 - Products exist locally but aren't on Drive: `sync/utils/main.py reconcile … --repair-mode
   upload-missing` (§7.2).
+- A stage left **partial or corrupt** output that blocks a re-run (a half-written Zarr, a truncated
+  product): clear just that stage with `scripts/check_pipeline.py … --stage <stage> --delete`
+  (Step 0), then re-drive.
 
 ---
 
@@ -805,6 +876,7 @@ cd /net/monsoon/operational/monsoon-onset
 eval "$(conda shell.bash hook)"
 
 # ── status ──────────────────────────────────────────────────────────────
+python ./scripts/check_pipeline.py --date 20260604T00 --missing-only  # what's missing? (§8 Step 0)
 crontab -l | grep monsoon                         # cron installed?
 tail HPC/dsi/cron/logs/{AIFS,NGCM,IMERG,S2S,NCUM,sync}.log
 squeue -u $USER                                   # running jobs
