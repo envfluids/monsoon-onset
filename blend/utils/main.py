@@ -267,7 +267,7 @@ BLENDS: tuple[BlendConfig, ...] = (
             ForecastInput(
                 model="NeuralGCM",
                 role="ensemble",
-                path_template="NeuralGCM/output/india/tp/tp_2p0_{date}.nc",
+                path_template="NeuralGCM/output/india/tp/tp_0p25_{date}.nc",
             ),
         ),
         output_dir_template="blend/output/india2026/{date}/AIFS_single_v1p1_NeuralGCM",
