@@ -1,3 +1,4 @@
+import argparse
 from datetime import datetime, timedelta
 import os
 import subprocess
@@ -81,5 +82,17 @@ def get_imd_data(date_str=None):
         logging.exception("Failed on %s: %s", date_str, e)
         raise
 
+def main():
+    parser = argparse.ArgumentParser(description="Download the latest IMD data.")
+    parser.add_argument("--date", help="Date for which to download data (YYYYMMDD)")
+    args = parser.parse_args()
+    logging.info("Starting IMD data download process...")
+    if args.date:
+        # If a date is provided, use it
+        get_imd_data(date_str=args.date)
+    else:
+        # Otherwise, get the latest data
+        get_imd_data()
+
 if __name__ == "__main__":
-    get_imd_data()
+    main()

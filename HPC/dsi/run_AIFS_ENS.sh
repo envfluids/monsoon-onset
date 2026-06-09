@@ -4,7 +4,7 @@
 #SBATCH -n 1
 #SBATCH --cpus-per-task=16
 #SBATCH --gres=gpu:a100:4
-#SBATCH --mem=200G
+#SBATCH --mem=300G
 #SBATCH -t 02:00:00
 
 if command -v conda >/dev/null 2>&1; then

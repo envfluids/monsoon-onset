@@ -2,6 +2,7 @@ import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import logging
+import argparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -215,14 +216,22 @@ def get_data(date_str=None, max_days_to_check=7):
     )
     return None
 
-
-if __name__ == "__main__":
+def main():
+    parser = argparse.ArgumentParser(description="Download the latest IMERG data.")
+    parser.add_argument("--date", help="Date for which to download data (YYYYMMDDT00)")
+    args = parser.parse_args()
     logging.info("Starting IMERG data download process...")
-    # Define base_dir for testing if __file__ is not available (e.g. running selection in IDE)
-
-    downloaded_date = get_data()
+    if args.date:
+        # If a date is provided, use it
+        downloaded_date = get_data(date_str=args.date)
+    else:
+        # Otherwise, get the latest data
+        downloaded_date = get_data()
 
     if downloaded_date:
         logging.info(f"New data downloaded for date: {downloaded_date}")
     else:
         logging.info("No new data downloaded. Exiting process.")
+
+if __name__ == "__main__":
+    main()
