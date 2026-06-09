@@ -20,7 +20,7 @@ __pycache__/
 run_pipeline.lock
 model_diagnostics/data
 /IMERG/data/india
-/blend/data/india2026
+/blend/data/india2026/shared/india_shapefile
 /blend/utils/ethiopia2026_old
 /blend/utils/ethiopia2026/operational/Monsoon_Data/Processed_Data/2026/*
 /gencast/data/*_by_level.nc
