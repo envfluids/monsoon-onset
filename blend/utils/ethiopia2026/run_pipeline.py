@@ -73,6 +73,13 @@ def move_and_rename_files(src, dest, f_dict):
             expected_path.rename(new_path)
             logging.info(f"Moved and renamed {expected_path} to {new_path}")
 
+def move_dir(src, dest):
+    """Move all files from src to dest."""
+    for f in src.glob("*"):
+        if f.is_file():
+            new_path = dest / f.name
+            f.rename(new_path)
+            logging.info(f"Moved {f} to {new_path}")
 
 def delete_all_files_in_dir(dir_path):
     for f in dir_path.glob("*"):
@@ -196,7 +203,8 @@ def run_blending_pipeline(
     year = date.year
     onset_definitions = ["ICPAC", "2mm"]
     for onset_definition in onset_definitions:
-        py_script_path = TARGET_WORK_DIR / "predict" / "run_operational_pipeline.py"
+        predict_dir = TARGET_WORK_DIR / "predict"
+        py_script_path = predict_dir / "run_operational_pipeline.py"
 
         specs, remapping_file, expected_out_dir_head, not_implemented = (
             get_blend_params(deterministic_model, ensemble_model, onset_definition)
@@ -296,8 +304,38 @@ def run_blending_pipeline(
         final_out_dir = Path(output_dir) / onset_definition
         final_out_dir.mkdir(parents=True, exist_ok=True)
 
+        final_out_dir_hists = final_out_dir / "histograms"
+
+        expected_out_dir_hist = expected_out_dir_maps / "histograms"
+
+        hist_script = predict_dir / "plot_forecast_histograms.py"
+        cells_file = predict_dir / "data" / "support" / "all_cells.csv"
+        hist_args = {
+            "--output_dir": f"{expected_out_dir_hist}",
+            "--cells_file": f"{cells_file}",
+            "--input_file": f"{expected_out_dir_maps / f'weekly_probs_{file_name_date_f}.nc'}",
+        }
+
+        cmd = ["python", str(hist_script)]
+        for k, v in hist_args.items():
+            cmd.extend([k, v])
+
+        logging.info(f"Running command: {' '.join(cmd)}")
+        try:
+            subprocess.run(cmd, check=True)
+            logging.info("Histograms generated successfully.")
+            final_out_dir_hists.mkdir(parents=True, exist_ok=True)
+            move_dir(expected_out_dir_hist, final_out_dir_hists)
+        except subprocess.CalledProcessError as e:
+            logging.error(f"Command failed with error: {e}")
+            raise RuntimeError(
+                f"Pipeline failed at step with command: {' '.join(cmd)}"
+            ) from e
+
+
         move_and_rename_files(expected_out_dir, final_out_dir, keep_f_names)
         move_and_rename_files(expected_out_dir_maps, final_out_dir, keep_f_names_maps)
+
 
         # generate_messages(
         #     input_file=final_out_dir / f"blend_output_summary_{date_f}.csv",
