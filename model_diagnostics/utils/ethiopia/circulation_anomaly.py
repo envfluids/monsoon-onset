@@ -1,26 +1,3 @@
-"""
-Ethiopia wind circulation and convergence/divergence forecast plots.
-
-Single entry point for the model_diagnostics pipeline:
-    plot_circulation(base, date, model)
-
-Produces BOTH absolute and anomaly figures inside
-base/model_diagnostics/output/ethiopia/YYYYMMDDTHH/. This module renders the
-absolute figures and then delegates to circulation_anomaly for the anomaly
-figures (forecast minus ERA5 climatology), which carry an ``_anom`` marker.
-
-Absolute figures (this module):
-    wind_850_YYYYMMDDTHH.png    — 2x3 850 hPa wind speed + quivers
-    wind_200_YYYYMMDDTHH.png    — 2x3 200 hPa wind speed + quivers
-    divcon_850_YYYYMMDDTHH.png  — 2x3 850 hPa convergence/divergence + quivers
-    divcon_200_YYYYMMDDTHH.png  — 2x3 200 hPa convergence/divergence + quivers
-    africa_mslp_YYYYMMDDTHH.png — 2x3 MSLP + isobars + 850 hPa quivers
-
-Anomaly figures (circulation_anomaly): same set with an ``_anom`` marker.
-
-Rows = AIFS / AIFS-ENS (mean);  Columns = Week 1 / Week 2 / Week 3.
-"""
-
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,7 +8,7 @@ import cartopy.io.shapereader as shpreader
 import matplotlib.pyplot as plt
 import numpy as np
 import xarray as xr
-from matplotlib.colors import BoundaryNorm, ListedColormap
+from matplotlib.colors import BoundaryNorm, LinearSegmentedColormap, ListedColormap
 from scipy.ndimage import gaussian_filter
 
 log = logging.getLogger(__name__)
@@ -44,6 +21,7 @@ DOMAINS = {
         "lat": (3, 15),
         "stride": 3,
         "div_qscale": 400,
+        "aqs": 25,  # anomaly-wind quiver scale multiplier (scale = anom_vmax * aqs)
         "label": "Ethiopia",
     },
     "africa": {
@@ -51,6 +29,7 @@ DOMAINS = {
         "lat": (-56, 40),
         "stride": 8,
         "div_qscale": 900,
+        "aqs": 60,
         "label": "Africa",
     },
     "mslp_extended": {
@@ -58,9 +37,13 @@ DOMAINS = {
         "lat": (-56, 40),
         "stride": 10,
         "div_qscale": 1000,
+        "aqs": 65,
         "label": "Africa & Indian Ocean",
     },
 }
+
+# Default climatology produced by build_climatology.py.
+CLIM_FILENAME = "era5_clim_africa_1990-2019.zarr"
 
 # ── WEEK / STEP CONFIG ────────────────────────────────────────────────────────
 
@@ -161,6 +144,54 @@ _DIV_CMAPS = {
     "850": (CMAP_DIV_850, NORM_DIV_850, _LEVELS_DIV),
     "200": (CMAP_DIV_200, NORM_DIV_200, _LEVELS_DIV),
 }
+
+# ── ANOMALY (DIVERGING) COLORMAPS ───────────────────────────────────────────────
+# Blue = below climatology, red = above climatology. Symmetric about zero.
+
+
+def _make_diverging(levels, cmap_name="RdBu_r"):
+    levels = list(levels)
+    base = plt.get_cmap(cmap_name).resampled(len(levels) - 1)
+    colors = [base(i) for i in range(len(levels) - 1)]
+    cmap = ListedColormap(colors)
+    cmap.set_under(colors[0])
+    cmap.set_over(colors[-1])
+    norm = BoundaryNorm(levels, cmap.N)
+    return cmap, norm, levels
+
+
+_WIND_ANOM_LEVELS = {
+    "850": [-10, -8, -6, -4, -2, 0, 2, 4, 6, 8, 10],
+    "200": [-30, -24, -18, -12, -6, 0, 6, 12, 18, 24, 30],
+}
+_WIND_ANOM_CMAPS = {lev: _make_diverging(_WIND_ANOM_LEVELS[lev]) for lev in ("850", "200")}
+
+_GREEN_BROWN = LinearSegmentedColormap.from_list(
+    "green_brown",
+    ["#003300", "#2E8B2E", "#7FC97F", "#DDEEDD", "#EEDDC8", "#C9925A", "#8A5424", "#3F2206"],
+)
+
+
+def _make_green_brown(levels, reverse=False):
+    levels = list(levels)
+    n = len(levels) - 1
+    src = _GREEN_BROWN.reversed() if reverse else _GREEN_BROWN
+    colors = [src(i / (n - 1)) for i in range(n)]
+    cmap = ListedColormap(colors)
+    cmap.set_under(colors[0])
+    cmap.set_over(colors[-1])
+    norm = BoundaryNorm(levels, cmap.N)
+    return cmap, norm, levels
+
+
+_DIV_ANOM_LEVELS = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+_DIV_ANOM_CMAPS = {
+    "850": _make_green_brown(_DIV_ANOM_LEVELS, reverse=False),
+    "200": _make_green_brown(_DIV_ANOM_LEVELS, reverse=True),
+}
+
+_MSLP_ANOM_LEVELS = [-16, -12, -8, -4, 0, 4, 8, 12, 16]
+CMAP_MSLP_ANOM, NORM_MSLP_ANOM, _ = _make_diverging(_MSLP_ANOM_LEVELS)
 
 # ── DATA LOADING ───────────────────────────────────────────────────────────────
 
@@ -278,6 +309,50 @@ def _divergence(u, v, lat, lon, smooth_sigma=0.0):
     return (du_dlam / (R * cos_lat) + dv_dphi / R) * 1e5
 
 
+# ── CLIMATOLOGY (ANOMALY BASELINE) ──────────────────────────────────────────────
+
+
+def _load_clim(path: Path) -> xr.Dataset:
+    """Open the day-of-year climatology written by build_climatology.py."""
+    return xr.open_zarr(path)
+
+
+def _align_clim(clim: xr.Dataset, ref: xr.Dataset) -> xr.Dataset:
+    """Put the (already bbox-subset) climatology on the forecast grid exactly."""
+    return clim.reindex(lat=ref.lat, lon=ref.lon, method="nearest", tolerance=0.2)
+
+
+def _week_doys(date_str: str, day_start: int, day_end: int) -> list[int]:
+    """Day-of-year values for the forecast valid period (init + day_start..day_end)."""
+    y, mo, d, h = (
+        int(date_str[:4]),
+        int(date_str[4:6]),
+        int(date_str[6:8]),
+        int(date_str[9:11]),
+    )
+    init = datetime(y, mo, d, h)
+    return [
+        (init + timedelta(days=k)).timetuple().tm_yday
+        for k in range(day_start, day_end + 1)
+    ]
+
+
+def _weekly_clim_wind(clim, u_var, v_var, doys):
+    """Climatology weekly-mean wind, mirroring _weekly_wind's output."""
+    uc = clim[u_var].sel(dayofyear=doys).mean("dayofyear")
+    vc = clim[v_var].sel(dayofyear=doys).mean("dayofyear")
+    uc = uc.transpose("lat", "lon").values.astype(float)
+    vc = vc.transpose("lat", "lon").values.astype(float)
+    return uc, vc, np.sqrt(uc**2 + vc**2)
+
+
+def _weekly_clim_mslp(clim, doys):
+    """Climatology weekly-mean MSLP (already hPa), mirroring _weekly_mslp."""
+    return (
+        clim["msl"].sel(dayofyear=doys).mean("dayofyear").transpose("lat", "lon").values.astype(float)
+    )
+
+
 # ── PLOT HELPERS ───────────────────────────────────────────────────────────────
 
 
@@ -294,7 +369,7 @@ def _valid_period_str(date_str, day_start, day_end):
     return f"{t0.strftime('%-d %b')} – {t1.strftime('%-d %b')} {t1.year}"
 
 
-_ETHIOPIA_GEOM = None  # lazily loaded Natural Earth country outline
+_ETHIOPIA_GEOM = None
 
 
 def _ethiopia_geom():
@@ -310,7 +385,7 @@ def _ethiopia_geom():
                 if "Ethiopia" in (attrs.get("NAME"), attrs.get("ADMIN"), attrs.get("SOVEREIGNT")):
                     _ETHIOPIA_GEOM = rec.geometry
                     break
-        except Exception as exc:  # offline / data missing — fall back to BORDERS
+        except Exception as exc:
             log.warning(f"Could not load Ethiopia outline: {exc}")
             _ETHIOPIA_GEOM = False
     return _ETHIOPIA_GEOM or None
@@ -366,6 +441,7 @@ def _base_fig():
 def _wind_figure(
     aifs_full_ds,
     ens_full_ds,
+    clim,
     level,
     u_var,
     v_var,
@@ -377,23 +453,29 @@ def _wind_figure(
     lon_min, lon_max = domain["lon"]
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
-    cmap, norm, levels = _WIND_CMAPS[level]
-    vmax = levels[-1]
+    cmap, norm, levels = _WIND_ANOM_CMAPS[level]
+    qscale = levels[-1] * domain["aqs"]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
     ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
+    clim_d = _subset_ds(clim, lon_min, lon_max, lat_min, lat_max)
 
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        clim_g = _align_clim(clim_d, ds)
         lon2d, lat2d = np.meshgrid(ds.lon.values, ds.lat.values)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
+            doys = _week_doys(date_str, d0, d1)
             u, v, ws = _weekly_wind(ds, u_var, v_var, d0, d1)
+            uc, vc, wsc = _weekly_clim_wind(clim_g, u_var, v_var, doys)
+            ws_anom = ws - wsc
+            du, dv = u - uc, v - vc
             im = ax.pcolormesh(
                 lon2d,
                 lat2d,
-                ws,
+                ws_anom,
                 cmap=cmap,
                 norm=norm,
                 shading="auto",
@@ -403,14 +485,14 @@ def _wind_figure(
             ax.quiver(
                 lon2d[sl, sl],
                 lat2d[sl, sl],
-                u[sl, sl],
-                v[sl, sl],
+                du[sl, sl],
+                dv[sl, sl],
                 transform=ccrs.PlateCarree(),
-                scale=vmax * 20,
+                scale=qscale,
                 width=0.003,
                 headwidth=3,
                 color="black",
-                alpha=0.75,
+                alpha=0.8,
             )
             _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
             _label_panels(
@@ -422,11 +504,11 @@ def _wind_figure(
             )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-    fig.colorbar(im, cax=cbar_ax, extend="max", ticks=levels).set_label(
-        f"{level} hPa wind speed (m/s)", fontsize=10
+    fig.colorbar(im, cax=cbar_ax, extend="both", ticks=levels).set_label(
+        f"{level} hPa wind speed anomaly (m/s)", fontsize=10
     )
     fig.suptitle(
-        f"{domain['label']} — {level} hPa Wind Forecast  |  Init: {date_str}",
+        f"{domain['label']} — {level} hPa Wind Speed Anomaly vs ERA5 clim  |  Init: {date_str}",
         fontsize=13,
         y=1.02,
     )
@@ -438,6 +520,7 @@ def _wind_figure(
 def _divcon_figure(
     aifs_full_ds,
     ens_full_ds,
+    clim,
     level,
     u_var,
     v_var,
@@ -450,25 +533,33 @@ def _divcon_figure(
     lon_min, lon_max = domain["lon"]
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
+    qscale = _WIND_ANOM_LEVELS[level][-1] * domain["aqs"]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
     ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
+    clim_d = _subset_ds(clim, lon_min, lon_max, lat_min, lat_max)
 
-    cmap_div, norm_div, levels_div = _DIV_CMAPS[level]
+    cmap_div, norm_div, levels_div = _DIV_ANOM_CMAPS[level]
 
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        clim_g = _align_clim(clim_d, ds)
         lats, lons = ds.lat.values, ds.lon.values
         lon2d, lat2d = np.meshgrid(lons, lats)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
+            doys = _week_doys(date_str, d0, d1)
             u, v, _ = _weekly_wind(ds, u_var, v_var, d0, d1)
-            div = _divergence(u, v, lats, lons, smooth_sigma)
+            uc, vc, _ = _weekly_clim_wind(clim_g, u_var, v_var, doys)
+            div_anom = _divergence(u, v, lats, lons, smooth_sigma) - _divergence(
+                uc, vc, lats, lons, smooth_sigma
+            )
+            du, dv = u - uc, v - vc
             im = ax.pcolormesh(
                 lon2d,
                 lat2d,
-                div,
+                div_anom,
                 cmap=cmap_div,
                 norm=norm_div,
                 shading="auto",
@@ -478,14 +569,14 @@ def _divcon_figure(
             ax.quiver(
                 lon2d[sl, sl],
                 lat2d[sl, sl],
-                u[sl, sl],
-                v[sl, sl],
+                du[sl, sl],
+                dv[sl, sl],
                 transform=ccrs.PlateCarree(),
-                scale=domain["div_qscale"],
+                scale=qscale,
                 width=0.003,
                 headwidth=3,
                 color="black",
-                alpha=0.6,
+                alpha=0.7,
             )
             _decorate_ax(ax, lon_min, lon_max, lat_min, lat_max)
             _label_panels(
@@ -496,13 +587,18 @@ def _divcon_figure(
                 f"{wlabel}\n{_valid_period_str(date_str, d0, d1)}",
             )
 
+    color_key = (
+        "green = convergence  |  brown = divergence"
+        if level == "850"
+        else "green = divergence  |  brown = convergence"
+    )
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
     fig.colorbar(im, cax=cbar_ax, extend="both", ticks=levels_div).set_label(
-        f"{level} hPa divergence (×10⁻⁵ s⁻¹)\n← convergence  |  divergence →",
+        f"{level} hPa divergence anomaly (×10⁻⁵ s⁻¹)\n{color_key}",
         fontsize=9,
     )
     fig.suptitle(
-        f"{domain['label']} — {level} hPa Convergence/Divergence  |  Init: {date_str}",
+        f"{domain['label']} — {level} hPa Divergence Anomaly vs ERA5 clim  |  Init: {date_str}",
         fontsize=13,
         y=1.02,
     )
@@ -514,6 +610,7 @@ def _divcon_figure(
 def _mslp_figure(
     aifs_full_ds,
     ens_full_ds,
+    clim,
     date_str,
     save_path,
     domain,
@@ -522,9 +619,11 @@ def _mslp_figure(
     lon_min, lon_max = domain["lon"]
     lat_min, lat_max = domain["lat"]
     stride = domain["stride"]
+    qscale = _WIND_ANOM_LEVELS["850"][-1] * domain["aqs"]
 
     aifs_ds = _subset_ds(aifs_full_ds, lon_min, lon_max, lat_min, lat_max)
     ens_ds = _subset_ds(ens_full_ds, lon_min, lon_max, lat_min, lat_max)
+    clim_d = _subset_ds(clim, lon_min, lon_max, lat_min, lat_max)
     if "msl" not in aifs_ds or "msl" not in ens_ds:
         log.info("Skipping MSLP plot: one or both models do not provide msl")
         return
@@ -532,20 +631,26 @@ def _mslp_figure(
     fig, axes = _base_fig()
     im = None
     for row, (label, ds) in enumerate(zip(model_labels, (aifs_ds, ens_ds))):
+        clim_g = _align_clim(clim_d, ds)
         lon2d, lat2d = np.meshgrid(ds.lon.values, ds.lat.values)
         for col, (wlabel, (d0, d1)) in enumerate(WEEKS.items()):
             ax = axes[row, col]
+            doys = _week_doys(date_str, d0, d1)
             u, v, _ = _weekly_wind(ds, "u_850", "v_850", d0, d1)
+            uc, vc, _ = _weekly_clim_wind(clim_g, "u_850", "v_850", doys)
+            du, dv = u - uc, v - vc
             mslp = _weekly_mslp(ds, d0, d1)
+            mslp_anom = mslp - _weekly_clim_mslp(clim_g, doys)
             im = ax.pcolormesh(
                 lon2d,
                 lat2d,
-                mslp,
-                cmap=CMAP_MSLP,
-                norm=NORM_MSLP,
+                mslp_anom,
+                cmap=CMAP_MSLP_ANOM,
+                norm=NORM_MSLP_ANOM,
                 shading="auto",
                 transform=ccrs.PlateCarree(),
             )
+            # Absolute isobars (context) over the anomaly shading.
             ax.contour(
                 lon2d,
                 lat2d,
@@ -559,10 +664,10 @@ def _mslp_figure(
             ax.quiver(
                 lon2d[sl, sl],
                 lat2d[sl, sl],
-                u[sl, sl],
-                v[sl, sl],
+                du[sl, sl],
+                dv[sl, sl],
                 transform=ccrs.PlateCarree(),
-                scale=400,
+                scale=qscale,
                 width=0.003,
                 headwidth=3,
                 color="black",
@@ -578,11 +683,11 @@ def _mslp_figure(
             )
 
     cbar_ax = fig.add_axes([0.92, 0.15, 0.015, 0.7])
-    fig.colorbar(im, cax=cbar_ax, extend="both", ticks=_LEVELS_MSLP).set_label(
-        "Mean sea level pressure (hPa)", fontsize=10
+    fig.colorbar(im, cax=cbar_ax, extend="both", ticks=_MSLP_ANOM_LEVELS).set_label(
+        "MSLP anomaly (hPa)", fontsize=10
     )
     fig.suptitle(
-        f"{domain['label']} — MSLP & 850 hPa Wind  |  Init: {date_str}",
+        f"{domain['label']} — MSLP Anomaly + absolute isobars & 850 hPa anomaly wind  |  Init: {date_str}",
         fontsize=13,
         y=1.02,
     )
@@ -606,15 +711,12 @@ def plot_circulation(
     ensemble_input: Path | None = None,
 ):
     """
-    Called by model_diagnostics/utils/main.py. Single entry point that produces
-    BOTH the absolute and the anomaly circulation figures.
+    Called by model_diagnostics/utils/main.py.
 
-    Absolute figures (this module) for the Ethiopia and Africa domains:
-        wind_<level>_<date>.png, divcon_<level>_<date>.png, africa_mslp_<date>.png
-    Anomaly figures (delegated to circulation_anomaly) land in the same folder
-    with an ``_anom`` marker, e.g. wind_850_anom_<date>.png. The anomaly pass is
-    skipped (with a warning) if the ERA5 climatology is unavailable, so the
-    absolute figures are always produced.
+    Produces wind and convergence/divergence *anomaly* figures (forecast minus
+    ERA5 climatology) for both the Ethiopia and Africa domains. All output goes
+    into the same ethiopia/<date>/ folder; Africa figures get an ``africa_``
+    filename prefix.
 
     Parameters
     ----------
@@ -622,8 +724,8 @@ def plot_circulation(
     date   : YYYYMMDDTHH init date string
     deterministic_model / ensemble_model : exact configured model names.
     smooth : Gaussian sigma applied to u,v before divergence computation
-    clim_path : climatology zarr from build_climatology.py, forwarded to the
-                anomaly pass (default: base/climatology/<CLIM_FILENAME>)
+    clim_path : climatology zarr from build_climatology.py
+                (default: base/climatology/<CLIM_FILENAME>)
     deterministic_input / ensemble_input : optional explicit full-field paths,
                 overriding the default _full_field_path() layout (handy locally).
     """
@@ -637,6 +739,7 @@ def plot_circulation(
         if ensemble_input
         else _full_field_path(base, ensemble_model, date)
     )
+    clim_file = Path(clim_path) if clim_path else base / "climatology" / CLIM_FILENAME
     out_dir = (
         Path(output_dir)
         if output_dir
@@ -653,9 +756,13 @@ def plot_circulation(
         if not p.exists():
             log.warning(f"Skipping {date}: {p} not found")
             return
+    if not clim_file.exists():
+        log.warning(f"Skipping {date}: climatology {clim_file} not found")
+        return
 
     aifs_ds = _open_ds(aifs_nc)
     ens_ds = _open_ds(ens_nc)
+    clim = _load_clim(clim_file)
 
     try:
         domain_names = (
@@ -670,22 +777,24 @@ def plot_circulation(
                 _wind_figure(
                     aifs_ds,
                     ens_ds,
+                    clim,
                     level,
                     u_var,
                     v_var,
                     date,
-                    out_dir / f"{prefix}wind_{level}_{date}.png",
+                    out_dir / f"{prefix}wind_{level}_anom_{date}.png",
                     dom,
                     (deterministic_model, f"{ensemble_model} (mean)"),
                 )
                 _divcon_figure(
                     aifs_ds,
                     ens_ds,
+                    clim,
                     level,
                     u_var,
                     v_var,
                     date,
-                    out_dir / f"{prefix}divcon_{level}_{date}.png",
+                    out_dir / f"{prefix}divcon_{level}_anom_{date}.png",
                     dom,
                     (deterministic_model, f"{ensemble_model} (mean)"),
                     smooth,
@@ -694,32 +803,16 @@ def plot_circulation(
         _mslp_figure(
             aifs_ds,
             ens_ds,
+            clim,
             date,
-            out_dir / f"africa_mslp_{date}.png",
+            out_dir / f"africa_mslp_anom_{date}.png",
             DOMAINS["mslp_extended"],
             (deterministic_model, f"{ensemble_model} (mean)"),
         )
     finally:
         aifs_ds.close()
         ens_ds.close()
-
-    # Anomaly figures (forecast minus ERA5 climatology) into the same folder.
-    try:
-        from . import circulation_anomaly
-    except ImportError:
-        import circulation_anomaly
-
-    circulation_anomaly.plot_circulation(
-        base,
-        date,
-        deterministic_model=deterministic_model,
-        ensemble_model=ensemble_model,
-        output_dir=out_dir,
-        smooth=smooth,
-        clim_path=clim_path,
-        deterministic_input=deterministic_input,
-        ensemble_input=ensemble_input,
-    )
+        clim.close()
 
 
 def _full_field_path(base: Path, model: str, date: str) -> Path:

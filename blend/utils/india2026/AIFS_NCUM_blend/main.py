@@ -108,15 +108,11 @@ def get_data(
     else:
         out_path = base / "blend" / "output" / "india2026" / date / "AIFS_NCUM"
 
-    support_dir = (
-        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
-    )
-    coefs_dir = (
-        base / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "coefs"
-    )
+    support_dir = base / "blend" / "data" / "india2026" / "shared" / "support"
+    shared_coefs_dir = base / "blend" / "data" / "india2026" / "shared" / "coefs"
 
     thresholds_file = support_dir / "subdistrict_thresholds.csv"
-    clim_file = coefs_dir / "subdistrict_full_clim_by_id_time.csv"
+    clim_file = shared_coefs_dir / "subdistrict_full_clim_by_id_time.csv"
     dissemination_file = support_dir / "dissemination_subdistricts.csv"
     exclude_file = support_dir / "subdistricts_to_exclude.csv"
 

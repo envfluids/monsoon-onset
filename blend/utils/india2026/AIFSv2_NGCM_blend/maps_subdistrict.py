@@ -56,15 +56,12 @@ SHAPEFILE_DIR = (
     / "blend"
     / "data"
     / "india2026"
-    / "AIFS_NCUM_blend"
-    / "data"
+    / "shared"
     / "india_shapefile"
 )
 SUBDISTRICT_SHP = SHAPEFILE_DIR / "Sub_districts_India_ESRI.shp"
 STATE_SHP = SHAPEFILE_DIR / "STATE_BOUNDARY.shp"
-SUPPORT_DIR = (
-    BASE_DIR / "blend" / "data" / "india2026" / "AIFS_NCUM_blend" / "data" / "support"
-)
+SUPPORT_DIR = BASE_DIR / "blend" / "data" / "india2026" / "shared" / "support"
 DISSEM_FILE = SUPPORT_DIR / "dissemination_subdistricts.csv"
 EXCLUDE_FILE = SUPPORT_DIR / "subdistricts_to_exclude.csv"
 
