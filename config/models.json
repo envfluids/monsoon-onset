@@ -199,7 +199,7 @@
             "q_50"
         ],
       "CLOUD": {"docker": "aifs-v2", "run": "true"},
-      "regions": ["ethiopia"]
+      "regions": ["ethiopia", "india"]
     },
     "AIFS_ENS_v2": {
         "name": "AIFS_ENS_v2",
