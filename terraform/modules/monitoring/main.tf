@@ -271,4 +271,12 @@ resource "google_monitoring_dashboard" "pipeline" {
       ]
     }
   })
+
+  # The Monitoring API normalizes dashboard_json on read (injects etag/name,
+  # default plotType/targetAxis, columns as a string), producing a perpetual
+  # in-place diff. Ignore it so applies stay clean; update the dashboard by
+  # editing dashboard_json above and temporarily removing this ignore.
+  lifecycle {
+    ignore_changes = [dashboard_json]
+  }
 }
