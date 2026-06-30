@@ -1,0 +1,18 @@
+steps:
+  - id: fetch-tfvars
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args: ['-c', 'gcloud secrets versions access latest --secret=monsoon-${_ENV}-tfvars > terraform/environments/${_ENV}/terraform.tfvars']
+  - id: tofu-plan
+    name: ghcr.io/opentofu/opentofu:1.8
+    dir: terraform/environments/${_ENV}
+    entrypoint: sh
+    args:
+      - -c
+      - |
+        set -e
+        tofu init -input=false -backend-config="bucket=${_TF_STATE_BUCKET}"
+        tofu apply -input=false -auto-approve -var-file=terraform.tfvars
+timeout: 1200s
+options:
+  logging: CLOUD_LOGGING_ONLY
