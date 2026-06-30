@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import signal
+import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,21 @@ TPU_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 TERMINAL_QR_STATES = {"FAILED", "SUSPENDED", "PREEMPTED", "DELETING"}
 INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
 STALE_DISPATCH_GRACE_SECONDS = 3_600
+
+
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
 
 
 class DispatchError(RuntimeError):
@@ -370,11 +386,13 @@ class Controller:
             last_result = self.run_attempt(attempt)
             if last_result.success:
                 self.write_status(attempt, "SUCCEEDED", last_result.message)
+                emit_stage_result("gencast_dispatch", "success", self.config.date)
                 return
             if not last_result.retryable:
                 break
             logger.warning("Attempt %s will be retried: %s", attempt, last_result.message)
         self.write_status(last_attempt, "FAILED", last_result.message)
+        emit_stage_result("gencast_dispatch", "failure", self.config.date, error=last_result.message)
         raise DispatchError(last_result.message)
 
     def claim_dispatch(self) -> bool:

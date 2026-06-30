@@ -50,6 +50,53 @@ resource "google_bigquery_dataset_iam_member" "logs_writer" {
 }
 
 # -----------------------------------------------------------------------------
+# Log-based metric: per-stage success/failure
+# Each pipeline container emits one JSON line
+# {"event":"stage_result", "stage":..., "region":..., "status":"success|failure"}
+# on success and failure. This metric turns those into a counter keyed by
+# stage/region/status. dev and prod are separate projects, so it is inherently
+# per-environment.
+# -----------------------------------------------------------------------------
+
+locals {
+  stage_metric_type = "logging.googleapis.com/user/${var.name_prefix}_${var.environment}_stage_result_count"
+}
+
+resource "google_logging_metric" "stage_result" {
+  project = var.project_id
+  name    = "${var.name_prefix}_${var.environment}_stage_result_count"
+  filter  = "jsonPayload.event=\"stage_result\""
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key         = "stage"
+      value_type  = "STRING"
+      description = "Pipeline stage (downloader, aifs, aifs_ens, neuralgcm, gencast, gencast_dispatch, blend, sync)"
+    }
+    labels {
+      key         = "region"
+      value_type  = "STRING"
+      description = "Forecast region, or empty for region-agnostic stages"
+    }
+    labels {
+      key         = "status"
+      value_type  = "STRING"
+      description = "success or failure"
+    }
+  }
+
+  label_extractors = {
+    "stage"  = "EXTRACT(jsonPayload.stage)"
+    "region" = "EXTRACT(jsonPayload.region)"
+    "status" = "EXTRACT(jsonPayload.status)"
+  }
+}
+
+# -----------------------------------------------------------------------------
 # Notification Channels
 # -----------------------------------------------------------------------------
 
@@ -180,103 +227,233 @@ resource "google_monitoring_alert_policy" "pipeline_stale" {
   }
 }
 
+# Alert: a pipeline stage emitted a failure (from the log-based metric)
+resource "google_monitoring_alert_policy" "stage_failure" {
+  count = var.enable_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] Monsoon Stage Failure"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "A pipeline stage emitted a failure"
+
+    condition_threshold {
+      filter          = "metric.type=\"${local.stage_metric_type}\" AND metric.label.status=\"failure\""
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_SUM"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.stage", "metric.label.region"]
+      }
+    }
+  }
+
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "300s"
+    }
+  }
+
+  documentation {
+    content   = "A monsoon pipeline stage emitted a structured failure (jsonPayload.event=stage_result, status=failure). The incident labels identify the stage and region; see the dashboard 'Stage Failures' log panel for the error text."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "high"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Monitoring Dashboard
 # -----------------------------------------------------------------------------
 
 resource "google_monitoring_dashboard" "pipeline" {
   project = var.project_id
+
+  # dashboard_json is intentionally NOT ignored: edit it here and let CI apply.
+  # plotType/targetAxis are set explicitly and we use mosaicLayout to avoid the
+  # API normalization that previously caused a perpetual in-place diff. Do not
+  # re-add a lifecycle ignore_changes block, or future edits would silently not
+  # deploy.
   dashboard_json = jsonencode({
     displayName = "Monsoon Pipeline (${var.environment})"
-    gridLayout = {
-      columns = 2
-      widgets = [
+    mosaicLayout = {
+      columns = 12
+      tiles = concat([
         {
-          title = "Workflow Executions"
-          xyChart = {
-            dataSets = [{
+          xPos = 0, yPos = 0, width = 3, height = 4
+          widget = {
+            title = "Workflow Succeeded (24h)"
+            scorecard = {
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "resource.type=\"workflows.googleapis.com/Workflow\" AND metric.type=\"workflows.googleapis.com/finished_execution_count\""
+                  filter = "metric.type=\"workflows.googleapis.com/finished_execution_count\" AND resource.type=\"workflows.googleapis.com/Workflow\" AND metric.label.status=\"SUCCEEDED\""
                   aggregation = {
-                    alignmentPeriod  = "3600s"
-                    perSeriesAligner = "ALIGN_SUM"
+                    alignmentPeriod    = "86400s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
                   }
                 }
               }
-            }]
+              sparkChartView = { sparkChartType = "SPARK_LINE" }
+              thresholds     = [{ value = 1, color = "GREEN", direction = "ABOVE" }]
+            }
           }
         },
         {
-          title = "Cloud Run Job Executions"
-          xyChart = {
-            dataSets = [{
+          xPos = 3, yPos = 0, width = 3, height = 4
+          widget = {
+            title = "Workflow Failed (24h)"
+            scorecard = {
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "resource.type=\"cloud_run_job\" AND metric.type=\"run.googleapis.com/job/completed_execution_count\""
+                  filter = "metric.type=\"workflows.googleapis.com/finished_execution_count\" AND resource.type=\"workflows.googleapis.com/Workflow\" AND metric.label.status=\"FAILED\""
                   aggregation = {
-                    alignmentPeriod  = "3600s"
-                    perSeriesAligner = "ALIGN_SUM"
+                    alignmentPeriod    = "86400s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
                   }
                 }
               }
-            }]
+              sparkChartView = { sparkChartType = "SPARK_BAR" }
+              thresholds     = [{ value = 0, color = "RED", direction = "ABOVE" }]
+            }
           }
         },
         {
-          title = "Cloud Batch Jobs"
-          xyChart = {
-            dataSets = [{
+          xPos = 6, yPos = 0, width = 3, height = 4
+          widget = {
+            title = "Stage Failures (24h)"
+            scorecard = {
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "resource.type=\"batch.googleapis.com/Job\" AND metric.type=\"batch.googleapis.com/job/state\""
+                  filter = "metric.type=\"${local.stage_metric_type}\" AND metric.label.status=\"failure\""
                   aggregation = {
-                    alignmentPeriod  = "3600s"
-                    perSeriesAligner = "ALIGN_COUNT"
+                    alignmentPeriod    = "86400s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
                   }
                 }
               }
-            }]
+              sparkChartView = { sparkChartType = "SPARK_BAR" }
+              thresholds     = [{ value = 0, color = "RED", direction = "ABOVE" }]
+            }
           }
         },
         {
-          title = "GCS Operations"
-          xyChart = {
-            dataSets = [{
+          xPos = 9, yPos = 0, width = 3, height = 4
+          widget = {
+            title = "Workflow Success (6h)"
+            scorecard = {
               timeSeriesQuery = {
                 timeSeriesFilter = {
-                  filter = "resource.type=\"gcs_bucket\" AND metric.type=\"storage.googleapis.com/api/request_count\""
+                  filter = "metric.type=\"workflows.googleapis.com/finished_execution_count\" AND resource.type=\"workflows.googleapis.com/Workflow\" AND metric.label.status=\"SUCCEEDED\""
                   aggregation = {
-                    alignmentPeriod  = "3600s"
-                    perSeriesAligner = "ALIGN_SUM"
+                    alignmentPeriod    = "21600s"
+                    perSeriesAligner   = "ALIGN_SUM"
+                    crossSeriesReducer = "REDUCE_SUM"
                   }
                 }
               }
-            }]
+              sparkChartView = { sparkChartType = "SPARK_LINE" }
+              thresholds     = [{ value = 1, color = "GREEN", direction = "ABOVE" }]
+            }
           }
         },
         {
-          title = "Error Logs"
-          logsPanel = {
-            filter = "severity>=ERROR labels.environment=\"${var.environment}\""
+          xPos = 0, yPos = 4, width = 8, height = 5
+          widget = {
+            title = "Stage Results (success vs failure)"
+            xyChart = {
+              dataSets = [
+                {
+                  timeSeriesQuery = {
+                    timeSeriesFilter = {
+                      filter = "metric.type=\"${local.stage_metric_type}\" AND metric.label.status=\"success\""
+                      aggregation = {
+                        alignmentPeriod    = "3600s"
+                        perSeriesAligner   = "ALIGN_SUM"
+                        crossSeriesReducer = "REDUCE_SUM"
+                        groupByFields      = ["metric.label.stage"]
+                      }
+                    }
+                  }
+                  plotType       = "STACKED_BAR"
+                  targetAxis     = "Y1"
+                  legendTemplate = "$${metric.label.stage} ok"
+                },
+                {
+                  timeSeriesQuery = {
+                    timeSeriesFilter = {
+                      filter = "metric.type=\"${local.stage_metric_type}\" AND metric.label.status=\"failure\""
+                      aggregation = {
+                        alignmentPeriod    = "3600s"
+                        perSeriesAligner   = "ALIGN_SUM"
+                        crossSeriesReducer = "REDUCE_SUM"
+                        groupByFields      = ["metric.label.stage"]
+                      }
+                    }
+                  }
+                  plotType       = "STACKED_BAR"
+                  targetAxis     = "Y1"
+                  legendTemplate = "$${metric.label.stage} FAIL"
+                }
+              ]
+            }
           }
         },
         {
-          title = "Pipeline Status"
-          text = {
-            content = "Check workflow executions and job status above. Green = healthy, errors shown in log panel."
-            format  = "MARKDOWN"
+          xPos = 8, yPos = 4, width = 4, height = 5
+          widget = {
+            title = "Stage Failures (error detail)"
+            logsPanel = {
+              filter        = "jsonPayload.event=\"stage_result\" AND jsonPayload.status=\"failure\""
+              resourceNames = ["projects/${var.project_id}"]
+            }
+          }
+        },
+        {
+          xPos = 0, yPos = 9, width = 6, height = 4
+          widget = {
+            title = "Cloud Run Jobs (success/failure)"
+            xyChart = {
+              dataSets = [{
+                timeSeriesQuery = {
+                  timeSeriesFilter = {
+                    filter = "metric.type=\"run.googleapis.com/job/completed_execution_count\" AND resource.type=\"cloud_run_job\""
+                    aggregation = {
+                      alignmentPeriod    = "3600s"
+                      perSeriesAligner   = "ALIGN_SUM"
+                      crossSeriesReducer = "REDUCE_SUM"
+                      groupByFields      = ["resource.label.job_name", "metric.label.result"]
+                    }
+                  }
+                }
+                plotType       = "STACKED_BAR"
+                targetAxis     = "Y1"
+                legendTemplate = "$${resource.label.job_name} $${metric.label.result}"
+              }]
+            }
           }
         }
-      ]
+        ], var.enable_alerts ? [
+        {
+          xPos = 6, yPos = 9, width = 6, height = 4
+          widget = {
+            title      = "Stage Failure Alert"
+            alertChart = { name = google_monitoring_alert_policy.stage_failure[0].id }
+          }
+        }
+      ] : [])
     }
   })
-
-  # The Monitoring API normalizes dashboard_json on read (injects etag/name,
-  # default plotType/targetAxis, columns as a string), producing a perpetual
-  # in-place diff. Ignore it so applies stay clean; update the dashboard by
-  # editing dashboard_json above and temporarily removing this ignore.
-  lifecycle {
-    ignore_changes = [dashboard_json]
-  }
 }

@@ -108,6 +108,21 @@ def write_dispatch_status(
     logger.info("Wrote TPU dispatch status %s to gs://%s/%s", state, bucket_name, status_path)
 
 
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -128,6 +143,7 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field, graphc
         _main(date, regions, common_bucket, region_buckets, upload_full_field, graphcast_bucket)
     except Exception as exc:
         write_dispatch_status(date, "FAILED", f"GenCast shim failed: {exc}", 1)
+        emit_stage_result(MODEL, "failure", date, error=exc)
         raise
 
 
@@ -174,6 +190,7 @@ def _main(date, regions, common_bucket, region_buckets, upload_full_field, graph
             raise click.ClickException(f"No bucket configured for region {region!r}")
         _upload_region_outputs(date, region, region_buckets[region])
         _write_completion_marker(date, region, common_bucket)
+        emit_stage_result(MODEL, "success", date, region=region)
     write_dispatch_status(date, "SUCCEEDED", "GenCast outputs uploaded", 0)
 
 

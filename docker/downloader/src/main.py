@@ -98,6 +98,21 @@ def download_public_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) 
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
+
+
 @click.command()
 @click.option("--source", envvar="SOURCE", required=True,
               type=click.Choice(["ecmwf", "ncep", "both"]))
@@ -184,12 +199,17 @@ def _download(source: str, date: str, bucket: str) -> None:
         date = _latest_ecmwf_00z() if source == "ecmwf" else _latest_ncep_00z()
     _require_00z(date)
 
-    if source == "ecmwf":
-        _download_ecmwf(date, bucket)
-    elif source == "ncep":
-        _download_ncep(date, bucket)
-    else:
-        raise click.ClickException("SOURCE=both is only valid with ACTION=get_latest_date")
+    try:
+        if source == "ecmwf":
+            _download_ecmwf(date, bucket)
+        elif source == "ncep":
+            _download_ncep(date, bucket)
+        else:
+            raise click.ClickException("SOURCE=both is only valid with ACTION=get_latest_date")
+        emit_stage_result("downloader", "success", date)
+    except Exception as exc:
+        emit_stage_result("downloader", "failure", date, error=exc)
+        raise
 
 
 def _require_00z(date: str) -> None:

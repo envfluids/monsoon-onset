@@ -58,6 +58,21 @@ def _client():
     return storage.Client()
 
 
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
+
+
 def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
     _client().bucket(bucket_name).blob(gcs_path).download_to_filename(str(local_path))
@@ -93,6 +108,14 @@ def write_gcs_text(bucket_name: str, gcs_path: str, content: str) -> None:
 @click.option("--upload-full-field", envvar="UPLOAD_FULL_FIELD",
               type=lambda v: str(v).lower() == "true", default=False)
 def main(date, regions, common_bucket, region_buckets, upload_full_field):
+    try:
+        _main(date, regions, common_bucket, region_buckets, upload_full_field)
+    except Exception as exc:
+        emit_stage_result("neuralgcm", "failure", date, error=exc)
+        raise
+
+
+def _main(date, regions, common_bucket, region_buckets, upload_full_field):
     regions = json.loads(regions)
     region_buckets = json.loads(region_buckets)
 
@@ -136,6 +159,7 @@ def main(date, regions, common_bucket, region_buckets, upload_full_field):
             raise click.ClickException(f"No bucket configured for region {region!r}")
         _upload_region_outputs(date, region, region_buckets[region])
         _write_completion_marker(date, region, common_bucket)
+        emit_stage_result("neuralgcm", "success", date, region=region)
 
 
 def _raw_output_base() -> Path:

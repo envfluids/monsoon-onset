@@ -31,11 +31,27 @@ IC_ECMWF_DIR = REPO_ROOT / "IC" / "output" / "ecmwf"
 MODEL_CONFIG_PATH = REPO_ROOT / "config" / "models.json"
 
 MODEL_NAME = "AIFS_single_v2"
+STAGE = "aifs"
 RUN_SCRIPT = "run_model.py"
 OUTPUT_SUFFIX = ".nc"
 SPARSE_DOWNLOAD_NAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
 SPARSE_RUN_NAME = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
 GCS_UPLOAD_WORKERS = int(os.environ.get("AIFS_GCS_UPLOAD_WORKERS", "16"))
+
+
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
 
 
 def _client():
@@ -104,6 +120,14 @@ def _upload_directory_file(
     default=True,
 )
 def main(date, model, regions, common_bucket, region_buckets, upload_full_field):
+    try:
+        _main(date, model, regions, common_bucket, region_buckets, upload_full_field)
+    except Exception as exc:
+        emit_stage_result(STAGE, "failure", date, error=exc)
+        raise
+
+
+def _main(date, model, regions, common_bucket, region_buckets, upload_full_field):
     regions = json.loads(regions)
     region_buckets = json.loads(region_buckets)
 
@@ -129,6 +153,7 @@ def main(date, model, regions, common_bucket, region_buckets, upload_full_field)
         _run_post_process(date, model, region)
         _upload_region_outputs(date, model, region, region_buckets[region])
         _write_completion_marker(date, model, region, common_bucket)
+        emit_stage_result(STAGE, "success", date, region=region)
 
 
 def _setup_directories(regions: list[str], model: str) -> None:

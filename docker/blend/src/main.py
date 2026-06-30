@@ -122,6 +122,21 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
 # CLI entry point
 # ---------------------------------------------------------------------------
 
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
+
+
 @click.command()
 @click.option("--date",   envvar="DATE",            required=True)
 @click.option("--region", envvar="FORECAST_REGION", required=True)
@@ -132,6 +147,14 @@ def upload_directory(bucket_name: str, local_dir: Path, gcs_prefix: str) -> None
               help="JSON map {region: bucket}")
 @click.option("--blend-names", envvar="BLEND_NAMES", default="")
 def main(date, region, run_mode, common_bucket, region_buckets, blend_names):
+    try:
+        _main(date, region, run_mode, common_bucket, region_buckets, blend_names)
+    except Exception as exc:
+        emit_stage_result("blend", "failure", date, region=region, error=exc)
+        raise
+
+
+def _main(date, region, run_mode, common_bucket, region_buckets, blend_names):
     region_buckets = json.loads(region_buckets)
     if region not in region_buckets:
         raise click.ClickException(f"No bucket configured for region {region!r}")
@@ -147,10 +170,12 @@ def main(date, region, run_mode, common_bucket, region_buckets, blend_names):
     ready_blends = _download_inputs(date, region, region_bucket, common_bucket, blends, run_mode)
     if not ready_blends:
         logger.info("No selected %s configs are ready for %s/%s", run_mode, region, date)
+        emit_stage_result("blend", "success", date, region=region)
         return
     ran_blends = _run_blend(date, region, run_mode, ready_blends)
     _upload_cached_climatologies(common_bucket, region, run_mode, ran_blends)
     _upload_outputs(date, region, region_bucket, common_bucket, run_mode, ran_blends)
+    emit_stage_result("blend", "success", date, region=region)
 
 
 def _pipeline_models_for_blend(blend: BlendConfig) -> set[str]:

@@ -38,6 +38,7 @@ Environment Variables:
 import json
 import logging
 import os
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -107,6 +108,21 @@ def read_gcs_json(bucket_name: str, gcs_path: str) -> dict:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def emit_stage_result(stage, status, date, region=None, error=None):
+    """Emit one structured JSON line to stdout for log-based metrics."""
+    record = {
+        "event": "stage_result",
+        "stage": stage,
+        "region": region,
+        "date": date,
+        "status": status,
+        "severity": "INFO" if status == "success" else "ERROR",
+    }
+    if error is not None:
+        record["error"] = str(error)[:2000]
+    print(json.dumps(record), file=sys.stdout, flush=True)
+
+
 @click.command()
 @click.option("--date",   envvar="DATE",            required=True)
 @click.option("--region", envvar="FORECAST_REGION", required=True)
@@ -121,6 +137,28 @@ def read_gcs_json(bucket_name: str, gcs_path: str) -> dict:
 @click.option("--cluster",    envvar="MONSOON_CLUSTER",     default="gcp")
 @click.option("--drive-root", envvar="MONSOON_DRIVE_ROOT",  default=None)
 def main(
+    date,
+    region,
+    region_buckets,
+    sync_spec,
+    enable_drive,
+    sync_fingerprint,
+    sync_items,
+    config,
+    cluster,
+    drive_root,
+):
+    try:
+        _main(
+            date, region, region_buckets, sync_spec, enable_drive,
+            sync_fingerprint, sync_items, config, cluster, drive_root,
+        )
+    except Exception as exc:
+        emit_stage_result("sync", "failure", date, region=region, error=exc)
+        raise
+
+
+def _main(
     date,
     region,
     region_buckets,
@@ -154,6 +192,7 @@ def main(
                 region,
                 date,
             )
+            emit_stage_result("sync", "success", date, region=region)
             return
 
         rule_names = _rule_names_for_sync(spec["rules"], claimed_sync_items or requested_sync_items)
@@ -191,6 +230,7 @@ def main(
     if sync_fingerprint and not requested_sync_items:
         write_gcs_text(region_bucket, f"sync-state/{date}.json", sync_fingerprint)
     logger.info(f"Sync complete for region={region} date={date}")
+    emit_stage_result("sync", "success", date, region=region)
 
 
 def _materialize_drive_auth() -> None:
