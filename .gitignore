@@ -30,6 +30,7 @@ model_diagnostics/data
 .gcloudignore
 .terraform.lock.hcl
 *.tfvars
+*.tfvars.json
 
 # Allow placeholder files to keep directory structure
 !weights/.gitkeep
