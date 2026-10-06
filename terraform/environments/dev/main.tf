@@ -82,7 +82,40 @@ variable "gencast_tpu_subnet_cidr" {
 variable "disabled_models" {
   description = "Versioned model names to disable globally in this environment. Hyphen and underscore spellings are both accepted, for example AIFS-ENS-v2 or AIFS_ENS_v2."
   type        = set(string)
-  default     = []
+  default     = ["gencast", "AIFS_single_v2", "neuralgcm"]
+
+  validation {
+    condition = alltrue([
+      for model in var.disabled_models :
+      contains(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"], replace(model, "-", "_"))
+    ])
+    error_message = "disabled_models entries must be one of AIFS_single_v2, AIFS_ENS_v2, neuralgcm, gencast (case-sensitive)."
+  }
+}
+
+variable "disabled_stages" {
+  description = "Per-region stages to switch off without removing them from the region definition, for seasonal on/off control. Map of region → stages (blend, model_diagnostics, sync)."
+  type        = map(set(string))
+  default = {
+    india    = ["model_diagnostics"]
+    ethiopia = ["blend", "model_diagnostics"]
+  }
+
+  validation {
+    condition = alltrue([
+      for region, stages in var.disabled_stages :
+      contains(["india", "ethiopia"], region) && alltrue([
+        for stage in stages : contains(["blend", "model_diagnostics", "sync"], stage)
+      ])
+    ])
+    error_message = "disabled_stages keys must be india or ethiopia, and stages must be blend, model_diagnostics or sync."
+  }
+}
+
+variable "scheduler_paused" {
+  description = "Pause the pipeline Cloud Scheduler job. Workflow runs can still be started manually."
+  type        = bool
+  default     = true
 }
 
 locals {
@@ -98,8 +131,19 @@ locals {
   }
   external_api_secrets = merge(var.external_api_secrets, local.drive_api_secrets)
   model_sync_rule_exclusions = {
+    AIFS_single_v2 = {
+      india    = ["AIFS_single_v2"]
+      ethiopia = ["AIFS_single_v2"]
+    }
     AIFS_ENS_v2 = {
       ethiopia = ["AIFS_ENS_v2"]
+    }
+    neuralgcm = {
+      india    = ["NeuralGCM"]
+      ethiopia = ["NeuralGCM"]
+    }
+    gencast = {
+      ethiopia = ["GenCast"]
     }
   }
   model_stage_exclusions = {}
@@ -134,16 +178,23 @@ locals {
   disabled_stages_by_region = {
     for region_name in keys(local.base_regions) :
     region_name => toset(flatten([
-      for model in local.disabled_model_ids :
-      lookup(lookup(local.model_stage_exclusions, model, {}), region_name, [])
+      [
+        for model in local.disabled_model_ids :
+        lookup(lookup(local.model_stage_exclusions, model, {}), region_name, [])
+      ],
+      tolist(try(var.disabled_stages[region_name], toset([]))),
     ]))
   }
 
+  # Disabling the blend or model_diagnostics stage also drops its same-named sync rule.
   disabled_sync_rules_by_region = {
     for region_name in keys(local.base_regions) :
     region_name => toset(flatten([
-      for model in local.disabled_model_ids :
-      lookup(lookup(local.model_sync_rule_exclusions, model, {}), region_name, [])
+      [
+        for model in local.disabled_model_ids :
+        lookup(lookup(local.model_sync_rule_exclusions, model, {}), region_name, [])
+      ],
+      tolist(try(var.disabled_stages[region_name], toset([]))),
     ]))
   }
 
@@ -230,6 +281,26 @@ module "compute" {
   gencast_tpu_zone    = var.gencast_tpu_zone
   tpu_vpc_subnetwork  = module.networking.subnetwork_ids_by_region[local.gencast_tpu_region]
 
+  # Replaces the module default map: AIFS_ENS_v2 keeps its module-default
+  # settings but runs on STANDARD (non-spot) VMs instead of the dev SPOT default.
+  batch_model_resources = {
+    AIFS_ENS_v2 = {
+      machine_type        = "a2-highgpu-4g"
+      boot_disk_size_gb   = 300
+      cpu_milli           = 12000
+      memory_mib          = 204800
+      install_gpu_drivers = true
+      max_run_duration    = "7200s"
+      mount_common_bucket = true
+      gcs_mount_options = [
+        "--implicit-dirs",
+        "--metadata-cache-negative-ttl-secs=0",
+        "--profile=aiml-checkpointing",
+      ]
+      provisioning_model = "STANDARD"
+    }
+  }
+
   # Container images — pulled from Artifact Registry created by storage module
   downloader_image     = "${module.storage.artifact_registry_url}/monsoon-downloader:latest"
   pipeline_state_image = "${module.storage.artifact_registry_url}/monsoon-pipeline-state:latest"
@@ -260,6 +331,7 @@ module "orchestration" {
 
   # Dev: less frequent runs
   pipeline_schedule       = "0 8,14 * * 0-3" # 00:00 and 12:00 UTC, Sun-Wed
+  scheduler_paused        = var.scheduler_paused
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
@@ -314,9 +386,8 @@ module "monitoring" {
   region      = var.region
   environment = local.environment
 
-  # Dev: minimal alerting
-  enable_alerts       = false
-  notification_emails = []
+  enable_alerts       = true
+  notification_emails = ["zachary.freitag.johnson7@gmail.com"]
 
   depends_on = [module.orchestration]
 }
