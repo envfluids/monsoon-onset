@@ -48,6 +48,12 @@ variable "pipeline_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "scheduler_paused" {
+  description = "Pause the pipeline Cloud Scheduler job. Null leaves the paused state unmanaged."
+  type        = bool
+  default     = null
+}
+
 variable "call_log_level" {
   description = "Workflow call log level (LOG_ALL_CALLS, LOG_ERRORS_ONLY, LOG_NONE)"
   type        = string

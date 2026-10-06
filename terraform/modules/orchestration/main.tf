@@ -212,6 +212,7 @@ resource "google_cloud_scheduler_job" "pipeline_trigger" {
   description = "Triggers monsoon multi-region pipeline"
   schedule    = var.pipeline_schedule
   time_zone   = "UTC"
+  paused      = var.scheduler_paused
 
   http_target {
     uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.main_pipeline.id}/executions"
