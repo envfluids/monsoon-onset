@@ -17,6 +17,7 @@ import xarray as xr
 from zarr.codecs import BloscCodec, BloscShuffle
 from anemoi.inference.outputs.printer import print_state
 from anemoi.inference.runners.simple import SimpleRunner
+from ens_settings import add_run_arguments, resolve_run_settings
 from preprocess_ic import get_ic
 from scipy.sparse import load_npz
 import json
@@ -546,7 +547,9 @@ def main():
         required=True,
         help="Model name to run (must be defined in model_config.json)",
     )
+    add_run_arguments(parser)
     args = parser.parse_args()
+    n_members, lead_time = resolve_run_settings(args.n_members, args.lead_time_hours)
     date_f = args.date
     model_name = args.model
     model_config = MODEL_CONFIG.get(model_name)
@@ -580,8 +583,7 @@ def main():
         "msl",
     ]
 
-    lead_time = 24 * 50
-    n_members = 25
+    logging.info(f"Ensemble members: {n_members}, lead time: {lead_time} h")
 
     ngpus = torch.cuda.device_count()
     logging.info(f"Detected {ngpus} CUDA GPUs")
