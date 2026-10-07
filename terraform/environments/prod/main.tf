@@ -270,8 +270,6 @@ module "orchestration" {
 
   pipeline_service_account_id    = module.storage.pipeline_service_account_name
   pipeline_service_account_email = module.storage.pipeline_service_account_email
-
-  depends_on = [module.compute]
 }
 
 # -----------------------------------------------------------------------------
