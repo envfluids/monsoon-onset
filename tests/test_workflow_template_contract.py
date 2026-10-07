@@ -12,6 +12,7 @@ COMPUTE_MAIN_PATH = (
 )
 DEV_MAIN_PATH = Path(__file__).resolve().parents[1] / "terraform/environments/dev/main.tf"
 PROD_MAIN_PATH = Path(__file__).resolve().parents[1] / "terraform/environments/prod/main.tf"
+ORCHESTRATION_PATH = Path(__file__).resolve().parents[1] / "terraform/modules/orchestration"
 
 
 class WorkflowTemplateContractTest(unittest.TestCase):
@@ -209,6 +210,118 @@ class WorkflowTemplateContractTest(unittest.TestCase):
             "auth:\n            type: OIDC",
             "return: $${response.body}",
         )
+
+
+def hcl_block(content, opening):
+    """Return the brace-balanced block that starts at `opening` (which ends with "{")."""
+    start = content.index(opening)
+    depth = 0
+    for index in range(start, len(content)):
+        if content[index] == "{":
+            depth += 1
+        elif content[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return content[start : index + 1]
+    raise AssertionError(f"Unbalanced block: {opening}")
+
+
+class PerModelEnvAndRegionModelsContractTest(unittest.TestCase):
+    STANDARD_ENV = (
+        "DATE",
+        "MODEL",
+        "FORECAST_REGIONS",
+        "GCS_COMMON_BUCKET",
+        "GCS_REGION_BUCKETS",
+        "REGION_MODELS",
+        "REGIONS",
+        "PROJECT_ID",
+        "UPLOAD_FULL_FIELD",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.orchestration_main = (ORCHESTRATION_PATH / "main.tf").read_text()
+        cls.orchestration_vars = (ORCHESTRATION_PATH / "variables.tf").read_text()
+
+    def test_batch_model_env_renders_inside_each_model_submission(self):
+        submission = self.workflow.split("- submit_${model}_batch:", 1)[1].split(
+            "- ${model}_submit_done:", 1
+        )[0]
+        env_block = submission.split("env_vars:", 1)[1]
+        loop = (
+            "%{ for name, value in try(batch_model_env[model], {}) ~}\n"
+            "                          ${name}: ${jsonencode(value)}\n"
+            "%{ endfor ~}\n"
+        )
+        self.assertIn(loop, env_block)
+        self.assertLess(env_block.index("UPLOAD_FULL_FIELD"), env_block.index(loop))
+        self.assertEqual(self.workflow.count("batch_model_env"), 1)
+
+    def test_orchestration_module_passes_batch_model_env_with_safe_default(self):
+        self.assertIn(
+            "batch_model_env     = var.batch_model_env", self.orchestration_main
+        )
+        variable = hcl_block(self.orchestration_vars, 'variable "batch_model_env" {')
+        self.assertIn("type        = map(map(string))", variable)
+        self.assertIn("default     = {}", variable)
+        self.assertIn('regex("^[A-Z_][A-Z0-9_]*$", name)', variable)
+        for name in self.STANDARD_ENV:
+            with self.subTest(name=name):
+                self.assertIn(f'"{name}"', variable)
+                self.assertIn(f"{name}:", self.workflow)
+
+    def test_dev_sets_ensemble_run_size_for_aifs_ens_v2_only(self):
+        orchestration = hcl_block(self.dev, 'module "orchestration" {')
+        env = hcl_block(orchestration, "batch_model_env = {")
+        self.assertEqual(env.count(" = {"), 2)  # the map itself plus AIFS_ENS_v2
+        aifs_ens = hcl_block(env, "AIFS_ENS_v2 = {")
+        self.assertIn('AIFS_ENS_N_MEMBERS       = "51"', aifs_ens)
+        self.assertIn('AIFS_ENS_LEAD_TIME_HOURS = "168"', aifs_ens)
+
+    def test_prod_does_not_set_batch_model_env(self):
+        self.assertNotIn("batch_model_env", self.prod)
+
+    def test_dev_runs_ensemble_for_india_and_switches_it_off_for_ethiopia_by_flag(self):
+        variable = hcl_block(self.dev, 'variable "disabled_region_models" {')
+        self.assertIn('ethiopia = ["AIFS_ENS_v2"]', variable)
+        self.assertIn('contains(["india", "ethiopia"], region)', variable)
+
+        base_regions = hcl_block(self.dev, "base_regions = {")
+        india = hcl_block(base_regions, "india = {")
+        ethiopia = hcl_block(base_regions, "ethiopia = {")
+        self.assertIn('models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]', india)
+        self.assertNotIn(
+            "AIFS_ENS_v2", india.split("sync = {", 1)[1]
+        )  # no India sync rule yet
+        # Ethiopia keeps its ensemble definition; the flag switches it off.
+        self.assertIn(
+            'models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"]',
+            ethiopia,
+        )
+
+    def test_region_model_filter_and_exclusions_use_per_region_disabled_models(self):
+        by_region = hcl_block(self.dev, "disabled_model_ids_by_region = {")
+        self.assertIn("local.disabled_model_ids,", by_region)
+        self.assertIn(
+            "try(var.disabled_region_models[region_name], toset([]))", by_region
+        )
+        uses = "local.disabled_model_ids_by_region[region_name]"
+        self.assertIn(uses, hcl_block(self.dev, "disabled_stages_by_region = {"))
+        self.assertIn(uses, hcl_block(self.dev, "disabled_sync_rules_by_region = {"))
+        self.assertIn(
+            f"if !contains({uses}, model)", hcl_block(self.dev, "  regions = {")
+        )
+        # Per-region switches must not change which models upload full fields.
+        self.assertIn(
+            'full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]), '
+            "local.disabled_model_ids)",
+            self.dev,
+        )
+        self.assertIn('AIFS_ENS_v2 = {\n      ethiopia = ["AIFS_ENS_v2"]', self.dev)
 
 
 if __name__ == "__main__":

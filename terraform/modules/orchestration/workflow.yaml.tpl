@@ -264,6 +264,9 @@ submit_ready_work:
                           REGIONS: '${jsonencode(regions)}'
                           PROJECT_ID: "${project_id}"
                           UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
+%{ for name, value in try(batch_model_env[model], {}) ~}
+                          ${name}: ${jsonencode(value)}
+%{ endfor ~}
                   - ${model}_submit_done:
                       assign:
                         - ${model}_submit_branch_done: true

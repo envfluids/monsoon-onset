@@ -42,6 +42,25 @@ variable "full_field_models" {
   default     = ["AIFS_single_v2", "AIFS_ENS_v2"]
 }
 
+variable "batch_model_env" {
+  description = "Extra environment variables for a model's Batch job, as model → {NAME = value}. Added after the standard variables the workflow sets for every model."
+  type        = map(map(string))
+  default     = {}
+
+  validation {
+    condition = alltrue(flatten([
+      for model, env in var.batch_model_env : [
+        for name in keys(env) :
+        can(regex("^[A-Z_][A-Z0-9_]*$", name)) && !contains([
+          "DATE", "MODEL", "FORECAST_REGIONS", "GCS_COMMON_BUCKET", "GCS_REGION_BUCKETS",
+          "REGION_MODELS", "REGIONS", "PROJECT_ID", "UPLOAD_FULL_FIELD",
+        ], name)
+      ]
+    ]))
+    error_message = "batch_model_env names must match ^[A-Z_][A-Z0-9_]*$ and must not repeat a standard workflow variable (DATE, MODEL, FORECAST_REGIONS, GCS_COMMON_BUCKET, GCS_REGION_BUCKETS, REGION_MODELS, REGIONS, PROJECT_ID, UPLOAD_FULL_FIELD)."
+  }
+}
+
 variable "pipeline_schedule" {
   description = "Cron schedule for pipeline trigger"
   type        = string

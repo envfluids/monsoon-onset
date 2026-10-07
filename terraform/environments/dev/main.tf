@@ -93,6 +93,25 @@ variable "disabled_models" {
   }
 }
 
+variable "disabled_region_models" {
+  description = "Per-region models to switch off without removing them from the region definition, for seasonal on/off control. Map of region → versioned model names; hyphen and underscore spellings are both accepted."
+  type        = map(set(string))
+  default = {
+    ethiopia = ["AIFS_ENS_v2"]
+  }
+
+  validation {
+    condition = alltrue([
+      for region, models in var.disabled_region_models :
+      contains(["india", "ethiopia"], region) && alltrue([
+        for model in models :
+        contains(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm", "gencast"], replace(model, "-", "_"))
+      ])
+    ])
+    error_message = "disabled_region_models keys must be india or ethiopia, and models must be one of AIFS_single_v2, AIFS_ENS_v2, neuralgcm, gencast (case-sensitive)."
+  }
+}
+
 variable "disabled_stages" {
   description = "Per-region stages to switch off without removing them from the region definition, for seasonal on/off control. Map of region → stages (blend, model_diagnostics, sync)."
   type        = map(set(string))
@@ -156,7 +175,7 @@ locals {
 
   base_regions = {
     india = {
-      models = ["AIFS_single_v2", "neuralgcm"]
+      models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]
       stages = ["model_diagnostics", "sync"]
       sync = {
         rules     = ["AIFS_single_v2", "NeuralGCM", "model_diagnostics"]
@@ -175,11 +194,20 @@ locals {
     }
   }
 
+  # Models off in each region: disabled everywhere, or only in that region.
+  disabled_model_ids_by_region = {
+    for region_name in keys(local.base_regions) :
+    region_name => setunion(
+      local.disabled_model_ids,
+      [for model in try(var.disabled_region_models[region_name], toset([])) : replace(model, "-", "_")],
+    )
+  }
+
   disabled_stages_by_region = {
     for region_name in keys(local.base_regions) :
     region_name => toset(flatten([
       [
-        for model in local.disabled_model_ids :
+        for model in local.disabled_model_ids_by_region[region_name] :
         lookup(lookup(local.model_stage_exclusions, model, {}), region_name, [])
       ],
       tolist(try(var.disabled_stages[region_name], toset([]))),
@@ -191,7 +219,7 @@ locals {
     for region_name in keys(local.base_regions) :
     region_name => toset(flatten([
       [
-        for model in local.disabled_model_ids :
+        for model in local.disabled_model_ids_by_region[region_name] :
         lookup(lookup(local.model_sync_rule_exclusions, model, {}), region_name, [])
       ],
       tolist(try(var.disabled_stages[region_name], toset([]))),
@@ -203,7 +231,7 @@ locals {
     region_name => {
       models = [
         for model in cfg.models : model
-        if !contains(local.disabled_model_ids, model)
+        if !contains(local.disabled_model_ids_by_region[region_name], model)
       ]
       stages = [
         for stage in cfg.stages : stage
@@ -328,6 +356,14 @@ module "orchestration" {
 
   regions           = local.regions
   full_field_models = setsubtract(toset(["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]), local.disabled_model_ids)
+
+  # Extra Batch environment per model; read by run_model_ENS.py (PR #11).
+  batch_model_env = {
+    AIFS_ENS_v2 = {
+      AIFS_ENS_N_MEMBERS       = "51"
+      AIFS_ENS_LEAD_TIME_HOURS = "168"
+    }
+  }
 
   # Dev: less frequent runs
   pipeline_schedule       = "0 8,14 * * 0-3" # 00:00 and 12:00 UTC, Sun-Wed

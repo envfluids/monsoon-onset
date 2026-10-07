@@ -159,6 +159,7 @@ resource "google_workflows_workflow" "main_pipeline" {
     tpu_config          = var.gencast_tpu_dispatch_template
     pipeline_sa         = var.pipeline_service_account_email
     full_field_models   = var.full_field_models
+    batch_model_env     = var.batch_model_env
   })
 
   labels = {
