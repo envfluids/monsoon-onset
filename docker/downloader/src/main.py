@@ -12,6 +12,9 @@ Environment Variables:
     ACTION             : 'download' | 'get_latest_date'  (default: download)
     DATE               : 00z forecast date YYYYMMDDTHH
     GCS_COMMON_BUCKET  : Common bucket for ICs, GenCast SST, intermediate markers
+    REGION_MODELS      : JSON {region: [models]} from Terraform; ECMWF inputs (and
+                         GenCast SST) are fetched only for these models. Falls back
+                         to REGIONS, then to every cloud model when neither is set.
 """
 
 import json
@@ -198,10 +201,23 @@ def _require_00z(date: str) -> None:
 
 
 def _download_ecmwf(date: str, bucket: str) -> None:
-    """Run IC download_ecmwf.get_data() and upload ECMWF IC + GenCast SST artifacts to GCS."""
+    """Run IC download_ecmwf.get_data() and upload ECMWF IC + GenCast SST artifacts to GCS.
+
+    Only inputs for enabled models are fetched. A GenCast SST failure doesn't
+    stop the GRIB upload or latest_ecmwf_date.txt; the job then exits non-zero.
+    """
+    enabled = _enabled_models()
+    needs_sst = _needs_sst(enabled)
+    logger.info(
+        "ECMWF inputs for models: %s; GenCast SST needed: %s",
+        sorted(enabled) if enabled is not None else "all (no REGION_MODELS/REGIONS)",
+        needs_sst,
+    )
     grib_prefix = f"ic/ecmwf/{date}/grib"
     expected_sst = f"ic/gencast_sst/{date}/sst_{date}.nc"
-    if _ecmwf_gribs_exist(bucket, grib_prefix, date) and blob_exists(bucket, expected_sst):
+    if _ecmwf_gribs_exist(bucket, grib_prefix, date, enabled) and (
+        not needs_sst or blob_exists(bucket, expected_sst)
+    ):
         logger.info("ECMWF GRIB and GenCast SST artifacts already exist for %s; skipping download.", date)
         write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date)
         return
@@ -211,32 +227,94 @@ def _download_ecmwf(date: str, bucket: str) -> None:
     os.chdir(IC_UTILS)
     import download_ecmwf
 
-    date_str = download_ecmwf.get_data(date) or date
+    date_str = (
+        download_ecmwf.get_data(date, enabled_models=enabled, sst_fatal=False) or date
+    )
 
-    _upload_ecmwf_gribs(bucket, date_str)
-    _download_and_upload_gencast_sst(bucket, date_str)
+    _upload_ecmwf_gribs(bucket, date_str, enabled)
+    sst_error = None
+    if needs_sst:
+        try:
+            _download_and_upload_gencast_sst(bucket, date_str)
+        except Exception as exc:
+            sst_error = exc
+            logger.exception(
+                "GenCast SST unavailable for %s; ECMWF GRIBs were uploaded, "
+                "but GenCast cannot run for this date",
+                date_str,
+            )
 
     write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date_str)
+    if sst_error is not None:
+        raise click.ClickException(
+            f"GenCast SST download failed for {date_str} after uploading the ECMWF GRIBs: "
+            f"{sst_error}"
+        )
 
 
-def _expected_ecmwf_grib_names(date_str: str) -> list[str]:
+def _expected_ecmwf_grib_names(
+    date_str: str, enabled: set[str] | None = None
+) -> list[str]:
     date = datetime.strptime(date_str, "%Y%m%dT%H")
     names = []
-    for stream, deltas in _ecmwf_stream_deltas().items():
+    for stream, deltas in _ecmwf_stream_deltas(enabled).items():
         for delta in sorted(deltas, reverse=True):
             target = date - timedelta(hours=delta)
             names.append(target.strftime(f"%Y%m%d%H0000-0h-{stream}-fc.grib2"))
     return names
 
 
-def _ecmwf_stream_deltas() -> dict[str, set[int]]:
+def _model_config() -> dict:
     with open(MODEL_CONFIG_PATH, encoding="utf-8") as f:
-        config = json.load(f)
+        return json.load(f)
 
+
+def _enabled_models() -> set[str] | None:
+    """Models switched on in any region, from REGION_MODELS (or REGIONS).
+
+    Returns None when neither is set or parseable, which keeps the behaviour of
+    serving every cloud model.
+    """
+    for name in ("REGION_MODELS", "REGIONS"):
+        raw = os.environ.get(name, "").strip()
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+            models = set()
+            for value in parsed.values():
+                models.update(value["models"] if name == "REGIONS" else value)
+            return {str(model) for model in models}
+        except (ValueError, TypeError, AttributeError, KeyError):
+            logger.warning(
+                "Could not parse %s; fetching inputs for all cloud models", name
+            )
+            return None
+    return None
+
+
+def _is_enabled(model: str, model_config: dict, enabled: set[str] | None) -> bool:
+    if enabled is None:
+        return model_config.get("CLOUD", {}).get("run") == "true"
+    return model.lower() in {name.lower() for name in enabled}
+
+
+def _needs_sst(enabled: set[str] | None) -> bool:
+    if enabled is None:
+        return True
+    return any(
+        model_config.get("PARAM_MARS")
+        for model, model_config in _model_config().items()
+        if _is_enabled(model, model_config, enabled)
+    )
+
+
+def _ecmwf_stream_deltas(enabled: set[str] | None = None) -> dict[str, set[int]]:
     streams: dict[str, set[int]] = {}
-    for model_config in config.values():
-        cloud = model_config.get("CLOUD", {})
-        if model_config.get("ic_source") != "ecmwf" or cloud.get("run") != "true":
+    for model, model_config in _model_config().items():
+        if model_config.get("ic_source") != "ecmwf" or not _is_enabled(
+            model, model_config, enabled
+        ):
             continue
         for stream in model_config.get("ic_streams", []):
             streams.setdefault(stream, {0}).add(int(model_config.get("ic_timedelta", 0)))
@@ -283,16 +361,20 @@ def _download_ecmwf_gribs_from_public_gcs(date_str: str) -> bool:
     return _local_ecmwf_gribs_exist(date_str)
 
 
-def _ecmwf_gribs_exist(bucket: str, grib_prefix: str, date_str: str) -> bool:
+def _ecmwf_gribs_exist(
+    bucket: str, grib_prefix: str, date_str: str, enabled: set[str] | None = None
+) -> bool:
     return all(
         blob_exists(bucket, f"{grib_prefix}/{filename}")
-        for filename in _expected_ecmwf_grib_names(date_str)
+        for filename in _expected_ecmwf_grib_names(date_str, enabled)
     )
 
 
-def _upload_ecmwf_gribs(bucket: str, date_str: str) -> None:
+def _upload_ecmwf_gribs(
+    bucket: str, date_str: str, enabled: set[str] | None = None
+) -> None:
     missing = []
-    for filename in _expected_ecmwf_grib_names(date_str):
+    for filename in _expected_ecmwf_grib_names(date_str, enabled):
         local_path = IC_ECMWF_DIR / filename
         if not local_path.exists():
             missing.append(str(local_path))

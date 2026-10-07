@@ -40,11 +40,19 @@ SST_DIR.mkdir(parents=True, exist_ok=True)
 with open(CONFIG_PATH) as f:
     CONFIG = json.load(f)
 
-def get_streams_deltas():
+def get_streams_deltas(enabled_models=None):
+    """Return ({stream: {hour deltas}}, download_mars) for the models to serve.
+
+    enabled_models: model names to include (case-insensitive). None means every
+    model in config/models.json, which is the HPC behaviour.
+    """
+    enabled = None if enabled_models is None else {m.lower() for m in enabled_models}
     streams_dict = {}
 
     download_mars = False
     for model, model_config in CONFIG.items():
+        if enabled is not None and model.lower() not in enabled:
+            continue
         if model_config["ic_source"] == "ecmwf":
             streams = model_config["ic_streams"]
             for stream in streams:
@@ -292,11 +300,16 @@ def download_file(urls, out_dir=GRIB_OUTPUT_DIR, max_retries=25, backoff_factor=
     raise RuntimeError(f"Unable to download {filename} from any configured source") from last_error
 
 
-def get_data(date_str=None):
+def get_data(date_str=None, enabled_models=None, sst_fatal=True):
+    """Download ECMWF open-data ICs (and GenCast SST from MARS when needed).
+
+    enabled_models: see get_streams_deltas. sst_fatal=False logs an SST failure
+    and continues, so the open-data files can still be used.
+    """
     date = check_new_data(date_str)
     downloaded_files = []
     if date:
-        streams_deltas, download_mars = get_streams_deltas()
+        streams_deltas, download_mars = get_streams_deltas(enabled_models)
         for stream, delta in streams_deltas.items():
             for d in delta:
                 download_date = date - datetime.timedelta(hours=int(d))
@@ -304,7 +317,15 @@ def get_data(date_str=None):
                 if download_status:
                     downloaded_files.append(download_status)
         if download_mars:
-            get_sst(date)
+            try:
+                get_sst(date)
+            except Exception:
+                if sst_fatal:
+                    raise
+                logging.exception(
+                    "GenCast SST (MARS) download failed for %s; continuing without it",
+                    date.strftime("%Y%m%dT%H"),
+                )
 
     if downloaded_files:
         date_formatted = date.strftime("%Y%m%dT%H")
