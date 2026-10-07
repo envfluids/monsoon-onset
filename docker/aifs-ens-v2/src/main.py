@@ -33,6 +33,7 @@ COMMON_BUCKET_MOUNT = Path("/mnt/disks/common")
 
 MODEL_NAME = "AIFS_ENS_v2"
 RUN_SCRIPT = "run_model_ENS.py"
+INDIA_STORE_REGION = "india"
 OUTPUT_SUFFIX = ".zarr"
 SPARSE_DOWNLOAD_NAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35fedc1fb83.npz"
 SPARSE_RUN_NAME = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
@@ -128,12 +129,36 @@ def main(date, model, regions, common_bucket, region_buckets, upload_full_field)
     else:
         logger.info("UPLOAD_FULL_FIELD=false; skipping full-field upload")
 
+    # Regions are independent: a failed region gets no upload and no marker, the
+    # others still finish, and the job fails at the end.
+    failed_regions = []
     for region in regions:
-        if region not in region_buckets:
-            raise click.ClickException(f"No bucket configured for region {region!r}")
-        _run_post_process(date, model, region)
-        _upload_region_outputs(date, model, region, region_buckets[region])
-        _write_completion_marker(date, model, region, common_bucket)
+        try:
+            _process_region(date, model, region, region_buckets, common_bucket)
+        except Exception:
+            logger.exception(
+                "Region %s failed; continuing with remaining regions", region
+            )
+            failed_regions.append(region)
+    if failed_regions:
+        raise click.ClickException(
+            f"Region processing failed for: {', '.join(failed_regions)}"
+        )
+
+
+def _process_region(
+    aifs_date: str, model: str, region: str, region_buckets: dict, common_bucket: str
+) -> None:
+    if region not in region_buckets:
+        raise click.ClickException(f"No bucket configured for region {region!r}")
+    if region == INDIA_STORE_REGION:
+        # post_process_india expects the deterministic `step` dim and fails on
+        # ensemble output; India gets only the validated DryWetCast store.
+        _run_india_store(aifs_date, model)
+    else:
+        _run_post_process(aifs_date, model, region)
+    _upload_region_outputs(aifs_date, model, region, region_buckets[region])
+    _write_completion_marker(aifs_date, model, region, common_bucket)
 
 
 def _setup_directories(regions: list[str], model: str) -> None:
@@ -231,6 +256,18 @@ def _run_post_process(aifs_date: str, model: str, region: str) -> None:
         region,
     ]
     logger.info("Running post-process: %s", " ".join(command))
+    subprocess.run(command, cwd=AIFS_UTILS, check=True, env=env)
+
+
+def _run_india_store(aifs_date: str, model: str) -> None:
+    """Build and validate init_<YYYYMMDD>T00.zarr under AIFS/output/india/<model>/drywetcast/.
+
+    A failed build or validation raises, so nothing is uploaded and no done
+    marker is written for India.
+    """
+    env = {**os.environ, "PYTHONPATH": str(AIFS_UTILS)}
+    command = [sys.executable, "india_store.py", "--date", aifs_date, "--model", model]
+    logger.info("Building India store: %s", " ".join(command))
     subprocess.run(command, cwd=AIFS_UTILS, check=True, env=env)
 
 
