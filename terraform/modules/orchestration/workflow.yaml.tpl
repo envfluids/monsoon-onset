@@ -483,6 +483,53 @@ submit_ready_work:
                 assign:
                   - last_sync_region_checked: $${region_name}
 
+%{ if contains(keys(cloud_run_jobs), "drywetcast") ~}
+    - submit_drywetcast:
+        for:
+          value: region_name
+          in: $${region_names}
+          steps:
+            - load_drywetcast_action:
+                assign:
+                  - drywetcast_action: $${default(map.get(actions, ["regions_to_drywetcast_by_region", region_name]), default_region_action)}
+            - maybe_run_drywetcast:
+                switch:
+                  - condition: $${drywetcast_action.date == ""}
+                    next: end_drywetcast_iteration
+                  - condition: true
+                    next: run_drywetcast
+            - run_drywetcast:
+                try:
+                  call: googleapis.run.v2.projects.locations.jobs.run
+                  args:
+                    name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.drywetcast.name}"
+                    body:
+                      overrides:
+                        containerOverrides:
+                          - env:
+                              - name: DATE
+                                value: $${drywetcast_action.date}
+                              - name: FORECAST_REGION
+                                value: $${region_name}
+                              - name: DRYWETCAST_CONFIGS
+                                value: $${json.encode_to_string(drywetcast_action.configs)}
+                              - name: DRYWETCAST_FINALIZE
+                                value: $${string(drywetcast_action.finalize_ncmrwf)}
+                    connector_params:
+                      skip_polling: true
+                except:
+                  as: e
+                  steps:
+                    - log_drywetcast_start_error:
+                        call: sys.log
+                        args:
+                          severity: ERROR
+                          text: '$${"drywetcast job start failed for " + region_name + " " + drywetcast_action.date + ": " + json.encode_to_string(e)}'
+            - end_drywetcast_iteration:
+                assign:
+                  - last_drywetcast_region_checked: $${region_name}
+
+%{ endif ~}
     - ready_work_done:
         return: "submitted"
 

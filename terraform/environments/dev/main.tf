@@ -113,10 +113,11 @@ variable "disabled_region_models" {
 }
 
 variable "disabled_stages" {
-  description = "Per-region stages to switch off without removing them from the region definition, for seasonal on/off control. Map of region → stages (blend, model_diagnostics, sync)."
+  description = "Per-region stages to switch off without removing them from the region definition, for seasonal on/off control. Map of region → stages (blend, model_diagnostics, drywetcast, sync)."
   type        = map(set(string))
   default = {
-    india    = ["model_diagnostics"]
+    # drywetcast stays off until the NCMRWF reachability probe passes.
+    india    = ["model_diagnostics", "drywetcast"]
     ethiopia = ["blend", "model_diagnostics"]
   }
 
@@ -124,10 +125,21 @@ variable "disabled_stages" {
     condition = alltrue([
       for region, stages in var.disabled_stages :
       contains(["india", "ethiopia"], region) && alltrue([
-        for stage in stages : contains(["blend", "model_diagnostics", "sync"], stage)
+        for stage in stages : contains(["blend", "model_diagnostics", "drywetcast", "sync"], stage)
       ])
     ])
-    error_message = "disabled_stages keys must be india or ethiopia, and stages must be blend, model_diagnostics or sync."
+    error_message = "disabled_stages keys must be india or ethiopia, and stages must be blend, model_diagnostics, drywetcast or sync."
+  }
+}
+
+variable "drywetcast_ncmrwf_cutoff_utc" {
+  description = "UTC time (HH:MM) on the forecast date after which a pass makes one last NCMRWF check and marks missing NCMRWF DryWetCast products unavailable. Needs a scheduled pass at or after it."
+  type        = string
+  default     = "14:00"
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.drywetcast_ncmrwf_cutoff_utc))
+    error_message = "drywetcast_ncmrwf_cutoff_utc must be HH:MM (UTC)."
   }
 }
 
@@ -176,7 +188,7 @@ locals {
   base_regions = {
     india = {
       models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]
-      stages = ["model_diagnostics", "sync"]
+      stages = ["model_diagnostics", "drywetcast", "sync"]
       sync = {
         rules     = ["AIFS_single_v2", "NeuralGCM", "model_diagnostics"]
         git_push  = true
@@ -339,6 +351,13 @@ module "compute" {
   neuralgcm_image      = "${module.storage.artifact_registry_url}/monsoon-neuralgcm:latest"
   gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
   tpu_dispatch_image   = "${module.storage.artifact_registry_url}/monsoon-tpu-dispatch:latest"
+  drywetcast_image     = "${module.storage.artifact_registry_url}/monsoon-drywetcast:latest"
+
+  # NCMRWF key: the existing ncmrwf-api-key secret, referenced (not managed) by the job.
+  drywetcast_ncmrwf_secret_id = "ncmrwf-api-key"
+  pipeline_state_env = {
+    DRYWETCAST_NCMRWF_CUTOFF_UTC = var.drywetcast_ncmrwf_cutoff_utc
+  }
 
   depends_on = [module.networking, module.storage]
 }
