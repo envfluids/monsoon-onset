@@ -391,7 +391,7 @@ class DryWetCastJobContractTest(unittest.TestCase):
         )
         self.assertIn("for_each = var.pipeline_state_env", self.compute_main)
 
-    def test_dev_deploys_the_job_but_keeps_the_stage_off(self):
+    def test_dev_deploys_the_job_with_the_stage_enabled(self):
         self.assertIn(
             'drywetcast_image     = "${module.storage.artifact_registry_url}/monsoon-drywetcast:latest"',
             self.dev,
@@ -401,7 +401,9 @@ class DryWetCastJobContractTest(unittest.TestCase):
         disabled = self.dev.split('variable "disabled_stages" {', 1)[1].split(
             "validation {", 1
         )[0]
-        self.assertIn('india    = ["model_diagnostics", "drywetcast"]', disabled)
+        # Enabled after the NCMRWF reachability probe passed (Oct 8).
+        self.assertIn('india    = ["model_diagnostics"]', disabled)
+        self.assertNotIn("drywetcast", disabled.split("default = {", 1)[1])
         self.assertIn(
             'contains(["blend", "model_diagnostics", "drywetcast", "sync"], stage)',
             self.dev,
