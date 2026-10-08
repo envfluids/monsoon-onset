@@ -116,8 +116,7 @@ variable "disabled_stages" {
   description = "Per-region stages to switch off without removing them from the region definition, for seasonal on/off control. Map of region → stages (blend, model_diagnostics, drywetcast, sync)."
   type        = map(set(string))
   default = {
-    # drywetcast stays off until the NCMRWF reachability probe passes.
-    india    = ["model_diagnostics", "drywetcast"]
+    india    = ["model_diagnostics"]
     ethiopia = ["blend", "model_diagnostics"]
   }
 
