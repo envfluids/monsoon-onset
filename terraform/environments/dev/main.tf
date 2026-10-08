@@ -16,6 +16,15 @@ import {
   id = "projects/${var.project_id}/secrets/ecmwf-api-url/versions/1"
 }
 
+# Adopts the DryWetCast Cloud Run job created by the PR #16 apply (build
+# d9021821), which failed to upload state afterwards (503), so the job exists in
+# GCP but may be missing from state. Without this, the next apply would try to
+# create it again and fail with "already exists". No-op once it is in state.
+import {
+  to = module.compute.google_cloud_run_v2_job.pipeline_jobs["drywetcast"]
+  id = "projects/${var.project_id}/locations/${var.region}/jobs/monsoon-dev-drywetcast"
+}
+
 provider "google" {
   project = var.project_id
   region  = var.region
