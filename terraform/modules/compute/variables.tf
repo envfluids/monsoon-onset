@@ -133,6 +133,24 @@ variable "tpu_dispatch_image" {
   type        = string
 }
 
+variable "drywetcast_image" {
+  description = "Container image for the DryWetCast-India Cloud Run job. Null creates no job."
+  type        = string
+  default     = null
+}
+
+variable "drywetcast_ncmrwf_secret_id" {
+  description = "Existing Secret Manager secret holding the NCMRWF portal key, mounted as NCMRWF_API_KEY on the DryWetCast job. Referenced only; not created or managed here."
+  type        = string
+  default     = "ncmrwf-api-key"
+}
+
+variable "pipeline_state_env" {
+  description = "Extra environment variables for the pipeline-state service (for example DRYWETCAST_NCMRWF_CUTOFF_UTC)."
+  type        = map(string)
+  default     = {}
+}
+
 # -----------------------------------------------------------------------------
 # External API credentials (managed in Secret Manager via terraform)
 # -----------------------------------------------------------------------------

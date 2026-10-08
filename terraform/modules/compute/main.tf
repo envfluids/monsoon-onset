@@ -184,7 +184,7 @@ locals {
     }
   }
 
-  cloud_run_services = {
+  all_cloud_run_services = {
     downloader = {
       name    = "${var.name_prefix}-${var.environment}-downloader"
       image   = var.downloader_image
@@ -213,6 +213,32 @@ locals {
       timeout = "86400s"
       retries = 0
       secrets = []
+    }
+    # DryWetCast-India after the India AIFS ensemble. /tmp is in memory, so the
+    # ~1 GB of downloads and scratch counts against the 8 GiB. Retries are left
+    # to pipeline-state (bounded attempts), not Cloud Run.
+    drywetcast = {
+      name    = "${var.name_prefix}-${var.environment}-drywetcast"
+      image   = var.drywetcast_image
+      memory  = "8Gi"
+      cpu     = "4"
+      timeout = "3600s"
+      retries = 0
+      secrets = []
+    }
+  }
+
+  # Optional jobs exist only when their image is set.
+  cloud_run_services = {
+    for name, service in local.all_cloud_run_services : name => service
+    if name != "drywetcast" || var.drywetcast_image != null
+  }
+
+  # Secrets that already exist in Secret Manager and aren't managed here (so
+  # their values stay out of Terraform state), mounted by env-var name.
+  cloud_run_existing_secret_ids = {
+    drywetcast = {
+      NCMRWF_API_KEY = var.drywetcast_ncmrwf_secret_id
     }
   }
 
@@ -352,6 +378,19 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
           }
         }
 
+        dynamic "env" {
+          for_each = try(local.cloud_run_existing_secret_ids[each.key], {})
+          content {
+            name = env.key
+            value_source {
+              secret_key_ref {
+                secret  = env.value
+                version = "latest"
+              }
+            }
+          }
+        }
+
         # FORECAST_REGION, FORECAST_REGIONS, SYNC_SPEC, DATE, etc. are set per-execution
         # by the workflow via containerOverrides — no default here.
       }
@@ -456,6 +495,14 @@ resource "google_cloud_run_v2_service" "pipeline_state" {
       env {
         name  = "REGION_MODELS"
         value = local.region_models
+      }
+
+      dynamic "env" {
+        for_each = var.pipeline_state_env
+        content {
+          name  = env.key
+          value = env.value
+        }
       }
     }
 

@@ -324,5 +324,157 @@ class PerModelEnvAndRegionModelsContractTest(unittest.TestCase):
         self.assertIn('AIFS_ENS_v2 = {\n      ethiopia = ["AIFS_ENS_v2"]', self.dev)
 
 
+class DryWetCastJobContractTest(unittest.TestCase):
+    """PR 4: the DryWetCast Cloud Run job, its workflow step, build, and dev-only wiring."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        root = cls.ROOT
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.compute_main = COMPUTE_MAIN_PATH.read_text()
+        cls.compute_vars = (root / "terraform/modules/compute/variables.tf").read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.cloudbuild = (root / "cloudbuild.yaml").read_text()
+        cls.image_deps = (root / ".image-deps.yaml").read_text()
+        cls.ens_dockerfile = (root / "docker/aifs-ens-v2/Dockerfile").read_text()
+        cls.dwc_dockerfile = (root / "docker/drywetcast/Dockerfile").read_text()
+        cls.dwc_lock = (root / "docker/drywetcast/requirements.lock").read_text()
+
+    def test_workflow_step_is_guarded_async_and_passes_the_action(self):
+        block = self.workflow.split(
+            '%{ if contains(keys(cloud_run_jobs), "drywetcast") ~}', 1
+        )[1]
+        block = block.split("%{ endif ~}", 1)[0]
+        for expected in (
+            "- submit_drywetcast:",
+            'map.get(actions, ["regions_to_drywetcast_by_region", region_name])',
+            "jobs/${cloud_run_jobs.drywetcast.name}",
+            "value: $${drywetcast_action.date}",
+            "value: $${json.encode_to_string(drywetcast_action.configs)}",
+            "value: $${string(drywetcast_action.finalize_ncmrwf)}",
+            "skip_polling: true",
+            "severity: ERROR",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, block)
+        self.assertEqual(self.workflow.count("cloud_run_jobs.drywetcast"), 1)
+
+    def test_compute_job_is_optional_and_references_the_existing_secret(self):
+        job = self.compute_main.split("    drywetcast = {", 1)[1].split("    }", 1)[0]
+        for expected in (
+            'memory  = "8Gi"',
+            'cpu     = "4"',
+            'timeout = "3600s"',
+            "retries = 0",
+            "secrets = []",
+        ):
+            self.assertIn(expected, job)
+        self.assertIn(
+            'if name != "drywetcast" || var.drywetcast_image != null', self.compute_main
+        )
+        self.assertIn(
+            "NCMRWF_API_KEY = var.drywetcast_ncmrwf_secret_id", self.compute_main
+        )
+        self.assertIn(
+            "for_each = try(local.cloud_run_existing_secret_ids[each.key], {})",
+            self.compute_main,
+        )
+        # Referenced only: no Secret Manager resource is built from the existing secret id.
+        self.assertEqual(self.compute_main.count("drywetcast_ncmrwf_secret_id"), 1)
+        self.assertIn('variable "drywetcast_image" {', self.compute_vars)
+        self.assertIn(
+            "default     = null",
+            self.compute_vars.split('variable "drywetcast_image" {', 1)[1],
+        )
+        self.assertIn("for_each = var.pipeline_state_env", self.compute_main)
+
+    def test_dev_deploys_the_job_but_keeps_the_stage_off(self):
+        self.assertIn(
+            'drywetcast_image     = "${module.storage.artifact_registry_url}/monsoon-drywetcast:latest"',
+            self.dev,
+        )
+        self.assertIn('drywetcast_ncmrwf_secret_id = "ncmrwf-api-key"', self.dev)
+        self.assertIn('stages = ["model_diagnostics", "drywetcast", "sync"]', self.dev)
+        disabled = self.dev.split('variable "disabled_stages" {', 1)[1].split(
+            "validation {", 1
+        )[0]
+        self.assertIn('india    = ["model_diagnostics", "drywetcast"]', disabled)
+        self.assertIn(
+            'contains(["blend", "model_diagnostics", "drywetcast", "sync"], stage)',
+            self.dev,
+        )
+        cutoff = self.dev.split('variable "drywetcast_ncmrwf_cutoff_utc" {', 1)[
+            1
+        ].split("\n}\n", 1)[0]
+        self.assertIn('default     = "14:00"', cutoff)
+        self.assertIn(
+            "DRYWETCAST_NCMRWF_CUTOFF_UTC = var.drywetcast_ncmrwf_cutoff_utc", self.dev
+        )
+        # The cutoff only takes effect if a scheduled pass runs at or after it (14:00 UTC).
+        self.assertIn('pipeline_schedule       = "0 8,10,14 * * *"', self.dev)
+
+    def test_prod_is_unchanged(self):
+        self.assertNotIn("drywetcast", self.prod)
+
+    def test_build_adds_the_image_and_records_code_versions(self):
+        self.assertIn("  drywetcast:\n    - docker/drywetcast/", self.image_deps)
+        for step in (
+            "pull-cache-drywetcast",
+            "build-drywetcast",
+            "push-drywetcast",
+            "deploy-drywetcast",
+        ):
+            self.assertIn(f"- id: {step}", self.cloudbuild)
+        self.assertIn(
+            'git rev-parse --short HEAD > code_version 2>/dev/null || echo "${_SHORT_SHA}" > code_version',
+            self.cloudbuild,
+        )
+        ens_build = self.cloudbuild.split("- id: build-aifs-ens-v2", 1)[1].split(
+            "- id:", 1
+        )[0]
+        self.assertIn('--build-arg AIFS_CODE_VERSION="$$(cat code_version)"', ens_build)
+        dwc_build = self.cloudbuild.split("- id: build-drywetcast", 1)[1].split(
+            "- id:", 1
+        )[0]
+        self.assertIn('--build-arg CODE_VERSION="$$(cat code_version)"', dwc_build)
+        deploy = self.cloudbuild.split("- id: deploy-drywetcast", 1)[1]
+        self.assertIn("not created yet; skipping deploy", deploy)
+
+    def test_ensemble_dockerfile_records_code_version_after_the_heavy_layers(self):
+        arg = self.ens_dockerfile.index("ARG AIFS_CODE_VERSION=unknown")
+        self.assertIn("ENV AIFS_CODE_VERSION=${AIFS_CODE_VERSION}", self.ens_dockerfile)
+        self.assertGreater(arg, self.ens_dockerfile.index("RUN pip install"))
+        self.assertGreater(arg, self.ens_dockerfile.index("COPY AIFS/utils/"))
+        self.assertLess(arg, self.ens_dockerfile.index("ENTRYPOINT"))
+
+    def test_drywetcast_image_pins_the_commit_checksum_and_dependencies(self):
+        for expected in (
+            "FROM python:3.11-slim-bookworm",
+            "libgomp1",
+            "ARG DRYWETCAST_COMMIT=56f4805a532718afd61176c85eec75fa8c46b137",
+            "ARG DRYWETCAST_SHA256=a77fb404bb26c1732e19aed3f2a11770cb1d8ec18670161af37cc8a7f39afe18",
+            "sha256sum -c -",
+            "pip install --no-cache-dir --no-deps -r requirements.lock",
+            "import xgboost",
+        ):
+            self.assertIn(expected, self.dwc_dockerfile)
+        self.assertGreater(
+            self.dwc_dockerfile.index("ARG CODE_VERSION"),
+            self.dwc_dockerfile.index("RUN pip install"),
+        )
+        for pin in (
+            "numpy==2.4.6",
+            "rasterio==1.4.4",
+            "xgboost-cpu==3.2.0",
+            "zarr==3.1.6",
+            "netcdf4==1.7.4",
+        ):
+            self.assertIn(pin, self.dwc_lock)
+        self.assertNotIn("nvidia", self.dwc_lock)
+
+
 if __name__ == "__main__":
     unittest.main()
