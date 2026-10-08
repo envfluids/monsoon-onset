@@ -795,5 +795,200 @@ class PipelineStateActionsTest(unittest.TestCase):
         self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"], [item])
 
 
+
+class DryWetCastStageTest(unittest.TestCase):
+    """The drywetcast stage: readiness after the India ensemble store, configs, claims, cutoff."""
+
+    CONFIGS = ("gefs_reduced", "gefs_full", "ncmrwf_reduced", "ncmrwf_full")
+
+    def setUp(self):
+        self.module = load_pipeline_state()
+        self.storage = FakeStorageClient()
+        self.module._storage_client = self.storage
+        self.module.GCS_COMMON_BUCKET = COMMON_BUCKET
+        self.module.REGION_BUCKETS = {"india": INDIA_BUCKET}
+        self.module.REGIONS = {
+            "india": {
+                "models": ["AIFS_ENS_v2"],
+                "stages": ["drywetcast", "sync"],
+                "sync": {"date_kind": "date"},
+            }
+        }
+        self.module.BLENDS = []
+        self.today = datetime(2026, 6, 5, tzinfo=timezone.utc)
+        self.set_now(9, 0)
+        for path in self.module.ic_ecmwf_paths(DATE):
+            self.storage.put(COMMON_BUCKET, path)
+
+    def set_now(self, hour, minute=0):
+        now = datetime(2026, 6, 5, hour, minute, tzinfo=timezone.utc)
+        self.module.utc_now = lambda: now
+        self.now = now
+
+    def ensemble_done(self, store=True):
+        self.storage.put(
+            COMMON_BUCKET,
+            self.module.model_marker_path("AIFS_ENS_v2", "india", DATE),
+            "done",
+        )
+        self.storage.put(
+            INDIA_BUCKET, f"output/AIFS_ENS_v2/{DATE}/AIFS_ENS_v2/tp/tp_0p25_{DATE}.nc"
+        )
+        if store:
+            self.storage.put(
+                INDIA_BUCKET,
+                f"output/AIFS_ENS_v2/{DATE}/AIFS_ENS_v2/drywetcast/init_20260605T00.zarr/.zmetadata",
+                "{}",
+            )
+
+    def config_done(self, config):
+        self.storage.put(
+            COMMON_BUCKET,
+            self.module.drywetcast_config_marker_path("india", config, DATE),
+            "done",
+        )
+
+    def put_status(self, configs):
+        self.storage.put_json(
+            INDIA_BUCKET, self.module.drywetcast_status_path(DATE), {"configs": configs}
+        )
+
+    def state(self):
+        state = self.module.compute_state(DATE, 7, self.today)
+        return state, state["actions"]["regions_to_drywetcast_by_region"]["india"]
+
+    def blocked_types(self, state):
+        return [
+            item["type"]
+            for item in state["actions"]["blocked"]
+            if item["type"].startswith("drywetcast")
+        ]
+
+    def test_waits_for_the_ensemble_marker_and_store(self):
+        state, action = self.state()
+        self.assertEqual(action["date"], "")
+        self.assertEqual(self.blocked_types(state), ["drywetcast_waiting_for_ensemble"])
+
+        self.ensemble_done(store=False)
+        state, action = self.state()
+        self.assertEqual(action["date"], "")
+        self.assertEqual(
+            state["per_region"]["india"]["drywetcast"]["reason"], "waiting_for_ensemble"
+        )
+
+    def test_ready_runs_all_four_configs(self):
+        self.ensemble_done()
+        state, action = self.state()
+        self.assertEqual(
+            action,
+            {
+                "region": "india",
+                "date": DATE,
+                "configs": list(self.CONFIGS),
+                "finalize_ncmrwf": False,
+            },
+        )
+        self.assertEqual(state["actions"]["regions_to_drywetcast"], [action])
+
+    def test_only_missing_configs_are_requested(self):
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        _, action = self.state()
+        self.assertEqual(action["configs"], ["ncmrwf_reduced", "ncmrwf_full"])
+
+    def test_fresh_claim_means_in_progress_and_stale_claim_is_ignored(self):
+        self.ensemble_done()
+        claim_path = self.module.drywetcast_claim_path(DATE)
+        self.storage.put_json(
+            INDIA_BUCKET, claim_path, {"started_utc": "2026-06-05T08:50:00Z"}
+        )
+        state, action = self.state()
+        self.assertEqual(action["date"], "")
+        self.assertEqual(self.blocked_types(state), ["drywetcast_in_progress"])
+
+        self.storage.put_json(
+            INDIA_BUCKET, claim_path, {"started_utc": "2026-06-05T07:30:00Z"}
+        )
+        _, action = self.state()
+        self.assertEqual(action["date"], DATE)
+
+    def test_after_cutoff_the_run_finalizes_ncmrwf(self):
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        self.set_now(13, 59)
+        self.assertFalse(self.state()[1]["finalize_ncmrwf"])
+        self.set_now(14, 0)
+        self.assertTrue(self.state()[1]["finalize_ncmrwf"])
+
+    def test_cutoff_is_configurable(self):
+        self.module.DRYWETCAST_NCMRWF_CUTOFF_UTC = "16:00"
+        self.ensemble_done()
+        self.set_now(15, 0)
+        self.assertFalse(self.state()[1]["finalize_ncmrwf"])
+
+    def test_unavailable_configs_are_never_retried(self):
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        self.put_status(
+            {
+                "ncmrwf_reduced": {"state": "ncmrwf_unavailable"},
+                "ncmrwf_full": {"state": "ncmrwf_unavailable"},
+            }
+        )
+        state, action = self.state()
+        self.assertEqual(action["date"], "")
+        self.assertEqual(
+            state["per_region"]["india"]["drywetcast"]["reason"], "complete"
+        )
+        self.assertEqual(self.blocked_types(state), [])
+
+    def test_pending_ncmrwf_configs_are_retried_on_a_later_pass(self):
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        self.put_status(
+            {
+                "ncmrwf_reduced": {"state": "ncmrwf_pending"},
+                "ncmrwf_full": {"state": "ncmrwf_pending"},
+            }
+        )
+        _, action = self.state()
+        self.assertEqual(action["configs"], ["ncmrwf_reduced", "ncmrwf_full"])
+
+    def test_failed_configs_stop_after_max_attempts(self):
+        self.ensemble_done()
+        self.put_status(
+            {
+                "gefs_reduced": {"state": "failed", "attempts": 2},
+                "gefs_full": {"state": "failed", "attempts": 3},
+            }
+        )
+        state, action = self.state()
+        self.assertEqual(
+            action["configs"], ["gefs_reduced", "ncmrwf_reduced", "ncmrwf_full"]
+        )
+        self.assertEqual(
+            state["per_region"]["india"]["drywetcast"]["failed"], ["gefs_full"]
+        )
+
+    def test_stage_switched_off_or_ensemble_not_in_region(self):
+        self.ensemble_done()
+        self.module.REGIONS["india"]["stages"] = ["sync"]
+        state, action = self.state()
+        self.assertNotIn("drywetcast", state["per_region"]["india"])
+        self.assertEqual(action["date"], "")
+
+        self.module.REGIONS["india"]["stages"] = ["drywetcast", "sync"]
+        self.module.REGIONS["india"]["models"] = []
+        state, action = self.state()
+        self.assertEqual(
+            state["per_region"]["india"]["drywetcast"]["reason"], "model_not_in_region"
+        )
+        self.assertEqual(action["date"], "")
+
+
 if __name__ == "__main__":
     unittest.main()

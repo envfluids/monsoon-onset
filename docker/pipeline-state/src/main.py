@@ -94,6 +94,20 @@ INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
 ACTIVE_DISPATCH_MAX_AGE_SECONDS = 30 * 60 * 60
 ACTIVE_SYNC_MAX_AGE_SECONDS = int(os.environ.get("ACTIVE_SYNC_MAX_AGE_SECONDS", str(6 * 60 * 60)))
 
+# DryWetCast-India runs after the India AIFS ensemble store is validated. The
+# path and marker conventions are shared with docker/drywetcast/src/main.py.
+DRYWETCAST_STAGE = "drywetcast"
+DRYWETCAST_MODEL = "AIFS_ENS_v2"
+DRYWETCAST_CONFIGS = ("gefs_reduced", "gefs_full", "ncmrwf_reduced", "ncmrwf_full")
+# After this UTC time on the forecast date, the next pass makes one last NCMRWF
+# check and the job marks still-missing NCMRWF products as unavailable.
+DRYWETCAST_NCMRWF_CUTOFF_UTC = os.environ.get("DRYWETCAST_NCMRWF_CUTOFF_UTC", "14:00")
+# Job timeout (3600 s) plus margin; an older claim belongs to a crashed run.
+DRYWETCAST_CLAIM_MAX_AGE_SECONDS = int(
+    os.environ.get("DRYWETCAST_CLAIM_MAX_AGE_SECONDS", str(75 * 60))
+)
+DRYWETCAST_MAX_ATTEMPTS = int(os.environ.get("DRYWETCAST_MAX_ATTEMPTS", "3"))
+
 GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
 REGIONS = json.loads(os.environ.get("REGIONS", "{}"))
@@ -332,6 +346,23 @@ def diagnostics_config_marker_path(region: str, blend_name: str, date: str) -> s
     return f"intermediate/model_diagnostics_{region}_{blend_name}_{date}_done"
 
 
+def drywetcast_store_path(date: str) -> str:
+    model = DRYWETCAST_MODEL
+    return f"output/{model}/{date}/{model}/drywetcast/init_{date[:8]}T00.zarr"
+
+
+def drywetcast_config_marker_path(region: str, config: str, date: str) -> str:
+    return f"intermediate/drywetcast_{region}_{config}_{date}_done"
+
+
+def drywetcast_claim_path(date: str) -> str:
+    return f"drywetcast-state/{date}/claim.json"
+
+
+def drywetcast_status_path(date: str) -> str:
+    return f"drywetcast-state/{date}/status.json"
+
+
 def sync_state_path(date: str) -> str:
     return f"sync-state/{date}.json"
 
@@ -454,6 +485,35 @@ def sync_item_active(region: str, date: str, item: dict, now: datetime) -> bool:
             item.get("name", ""),
             int(age_seconds),
             ACTIVE_SYNC_MAX_AGE_SECONDS,
+        )
+        return False
+    return True
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def drywetcast_ncmrwf_cutoff(date: str) -> datetime:
+    hour, minute = (int(part) for part in DRYWETCAST_NCMRWF_CUTOFF_UTC.split(":"))
+    day = datetime.strptime(date[:8], "%Y%m%d").replace(tzinfo=timezone.utc)
+    return day.replace(hour=hour, minute=minute)
+
+
+def drywetcast_claim_active(bucket: str, date: str, now: datetime) -> bool:
+    claim = read_gcs_json(bucket, drywetcast_claim_path(date))
+    if not claim:
+        return False
+    started_at = parse_status_timestamp(claim.get("started_utc"))
+    if started_at is None:
+        return True
+    age_seconds = (now.astimezone(timezone.utc) - started_at).total_seconds()
+    if age_seconds > DRYWETCAST_CLAIM_MAX_AGE_SECONDS:
+        logger.warning(
+            "Ignoring stale DryWetCast claim: date=%s age_seconds=%s max_age_seconds=%s",
+            date,
+            int(age_seconds),
+            DRYWETCAST_CLAIM_MAX_AGE_SECONDS,
         )
         return False
     return True
@@ -708,13 +768,17 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             "regions": region_results,
         }
 
-    now = datetime.now(timezone.utc)
+    now = utc_now()
     per_region = {}
     for region, cfg in REGIONS.items():
         block: dict = {}
         stages = cfg.get("stages", [])
         if "blend" in stages:
             block["blend"] = _blend_state_for_region(region, models_state, primary_date)
+        if DRYWETCAST_STAGE in stages:
+            block[DRYWETCAST_STAGE] = _drywetcast_state_for_region(
+                region, models_state, now
+            )
         if "model_diagnostics" in stages:
             block["model_diagnostics"] = _diagnostics_state_for_region(region, models_state, primary_date)
         if "sync" in stages:
@@ -834,6 +898,85 @@ def _blend_state_for_region(region: str, models_state: dict, fallback_date: str)
         "inputs": [state for item in items for state in item.get("inputs", [])],
         "missing": missing,
     }
+
+
+def _drywetcast_state_for_region(
+    region: str, models_state: dict, now: datetime
+) -> dict:
+    """Which DryWetCast configs still need a run for the region's latest ensemble date.
+
+    Configs are done (marker), unavailable (NCMRWF missing after the cutoff), failed
+    too often (status attempts >= DRYWETCAST_MAX_ATTEMPTS), or pending.
+    """
+    bucket = REGION_BUCKETS.get(region, "")
+    model_state = models_state.get(DRYWETCAST_MODEL, {})
+    date = model_state.get("date", "")
+    block = {
+        "date": date,
+        "ready": False,
+        "reason": "",
+        "configs": [],
+        "done": [],
+        "unavailable": [],
+        "failed": [],
+        "active": False,
+        "finalize_ncmrwf": False,
+    }
+    if DRYWETCAST_MODEL not in REGIONS.get(region, {}).get("models", []):
+        block["reason"] = "model_not_in_region"
+        return block
+    if not date or not bucket:
+        block["reason"] = "no_ensemble_date"
+        return block
+
+    ensemble_done = model_state.get("regions", {}).get(region, {}).get("present", False)
+    store_present = ensemble_done and gcs_object_exists(
+        bucket, f"{drywetcast_store_path(date)}/.zmetadata"
+    )
+    statuses = read_gcs_json(bucket, drywetcast_status_path(date)).get("configs", {})
+    done = [
+        config
+        for config in DRYWETCAST_CONFIGS
+        if gcs_object_exists(
+            GCS_COMMON_BUCKET, drywetcast_config_marker_path(region, config, date)
+        )
+    ]
+    unavailable = [
+        config
+        for config in DRYWETCAST_CONFIGS
+        if config not in done
+        and statuses.get(config, {}).get("state") == "ncmrwf_unavailable"
+    ]
+    failed = [
+        config
+        for config in DRYWETCAST_CONFIGS
+        if config not in done
+        and statuses.get(config, {}).get("state") == "failed"
+        and int(statuses.get(config, {}).get("attempts", 0)) >= DRYWETCAST_MAX_ATTEMPTS
+    ]
+    pending = [
+        config
+        for config in DRYWETCAST_CONFIGS
+        if config not in {*done, *unavailable, *failed}
+    ]
+    active = drywetcast_claim_active(bucket, date, now)
+    block.update(
+        done=done,
+        unavailable=unavailable,
+        failed=failed,
+        active=active,
+        finalize_ncmrwf=now >= drywetcast_ncmrwf_cutoff(date),
+    )
+    if not store_present:
+        block["reason"] = "waiting_for_ensemble"
+    elif not pending:
+        block["reason"] = "complete"
+    elif active:
+        block["reason"] = "in_progress"
+    else:
+        block["ready"] = True
+        block["configs"] = pending
+    return block
 
 
 def _diagnostics_state_for_region(region: str, models_state: dict, fallback_date: str) -> dict:
@@ -1137,6 +1280,32 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
             })
         regions_to_diagnose_by_region[region] = action
 
+    regions_to_drywetcast = []
+    regions_to_drywetcast_by_region = {}
+    for region, block in per_region.items():
+        action = {"region": region, "date": "", "configs": [], "finalize_ncmrwf": False}
+        drywetcast = block.get(DRYWETCAST_STAGE)
+        if drywetcast and drywetcast["ready"]:
+            action = {
+                "region": region,
+                "date": drywetcast["date"],
+                "configs": drywetcast["configs"],
+                "finalize_ncmrwf": drywetcast["finalize_ncmrwf"],
+            }
+            regions_to_drywetcast.append(action)
+        elif drywetcast and drywetcast["reason"] in {
+            "waiting_for_ensemble",
+            "in_progress",
+        }:
+            blocked.append(
+                {
+                    "type": f"drywetcast_{drywetcast['reason']}",
+                    "region": region,
+                    "date": drywetcast["date"],
+                }
+            )
+        regions_to_drywetcast_by_region[region] = action
+
     regions_to_sync = []
     regions_to_sync_by_region = {}
     for region, block in per_region.items():
@@ -1162,6 +1331,8 @@ def _derive_actions(ic_state: dict, models_state: dict, per_region: dict) -> dic
         "regions_to_diagnose_by_region": regions_to_diagnose_by_region,
         "regions_to_sync": regions_to_sync,
         "regions_to_sync_by_region": regions_to_sync_by_region,
+        "regions_to_drywetcast": regions_to_drywetcast,
+        "regions_to_drywetcast_by_region": regions_to_drywetcast_by_region,
         "blocked": blocked,
     }
 

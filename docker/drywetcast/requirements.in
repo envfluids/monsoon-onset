@@ -1,0 +1,14 @@
+# DryWetCast-India 56f4805 requirements (requirements.txt), pinned to the versions
+# tested end to end on Oct 7-8, 2026; pytest dropped. Plus the job wrapper's deps.
+numpy==2.4.6
+rasterio==1.4.4
+xarray==2026.9.0
+netCDF4==1.7.4
+scipy==1.17.1
+xgboost-cpu==3.2.0  # CPU-only build of xgboost 3.2.0 (same `xgboost` module, no CUDA/NCCL)
+matplotlib==3.11.2
+requests==2.34.2
+zarr==3.1.6
+# job wrapper
+google-cloud-storage
+click
