@@ -58,6 +58,9 @@ steps:
         echo "---"
         echo "targets file:"
         cat targets || true
+        # Build commit for images that record their code version.
+        git rev-parse --short HEAD > code_version 2>/dev/null || echo "${_SHORT_SHA}" > code_version
+        echo "code version: $$(cat code_version)"
     waitFor: ["-"]
 
   # ---------------------------------------------------------------------------
@@ -152,6 +155,16 @@ steps:
       - |
         grep -qx gencast targets || { echo "skip"; exit 0; }
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest || true
+    waitFor: [detect-targets]
+
+  - id: pull-cache-drywetcast
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast targets || { echo "skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest || true
     waitFor: [detect-targets]
 
   # ---------------------------------------------------------------------------
@@ -265,6 +278,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --build-arg AIFS_CODE_VERSION="$$(cat code_version)" \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:${_SHORT_SHA} \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
           -f docker/aifs-ens-v2/Dockerfile .
@@ -301,6 +315,23 @@ steps:
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest \
           -f docker/gencast/Dockerfile .
     waitFor: [pull-cache-gencast]
+
+  - id: build-drywetcast
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - -c
+      - |
+        grep -qx drywetcast targets || { echo "skip"; exit 0; }
+        docker build \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --build-arg CODE_VERSION="$$(cat code_version)" \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
+          -f docker/drywetcast/Dockerfile .
+    waitFor: [pull-cache-drywetcast]
 
   # ---------------------------------------------------------------------------
   # Push (gated). Per-image push avoids the top-level `images:` block, which
@@ -396,6 +427,16 @@ steps:
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast
     waitFor: [build-gencast]
 
+  - id: push-drywetcast
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast targets || { echo "skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast
+    waitFor: [build-drywetcast]
+
   # ---------------------------------------------------------------------------
   # Roll Cloud Run service/jobs to the freshly-pushed digest. Cloud Run pins
   # the resolved digest at revision-create time and does not auto-follow tag
@@ -452,5 +493,22 @@ steps:
           --project=${PROJECT_ID} --region=${_REGION} \
           --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
     waitFor: [push-sync]
+
+  - id: deploy-drywetcast
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast targets || { echo "skip"; exit 0; }
+        # The job is created by Terraform; on the first merge the image can be
+        # pushed before the apply has created it.
+        gcloud run jobs describe monsoon-${_ENV}-drywetcast \
+          --project=${PROJECT_ID} --region=${_REGION} >/dev/null 2>&1 \
+          || { echo "monsoon-${_ENV}-drywetcast not created yet; skipping deploy"; exit 0; }
+        gcloud run jobs update monsoon-${_ENV}-drywetcast \
+          --project=${PROJECT_ID} --region=${_REGION} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:${_SHORT_SHA}
+    waitFor: [push-drywetcast]
 
 timeout: 3600s

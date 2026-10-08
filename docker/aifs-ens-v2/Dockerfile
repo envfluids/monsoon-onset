@@ -34,5 +34,10 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app
 ENV MODEL=AIFS_ENS_v2
 
+# Build commit, recorded in the India store's code_version attribute. Last, so a
+# new commit doesn't invalidate the cached layers above.
+ARG AIFS_CODE_VERSION=unknown
+ENV AIFS_CODE_VERSION=${AIFS_CODE_VERSION}
+
 # Entry point
 ENTRYPOINT ["python", "-m", "src.main"]
