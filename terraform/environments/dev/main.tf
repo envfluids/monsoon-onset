@@ -134,7 +134,7 @@ variable "disabled_stages" {
 variable "scheduler_paused" {
   description = "Pause the pipeline Cloud Scheduler job. Workflow runs can still be started manually."
   type        = bool
-  default     = true
+  default     = false
 }
 
 locals {
@@ -366,7 +366,7 @@ module "orchestration" {
   }
 
   # Dev: less frequent runs
-  pipeline_schedule       = "0 8,14 * * 0-3" # 00:00 and 12:00 UTC, Sun-Wed
+  pipeline_schedule       = "0 8,10,14 * * *" # 08:00, 10:00 and 14:00 UTC, daily
   scheduler_paused        = var.scheduler_paused
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
