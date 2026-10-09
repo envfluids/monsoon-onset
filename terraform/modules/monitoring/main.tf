@@ -69,6 +69,46 @@ resource "google_monitoring_notification_channel" "email" {
 # Alert Policies
 # -----------------------------------------------------------------------------
 
+# Alert: delivery deadline missed, or a Batch job hit its retry cap. Both are
+# logged by the workflow at WARNING (below the >= ERROR that pipeline_failure uses).
+resource "google_monitoring_alert_policy" "delivery_late" {
+  count = var.enable_alerts && var.enable_delivery_alert ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] Monsoon Delivery Late"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Delivery marker missing or Batch retries exhausted"
+
+    condition_matched_log {
+      filter = <<-EOT
+        resource.type="workflows.googleapis.com/Workflow"
+        (textPayload:"DELIVERY_LATE" OR textPayload:"BATCH_RETRY_CAP")
+      EOT
+    }
+  }
+
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s" # Max 1 notification per hour
+    }
+    auto_close = "86400s"
+  }
+
+  documentation {
+    content   = "DELIVERY_LATE: today's India AIFS ensemble done marker was missing at the check time (often a GPU stockout; see the AIFS_ENS_v2 Batch job's status events). BATCH_RETRY_CAP: a Batch job failed its maximum attempts and will not be resubmitted for that date. Check Cloud Logging for the workflow message."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "warning"
+  }
+}
+
 # Alert: Pipeline execution failed
 resource "google_monitoring_alert_policy" "pipeline_failure" {
   count = var.enable_alerts ? 1 : 0

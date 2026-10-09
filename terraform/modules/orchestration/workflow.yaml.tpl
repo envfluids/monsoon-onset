@@ -29,6 +29,13 @@ main:
               date: ""
               missing: []
 
+%{ if delivery_check_marker != "" ~}
+    - maybe_check_delivery:
+        switch:
+          - condition: $${action == "check_delivery"}
+            next: check_delivery_init
+
+%{ endif ~}
     - maybe_advance_from_event:
         switch:
           - condition: $${event_type != "" and text.match_regex(event_object_name, "^intermediate/.*_done$")}
@@ -195,6 +202,49 @@ main:
         return:
           status: "checked"
           state: $${state}
+%{ if delivery_check_marker != "" ~}
+
+    # -------------------------------------------------------------------------
+    # Delivery deadline check (scheduled separately with action=check_delivery):
+    # logs DELIVERY_LATE at WARNING when today's marker is missing, which the
+    # delivery alert policy matches. Doesn't probe or submit anything.
+    # -------------------------------------------------------------------------
+    - check_delivery_init:
+        assign:
+          - delivery_now: $${time.format(sys.now())}
+          - delivery_date: $${text.replace_all(text.substring(delivery_now, 0, 10), "-", "") + "T00"}
+          - delivery_marker: $${text.replace_all("${delivery_check_marker}", "%DATE%", delivery_date)}
+    - check_delivery_marker:
+        try:
+          call: googleapis.storage.v1.objects.get
+          args:
+            bucket: $${common_bucket}
+            object: $${text.url_encode(delivery_marker)}
+        except:
+          as: e
+          steps:
+            - classify_delivery_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 404}
+                    next: log_delivery_late
+                  - condition: true
+                    raise: $${e}
+    - log_delivery_on_time:
+        call: sys.log
+        args:
+          severity: INFO
+          text: '$${"DELIVERY_OK gs://" + common_bucket + "/" + delivery_marker + " present at " + delivery_now}'
+        next: return_delivery_checked
+    - log_delivery_late:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: '$${"DELIVERY_LATE gs://" + common_bucket + "/" + delivery_marker + " missing at " + delivery_now}'
+    - return_delivery_checked:
+        return:
+          status: "delivery_checked"
+          marker: $${delivery_marker}
+%{ endif ~}
 
 
 # -----------------------------------------------------------------------------
@@ -254,6 +304,7 @@ submit_ready_work:
                         max_run_duration: "${batch_config.model_resources[model].max_run_duration}"
                         accelerators: ${batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ? jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = batch_config.model_resources[model].gpu_count }]) : "[]"}
                         volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
+                        max_attempts: ${try(batch_model_max_attempts[model], 0)}
                         env_vars:
                           DATE: $${${model}_action.date}
                           MODEL: "${model}"
@@ -387,6 +438,7 @@ submit_ready_work:
                   max_run_duration: "${batch_config.model_resources["blend"].max_run_duration}"
                   accelerators: []
                   volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["blend"].gcs_mount_options }]) : "[]"}
+                  max_attempts: 0
                   env_vars:
                     DATE: $${blend_action.date}
                     FORECAST_REGION: $${region_name}
@@ -430,6 +482,7 @@ submit_ready_work:
                   max_run_duration: "${batch_config.model_resources["diagnostics"].max_run_duration}"
                   accelerators: []
                   volumes: ${batch_config.model_resources["diagnostics"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["diagnostics"].gcs_mount_options }]) : "[]"}
+                  max_attempts: 0
                   env_vars:
                     DATE: $${diagnostics_action.date}
                     FORECAST_REGION: $${region_name}
@@ -549,11 +602,13 @@ submit_batch_stage:
     - accelerators
     - volumes
     - env_vars
+    - max_attempts  # attempts per job id before FAILED/CANCELLED stops being resubmitted; 0 = unlimited
   steps:
     - init_batch_submit:
         assign:
           - job_name: $${"projects/${project_id}/locations/${region}/jobs/" + job_id}
           - recreate_attempted: false
+          - attempt: 1
     - create_batch_job:
         try:
           call: http.post
@@ -562,6 +617,8 @@ submit_batch_stage:
             auth:
               type: OAuth2
             body:
+              labels:
+                attempt: $${string(attempt)}
               taskGroups:
                 - taskCount: 1
                   taskSpec:
@@ -640,7 +697,43 @@ submit_batch_stage:
           - condition: $${recreate_attempted}
             next: stale_batch_job_delete_pending
           - condition: true
+            next: count_previous_attempts
+
+    # The attempt number travels on the job itself (label), so every pass sees
+    # the same count. Jobs created before the label existed count as attempt 1.
+    - count_previous_attempts:
+        assign:
+          - previous_attempt: $${int(default(map.get(existing_batch_job, ["labels", "attempt"]), "1"))}
+    - enforce_attempt_cap:
+        switch:
+          - condition: $${max_attempts > 0 and existing_batch_job.status.state != "SUCCEEDED" and previous_attempt >= max_attempts}
+            next: log_retry_cap_reached
+          - condition: true
+            next: recheck_before_delete
+
+    # Re-read immediately before deleting: only delete the same job (uid) and only
+    # while it is still finished, so a job another pass just recreated is kept.
+    - recheck_before_delete:
+        try:
+          call: googleapis.batch.v1.projects.locations.jobs.get
+          args:
+            name: $${job_name}
+          result: recheck_batch_job
+        except:
+          as: e
+          steps:
+            - handle_recheck_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 404}
+                    next: mark_recreate_attempted  # already gone: count the attempt, then create
+                  - condition: true
+                    raise: $${e}
+    - verify_same_finished_job:
+        switch:
+          - condition: $${recheck_batch_job.uid == existing_batch_job.uid and (recheck_batch_job.status.state == "FAILED" or recheck_batch_job.status.state == "CANCELLED" or recheck_batch_job.status.state == "SUCCEEDED")}
             next: delete_existing_batch_job
+          - condition: true
+            next: log_delete_skipped
 
     - delete_existing_batch_job:
         call: googleapis.batch.v1.projects.locations.jobs.delete
@@ -650,6 +743,7 @@ submit_batch_stage:
     - mark_recreate_attempted:
         assign:
           - recreate_attempted: true
+          - attempt: $${previous_attempt + 1}
 
     - wait_for_batch_delete:
         call: sys.sleep
@@ -662,6 +756,22 @@ submit_batch_stage:
 
     - stale_batch_job_delete_pending:
         return: "stale_delete_pending"
+
+    - log_retry_cap_reached:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: '$${"BATCH_RETRY_CAP " + job_id + " is " + existing_batch_job.status.state + " after " + string(previous_attempt) + " of " + string(max_attempts) + " attempts; not resubmitting"}'
+    - batch_retry_cap_reached:
+        return: "retry_cap_reached"
+
+    - log_delete_skipped:
+        call: sys.log
+        args:
+          severity: INFO
+          text: '$${"Not deleting " + job_id + ": it changed since it was read (now uid " + recheck_batch_job.uid + ", state " + recheck_batch_job.status.state + ")"}'
+    - batch_delete_skipped:
+        return: "changed"
 
 
 pipeline_state:

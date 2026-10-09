@@ -142,6 +142,23 @@ variable "drywetcast_ncmrwf_cutoff_utc" {
   }
 }
 
+variable "india_ensemble_deadline_utc" {
+  description = "UTC time (HH:MM) by which today's India AIFS ensemble done marker should exist; a check at this time logs DELIVERY_LATE (alerted) if it doesn't."
+  type        = string
+  default     = "10:00"
+
+  validation {
+    condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.india_ensemble_deadline_utc))
+    error_message = "india_ensemble_deadline_utc must be HH:MM (UTC)."
+  }
+}
+
+variable "ensemble_max_attempts" {
+  description = "Batch attempts per date for the AIFS_ENS_v2 job before a FAILED/CANCELLED job stops being resubmitted."
+  type        = number
+  default     = 3
+}
+
 variable "scheduler_paused" {
   description = "Pause the pipeline Cloud Scheduler job. Workflow runs can still be started manually."
   type        = bool
@@ -388,10 +405,22 @@ module "orchestration" {
   }
 
   # Dev: less frequent runs
-  pipeline_schedule       = "0 8,10,14 * * *" # 08:00, 10:00 and 14:00 UTC, daily
+  pipeline_schedule       = "0 8-14 * * *" # hourly 08:00-14:00 UTC, daily
   scheduler_paused        = var.scheduler_paused
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
+
+  # Delivery deadline check for today's India ensemble marker, and a retry cap so a
+  # failing ensemble isn't resubmitted on every hourly pass.
+  delivery_check_schedule = format(
+    "%d %d * * *",
+    tonumber(split(":", var.india_ensemble_deadline_utc)[1]),
+    tonumber(split(":", var.india_ensemble_deadline_utc)[0]),
+  )
+  delivery_check_marker = "intermediate/AIFS_ENS_v2_india_%DATE%_done"
+  batch_model_max_attempts = {
+    AIFS_ENS_v2 = var.ensemble_max_attempts
+  }
 
   cloud_run_services            = module.compute.cloud_run_services
   pipeline_state_service_name   = module.compute.pipeline_state_service_name
@@ -442,8 +471,9 @@ module "monitoring" {
   region      = var.region
   environment = local.environment
 
-  enable_alerts       = true
-  notification_emails = ["zachary.freitag.johnson7@gmail.com"]
+  enable_alerts         = true
+  enable_delivery_alert = true
+  notification_emails   = ["zachary.freitag.johnson7@gmail.com"]
 
   depends_on = [module.orchestration]
 }

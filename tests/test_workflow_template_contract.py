@@ -416,7 +416,7 @@ class DryWetCastJobContractTest(unittest.TestCase):
             "DRYWETCAST_NCMRWF_CUTOFF_UTC = var.drywetcast_ncmrwf_cutoff_utc", self.dev
         )
         # The cutoff only takes effect if a scheduled pass runs at or after it (14:00 UTC).
-        self.assertIn('pipeline_schedule       = "0 8,10,14 * * *"', self.dev)
+        self.assertIn('pipeline_schedule       = "0 8-14 * * *"', self.dev)
 
     def test_prod_is_unchanged(self):
         self.assertNotIn("drywetcast", self.prod)
@@ -476,6 +476,128 @@ class DryWetCastJobContractTest(unittest.TestCase):
         ):
             self.assertIn(pin, self.dwc_lock)
         self.assertNotIn("nvidia", self.dwc_lock)
+
+
+class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
+    """PR B: delivery deadline check, hourly passes, ensemble retry cap, delete hardening."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        root = cls.ROOT
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.orch_main = (ORCHESTRATION_PATH / "main.tf").read_text()
+        cls.orch_vars = (ORCHESTRATION_PATH / "variables.tf").read_text()
+        cls.monitoring = (root / "terraform/modules/monitoring/main.tf").read_text()
+        cls.submit = cls.workflow.split("\nsubmit_batch_stage:", 1)[1].split(
+            "\npipeline_state:", 1
+        )[0]
+
+    def test_delivery_check_branch_is_guarded_and_logs_warning(self):
+        block = self.workflow.split('%{ if delivery_check_marker != "" ~}', 2)
+        self.assertEqual(len(block), 3)  # dispatch switch + branch, both guarded
+        self.assertIn('condition: $${action == "check_delivery"}', block[1])
+        branch = block[2].split("%{ endif ~}", 1)[0]
+        for expected in (
+            "time.format(sys.now())",
+            '"%DATE%", delivery_date',
+            "call: googleapis.storage.v1.objects.get",
+            "object: $${text.url_encode(delivery_marker)}",
+            "== 404}\n                    next: log_delivery_late",
+            "severity: WARNING",
+            "text: '$${\"DELIVERY_LATE gs://",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, branch)
+        self.assertIn(
+            'delivery_check_marker    = var.delivery_check_schedule == null ? "" : var.delivery_check_marker',
+            self.orch_main,
+        )
+
+    def test_delivery_check_scheduler_job_is_optional(self):
+        job = self.orch_main.split(
+            'resource "google_cloud_scheduler_job" "delivery_check" {', 1
+        )[1]
+        self.assertIn("count = var.delivery_check_schedule == null ? 0 : 1", job)
+        self.assertIn('argument = jsonencode({ action = "check_delivery" })', job)
+        self.assertIn("paused      = var.scheduler_paused", job)
+        self.assertIn('time_zone   = "UTC"', job)
+        self.assertIn(
+            'default     = "intermediate/AIFS_ENS_v2_india_%DATE%_done"', self.orch_vars
+        )
+
+    def test_delivery_alert_matches_both_signals_and_is_rate_limited(self):
+        policy = self.monitoring.split(
+            'resource "google_monitoring_alert_policy" "delivery_late" {', 1
+        )[1]
+        policy = policy.split("\nresource ", 1)[0]
+        self.assertIn(
+            "count = var.enable_alerts && var.enable_delivery_alert ? 1 : 0", policy
+        )
+        self.assertIn(
+            '(textPayload:"DELIVERY_LATE" OR textPayload:"BATCH_RETRY_CAP")', policy
+        )
+        self.assertIn('period = "3600s"', policy)
+
+    def test_submit_batch_stage_caps_attempts_and_rechecks_before_delete(self):
+        self.assertIn("- max_attempts  #", self.submit)
+        self.assertIn("attempt: $${string(attempt)}", self.submit)
+        self.assertIn('map.get(existing_batch_job, ["labels", "attempt"])', self.submit)
+        self.assertIn(
+            'max_attempts > 0 and existing_batch_job.status.state != "SUCCEEDED" and previous_attempt >= max_attempts',
+            self.submit,
+        )
+        self.assertIn("text: '$${\"BATCH_RETRY_CAP ", self.submit)
+        self.assertIn("recheck_batch_job.uid == existing_batch_job.uid", self.submit)
+        # The re-read comes after the cap check and immediately before the only delete.
+        order = [
+            self.submit.index("- enforce_attempt_cap:"),
+            self.submit.index("- recheck_before_delete:"),
+            self.submit.index("- verify_same_finished_job:"),
+            self.submit.index("- delete_existing_batch_job:"),
+        ]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(self.workflow.count("jobs.delete"), 1)
+        self.assertIn("- attempt: $${previous_attempt + 1}", self.submit)
+        # A job that vanished between the reads still counts as an attempt.
+        self.assertIn("next: mark_recreate_attempted  # already gone", self.submit)
+
+    def test_only_the_ensemble_has_a_cap(self):
+        self.assertIn(
+            "max_attempts: ${try(batch_model_max_attempts[model], 0)}", self.workflow
+        )
+        self.assertEqual(
+            self.workflow.count("                  max_attempts: 0\n"), 2
+        )  # blend, diagnostics
+        self.assertIn("AIFS_ENS_v2 = var.ensemble_max_attempts", self.dev)
+        self.assertIn(
+            "default     = {}",
+            self.orch_vars.split('variable "batch_model_max_attempts" {', 1)[1],
+        )
+
+    def test_dev_wiring_and_prod_unchanged(self):
+        self.assertIn('pipeline_schedule       = "0 8-14 * * *"', self.dev)
+        deadline = self.dev.split('variable "india_ensemble_deadline_utc" {', 1)[
+            1
+        ].split("\n}\n", 1)[0]
+        self.assertIn('default     = "10:00"', deadline)
+        self.assertIn(
+            'tonumber(split(":", var.india_ensemble_deadline_utc)[1])', self.dev
+        )
+        self.assertIn("enable_delivery_alert = true", self.dev)
+        self.assertIn(
+            "default     = 3",
+            self.dev.split('variable "ensemble_max_attempts" {', 1)[1],
+        )
+        for name in (
+            "delivery_check",
+            "enable_delivery_alert",
+            "batch_model_max_attempts",
+        ):
+            self.assertNotIn(name, self.prod)
 
 
 if __name__ == "__main__":
