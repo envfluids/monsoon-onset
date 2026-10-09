@@ -545,3 +545,4 @@ def _download_ncep(date: str, bucket: str) -> None:
 
 if __name__ == "__main__":
     main()
+# Rebuild trigger: re-run image build after transient Artifact Registry push timeout (build 93ddfab1).

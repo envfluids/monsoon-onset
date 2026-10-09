@@ -1423,3 +1423,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# Rebuild trigger: re-run image build after transient Artifact Registry push timeout (build 93ddfab1).
