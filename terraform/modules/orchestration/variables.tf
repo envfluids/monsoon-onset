@@ -61,6 +61,12 @@ variable "batch_model_env" {
   }
 }
 
+variable "extra_pipeline_schedules" {
+  description = "Additional pipeline passes, as name suffix → cron (UTC). Each becomes its own Cloud Scheduler job with the same target as pipeline_schedule; overlapping passes are safe."
+  type        = map(string)
+  default     = {}
+}
+
 variable "batch_model_max_attempts" {
   description = "Per-model cap on Batch attempts per job id (date): after this many, a FAILED/CANCELLED job is no longer deleted and resubmitted, and BATCH_RETRY_CAP is logged. Models not listed are unlimited."
   type        = map(number)
