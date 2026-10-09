@@ -61,6 +61,29 @@ variable "batch_model_env" {
   }
 }
 
+variable "batch_model_max_attempts" {
+  description = "Per-model cap on Batch attempts per job id (date): after this many, a FAILED/CANCELLED job is no longer deleted and resubmitted, and BATCH_RETRY_CAP is logged. Models not listed are unlimited."
+  type        = map(number)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for n in values(var.batch_model_max_attempts) : n >= 1 && floor(n) == n])
+    error_message = "batch_model_max_attempts values must be whole numbers >= 1."
+  }
+}
+
+variable "delivery_check_schedule" {
+  description = "Cron (UTC) for the delivery deadline check, e.g. \"0 10 * * *\". Null creates no check."
+  type        = string
+  default     = null
+}
+
+variable "delivery_check_marker" {
+  description = "Common-bucket object the delivery check expects; %DATE% becomes today's YYYYMMDDT00."
+  type        = string
+  default     = "intermediate/AIFS_ENS_v2_india_%DATE%_done"
+}
+
 variable "pipeline_schedule" {
   description = "Cron schedule for pipeline trigger"
   type        = string

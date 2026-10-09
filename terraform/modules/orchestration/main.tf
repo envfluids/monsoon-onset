@@ -160,6 +160,9 @@ resource "google_workflows_workflow" "main_pipeline" {
     pipeline_sa         = var.pipeline_service_account_email
     full_field_models   = var.full_field_models
     batch_model_env     = var.batch_model_env
+
+    batch_model_max_attempts = var.batch_model_max_attempts
+    delivery_check_marker    = var.delivery_check_schedule == null ? "" : var.delivery_check_marker
   })
 
   labels = {
@@ -221,6 +224,42 @@ resource "google_cloud_scheduler_job" "pipeline_trigger" {
 
     body = base64encode(jsonencode({
       argument = jsonencode({})
+    }))
+
+    oauth_token {
+      service_account_email = google_service_account.workflow.email
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+    }
+  }
+
+  retry_config {
+    retry_count          = 3
+    min_backoff_duration = "5s"
+    max_backoff_duration = "300s"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Cloud Scheduler — delivery deadline check (optional)
+# -----------------------------------------------------------------------------
+
+resource "google_cloud_scheduler_job" "delivery_check" {
+  count = var.delivery_check_schedule == null ? 0 : 1
+
+  name        = "${var.name_prefix}-${var.environment}-delivery-check"
+  project     = var.project_id
+  region      = var.region
+  description = "Logs DELIVERY_LATE if today's delivery marker is missing"
+  schedule    = var.delivery_check_schedule
+  time_zone   = "UTC"
+  paused      = var.scheduler_paused
+
+  http_target {
+    uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.main_pipeline.id}/executions"
+    http_method = "POST"
+
+    body = base64encode(jsonencode({
+      argument = jsonencode({ action = "check_delivery" })
     }))
 
     oauth_token {
