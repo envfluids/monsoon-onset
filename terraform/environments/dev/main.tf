@@ -320,16 +320,20 @@ module "compute" {
   gencast_tpu_zone    = var.gencast_tpu_zone
   tpu_vpc_subnetwork  = module.networking.subnetwork_ids_by_region[local.gencast_tpu_region]
 
-  # Replaces the module default map: AIFS_ENS_v2 keeps its module-default
-  # settings but runs on STANDARD (non-spot) VMs instead of the dev SPOT default.
+  # Replaces the module default map: AIFS_ENS_v2 overrides the machine type,
+  # memory and run time, and runs on STANDARD (non-spot) VMs instead of the dev
+  # SPOT default; the GCS mount settings match the module default.
   batch_model_resources = {
     AIFS_ENS_v2 = {
-      machine_type        = "a2-highgpu-4g"
+      # One A100: a2-highgpu-4g stocked out on 2 of 3 India runs (Oct 7-8), while
+      # 1-GPU VMs start most reliably. run_model_ENS.py uses one worker per visible
+      # GPU, so 51 members run back to back (~45 min vs ~11 min on 4 GPUs).
+      machine_type        = "a2-highgpu-1g"
       boot_disk_size_gb   = 300
       cpu_milli           = 12000
-      memory_mib          = 204800
+      memory_mib          = 87040
       install_gpu_drivers = true
-      max_run_duration    = "7200s"
+      max_run_duration    = "10800s"
       mount_common_bucket = true
       gcs_mount_options = [
         "--implicit-dirs",
