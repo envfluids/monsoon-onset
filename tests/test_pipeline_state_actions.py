@@ -990,5 +990,113 @@ class DryWetCastStageTest(unittest.TestCase):
         self.assertEqual(action["date"], "")
 
 
+class EcmwfPublicationCheckTest(unittest.TestCase):
+    """The ECMWF date only advances when every required open-data file is published."""
+
+    TODAY = "20260605T00"
+    YESTERDAY = "20260604T00"
+
+    def setUp(self):
+        self.module = load_pipeline_state()
+        self.storage = FakeStorageClient()
+        self.module._storage_client = self.storage
+        self.module.GCS_COMMON_BUCKET = COMMON_BUCKET
+        self.module.REGION_BUCKETS = {"india": INDIA_BUCKET}
+        self.module.REGIONS = {
+            "india": {
+                "models": ["AIFS_ENS_v2"],
+                "stages": ["sync"],
+                "sync": {"date_kind": "date"},
+            }
+        }
+        self.module.BLENDS = []
+        self.today = datetime(2026, 6, 5, 7, 36, tzinfo=timezone.utc)
+        self.published = set()
+        self.probed = []
+
+        def fake_head(source, date_str, provider, url):
+            self.probed.append(url)
+            return 200 if url in self.published else 404
+
+        self.module._head_status_with_backoff = fake_head
+        # Yesterday is fully done: ICs in the bucket, ensemble marker and outputs.
+        for path in self.module.ic_ecmwf_paths(self.YESTERDAY):
+            self.storage.put(COMMON_BUCKET, path)
+        self.storage.put(
+            COMMON_BUCKET,
+            self.module.model_marker_path("AIFS_ENS_v2", "india", self.YESTERDAY),
+            "done",
+        )
+        self.storage.put(
+            INDIA_BUCKET, f"output/AIFS_ENS_v2/{self.YESTERDAY}/AIFS_ENS_v2/tp/x.nc"
+        )
+
+    def publish(self, *filenames, source="google"):
+        for name in filenames:
+            urls = dict(self.module.ecmwf_file_probe_urls(name))
+            self.published.add(urls[source])
+
+    def required(self):
+        return [p.rsplit("/", 1)[-1] for p in self.module.ic_ecmwf_paths(self.TODAY)]
+
+    def test_required_files_are_oper_and_wave_at_00z_and_previous_18z(self):
+        self.assertEqual(
+            sorted(self.required()),
+            [
+                "20260604180000-0h-oper-fc.grib2",
+                "20260604180000-0h-wave-fc.grib2",
+                "20260605000000-0h-oper-fc.grib2",
+                "20260605000000-0h-wave-fc.grib2",
+            ],
+        )
+
+    def test_probe_urls_use_the_file_s_own_cycle_directory(self):
+        urls = dict(
+            self.module.ecmwf_file_probe_urls("20260604180000-0h-wave-fc.grib2")
+        )
+        self.assertEqual(
+            urls["google"],
+            "https://storage.googleapis.com/ecmwf-open-data/20260604/18z/ifs/0p25/wave/20260604180000-0h-wave-fc.grib2",
+        )
+        self.assertEqual(
+            urls["ecmwf"],
+            "https://data.ecmwf.int/forecasts/20260604/18z/ifs/0p25/wave/20260604180000-0h-wave-fc.grib2",
+        )
+
+    def test_only_oper_00z_published_keeps_yesterday_and_requests_nothing(self):
+        self.publish("20260605000000-0h-oper-fc.grib2")
+        state = self.module.compute_state("", 7, self.today)
+        self.assertEqual(state["ic"]["ecmwf"]["date"], self.YESTERDAY)
+        self.assertEqual(state["actions"]["ic_to_download"], [])
+        self.assertEqual(state["actions"]["models_to_run"], [])
+        self.assertEqual(
+            [b for b in state["actions"]["blocked"] if b["type"].startswith("ic_")], []
+        )
+
+    def test_all_files_published_selects_today_and_requests_the_download(self):
+        names = self.required()
+        self.publish(*names[:2], source="google")
+        self.publish(*names[2:], source="ecmwf")  # some only on the ECMWF origin
+        state = self.module.compute_state("", 7, self.today)
+        self.assertEqual(state["ic"]["ecmwf"]["date"], self.TODAY)
+        self.assertEqual(
+            state["actions"]["ic_to_download_by_source"]["ecmwf"]["date"], self.TODAY
+        )
+
+    def test_mirror_hit_skips_the_origin_probe(self):
+        self.publish(*self.required(), source="google")
+        self.module.compute_state("", 7, self.today)
+        self.assertFalse(
+            [u for u in self.probed if u.startswith("https://data.ecmwf.int/")]
+        )
+
+    def test_explicit_date_is_not_probed(self):
+        state = self.module.compute_state(self.TODAY, 7, self.today)
+        self.assertEqual(self.probed, [])
+        self.assertEqual(
+            state["actions"]["ic_to_download_by_source"]["ecmwf"]["date"], self.TODAY
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

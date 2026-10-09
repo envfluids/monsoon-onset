@@ -5,6 +5,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -57,6 +58,17 @@ def load_download_ecmwf():
 
 def load_downloader_wrapper():
     google_module = sys.modules.setdefault("google", types.ModuleType("google"))
+    api_core = sys.modules.setdefault(
+        "google.api_core", types.ModuleType("google.api_core")
+    )
+    exceptions = sys.modules.setdefault(
+        "google.api_core.exceptions", types.ModuleType("google.api_core.exceptions")
+    )
+    for name in ("NotFound", "PreconditionFailed"):
+        if not hasattr(exceptions, name):
+            setattr(exceptions, name, type(name, (Exception,), {}))
+    api_core.exceptions = exceptions
+    google_module.api_core = api_core
     cloud_module = sys.modules.setdefault(
         "google.cloud", types.ModuleType("google.cloud")
     )
@@ -150,12 +162,15 @@ class DownloaderWrapperTest(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
 
-    def run_download(self, env, existing=(), sst_error=None):
+    def run_download(
+        self, env, existing=(), sst_error=None, unpublished=(), claim=True
+    ):
         module = load_downloader_wrapper()
         module.MODEL_CONFIG_PATH = MODEL_CONFIG_PATH
         module.IC_UTILS = self.tmp
         module.IC_ECMWF_DIR = self.tmp / "ecmwf"
         events = []
+        self.claim_events = []
 
         def get_data(date, enabled_models=None, sst_fatal=True):
             enabled = None if enabled_models is None else sorted(enabled_models)
@@ -195,6 +210,21 @@ class DownloaderWrapperTest(unittest.TestCase):
             ),
             mock.patch.object(
                 module, "_download_and_upload_gencast_sst", side_effect=gencast_sst
+            ),
+            mock.patch.object(
+                module, "_unpublished_ecmwf_files", return_value=list(unpublished)
+            ),
+            mock.patch.object(
+                module,
+                "_acquire_download_claim",
+                side_effect=lambda b, d: (
+                    self.claim_events.append(("claim", d)) or claim
+                ),
+            ),
+            mock.patch.object(
+                module,
+                "_release_download_claim",
+                side_effect=lambda b, d: self.claim_events.append(("release", d)),
             ),
         ):
             result = CliRunner().invoke(
@@ -326,6 +356,179 @@ class EnabledModelsParsingTest(unittest.TestCase):
         self.assertFalse(self.module._needs_sst({"AIFS_ENS_v2", "neuralgcm"}))
         self.assertTrue(self.module._needs_sst({"GENCAST"}))
         self.assertTrue(self.module._needs_sst(None))
+
+
+class DownloaderPublicationAndClaimTest(unittest.TestCase):
+    """The downloader waits for full publication and claims the date."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp)
+        self.harness = DownloaderWrapperTest()
+        self.harness.tmp = self.tmp
+
+    def test_unpublished_files_end_quietly_without_download_or_marker(self):
+        result, events = self.harness.run_download(
+            {"REGION_MODELS": ENS_ONLY}, unpublished=["20261007000000-0h-wave-fc.grib2"]
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(events, [])  # no get_data, no upload, no latest marker
+        self.assertEqual(self.harness.claim_events, [])  # checked before claiming
+
+    def test_claim_held_elsewhere_exits_without_downloading(self):
+        result, events = self.harness.run_download(
+            {"REGION_MODELS": ENS_ONLY}, claim=False
+        )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(events, [])
+        self.assertEqual(self.harness.claim_events, [("claim", DATE)])
+
+    def test_claim_is_released_after_success_and_after_failure(self):
+        result, events = self.harness.run_download({"REGION_MODELS": ENS_ONLY})
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(
+            self.harness.claim_events, [("claim", DATE), ("release", DATE)]
+        )
+        self.assertEqual(events[0][0], "get_data")
+
+        result, events = self.harness.run_download(
+            {"REGION_MODELS": ENS_AND_GENCAST},
+            sst_error=RuntimeError("ecmwf.API error 1: Access token expired"),
+        )
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(
+            self.harness.claim_events, [("claim", DATE), ("release", DATE)]
+        )
+        self.assertIn(("write", "intermediate/latest_ecmwf_date.txt", DATE), events)
+
+    def test_published_check_accepts_mirror_or_origin_per_file(self):
+        module = load_downloader_wrapper()
+        module.MODEL_CONFIG_PATH = MODEL_CONFIG_PATH
+        mirror_only = {ENS_GRIBS[0], ENS_GRIBS[1]}
+        origin_only = {ENS_GRIBS[2]}
+
+        def head(url, timeout, allow_redirects):
+            name = url.rsplit("/", 1)[-1]
+            ok = (
+                url.startswith(module.ECMWF_MIRROR_BASE_URL) and name in mirror_only
+            ) or (url.startswith(module.ECMWF_ORIGIN_BASE_URL) and name in origin_only)
+            return types.SimpleNamespace(status_code=200 if ok else 404)
+
+        with mock.patch.object(module.requests, "head", side_effect=head):
+            missing = module._unpublished_ecmwf_files(DATE, {"AIFS_ENS_v2"})
+        self.assertEqual(missing, [ENS_GRIBS[3]])
+
+    def test_published_check_treats_network_errors_as_missing(self):
+        module = load_downloader_wrapper()
+        module.MODEL_CONFIG_PATH = MODEL_CONFIG_PATH
+        with mock.patch.object(
+            module.requests, "head", side_effect=module.requests.ConnectionError("boom")
+        ):
+            missing = module._unpublished_ecmwf_files(DATE, {"AIFS_ENS_v2"})
+        self.assertEqual(sorted(missing), sorted(ENS_GRIBS))
+
+
+class FakeClaimStore:
+    """Minimal GCS with generations and if_generation_match for the claim helpers."""
+
+    def __init__(self, module):
+        self.module, self.objects, self.counter = module, {}, 0
+
+    def bucket(self, name):
+        store = self
+
+        class Bucket:
+            def blob(self, path):
+                return Blob(path)
+
+            def get_blob(self, path):
+                return Blob(path) if path in store.objects else None
+
+        class Blob:
+            def __init__(self, path):
+                self.path = path
+
+            @property
+            def generation(self):
+                return (
+                    store.objects[self.path][1] if self.path in store.objects else None
+                )
+
+            def upload_from_string(
+                self, data, content_type=None, if_generation_match=None
+            ):
+                current = (
+                    store.objects[self.path][1] if self.path in store.objects else 0
+                )
+                if if_generation_match is not None and current != if_generation_match:
+                    raise store.module.PreconditionFailed(self.path)
+                store.counter += 1
+                store.objects[self.path] = (data, store.counter)
+
+            def download_as_text(self):
+                return store.objects[self.path][0]
+
+            def delete(self):
+                if self.path not in store.objects:
+                    raise store.module.NotFound(self.path)
+                del store.objects[self.path]
+
+        return Bucket()
+
+
+class DownloadClaimTest(unittest.TestCase):
+    def setUp(self):
+        self.module = load_downloader_wrapper()
+        self.store = FakeClaimStore(self.module)
+        self.module._client = lambda: self.store
+        self.path = self.module._download_claim_path(DATE)
+
+    def put_claim(self, execution, started):
+        self.store.objects[self.path] = (
+            json.dumps({"execution": execution, "started_utc": started}),
+            99,
+        )
+
+    def acquire(self, execution="exec-1"):
+        with mock.patch.dict("os.environ", {"CLOUD_RUN_EXECUTION": execution}):
+            return self.module._acquire_download_claim("common", DATE)
+
+    def test_claim_path_is_not_a_trigger_or_an_ic_file(self):
+        self.assertEqual(self.path, f"ic/ecmwf/{DATE}/download-claim.json")
+        self.assertFalse(self.path.endswith("_done"))
+
+    def test_first_execution_claims_and_release_deletes(self):
+        self.assertTrue(self.acquire())
+        self.assertIn(self.path, self.store.objects)
+        self.module._release_download_claim("common", DATE)
+        self.assertNotIn(self.path, self.store.objects)
+        self.module._release_download_claim("common", DATE)  # already gone: no error
+
+    def test_fresh_claim_from_another_execution_blocks(self):
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.put_claim("exec-0", now)
+        self.assertFalse(self.acquire("exec-1"))
+
+    def test_own_claim_is_reused_on_a_cloud_run_retry(self):
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.put_claim("exec-1", now)
+        self.assertTrue(self.acquire("exec-1"))
+
+    def test_stale_claim_from_a_crashed_execution_is_taken_over(self):
+        old = (datetime.now(timezone.utc) - timedelta(seconds=1300)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        self.put_claim("exec-0", old)
+        self.assertTrue(self.acquire("exec-1"))
+        self.assertIn('"exec-1"', self.store.objects[self.path][0])
+
+    def test_stale_age_is_job_timeout_plus_margin(self):
+        self.assertEqual(self.module.DOWNLOAD_CLAIM_MAX_AGE_SECONDS, 1200)
+        compute = (
+            Path(__file__).resolve().parents[1] / "terraform/modules/compute/main.tf"
+        ).read_text()
+        downloader = compute.split("    downloader = {", 1)[1].split("    }", 1)[0]
+        self.assertIn('timeout = "900s"', downloader)
 
 
 if __name__ == "__main__":

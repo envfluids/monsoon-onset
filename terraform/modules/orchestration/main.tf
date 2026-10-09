@@ -239,6 +239,39 @@ resource "google_cloud_scheduler_job" "pipeline_trigger" {
   }
 }
 
+# Extra passes that one cron expression can't express alongside pipeline_schedule.
+resource "google_cloud_scheduler_job" "pipeline_trigger_extra" {
+  for_each = var.extra_pipeline_schedules
+
+  name        = "${var.name_prefix}-${var.environment}-pipeline-trigger-${each.key}"
+  project     = var.project_id
+  region      = var.region
+  description = "Extra monsoon pipeline passes (${each.key})"
+  schedule    = each.value
+  time_zone   = "UTC"
+  paused      = var.scheduler_paused
+
+  http_target {
+    uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.main_pipeline.id}/executions"
+    http_method = "POST"
+
+    body = base64encode(jsonencode({
+      argument = jsonencode({})
+    }))
+
+    oauth_token {
+      service_account_email = google_service_account.workflow.email
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+    }
+  }
+
+  retry_config {
+    retry_count          = 3
+    min_backoff_duration = "5s"
+    max_backoff_duration = "300s"
+  }
+}
+
 # -----------------------------------------------------------------------------
 # Cloud Scheduler — delivery deadline check (optional)
 # -----------------------------------------------------------------------------

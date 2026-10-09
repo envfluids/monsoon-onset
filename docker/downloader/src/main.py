@@ -26,6 +26,7 @@ from pathlib import Path
 
 import click
 import requests
+from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 
 LOG_FORMAT = (
@@ -42,6 +43,13 @@ IC_NCEP_DIR   = Path("/app/IC/output/ncep")
 NGCM_UTILS    = IC_UTILS
 GENCAST_UTILS = Path("/app/gencast/utils")
 ECMWF_OPEN_DATA_BUCKET = "ecmwf-open-data"
+ECMWF_MIRROR_BASE_URL = "https://storage.googleapis.com/ecmwf-open-data/"
+ECMWF_ORIGIN_BASE_URL = "https://data.ecmwf.int/forecasts/"
+# Downloader Cloud Run job timeout (900 s) plus a margin: an older claim belongs
+# to a crashed execution and is taken over.
+DOWNLOAD_CLAIM_MAX_AGE_SECONDS = int(
+    os.environ.get("DOWNLOAD_CLAIM_MAX_AGE_SECONDS", "1200")
+)
 MODEL_CONFIG_PATH = Path("/app/config/models.json")
 
 
@@ -222,6 +230,29 @@ def _download_ecmwf(date: str, bucket: str) -> None:
         write_gcs_text(bucket, "intermediate/latest_ecmwf_date.txt", date)
         return
 
+    # Not published yet (e.g. a pass just after 00z oper appears, or a manual run
+    # with an explicit date): nothing to do, and no marker, so a later pass retries.
+    missing = _unpublished_ecmwf_files(date, enabled)
+    if missing:
+        logger.info(
+            "ECMWF %s not fully published yet (missing: %s); nothing to do",
+            date,
+            ", ".join(missing),
+        )
+        return
+
+    # Overlapping passes can start two executions for the same date; one downloads.
+    if not _acquire_download_claim(bucket, date):
+        return
+    try:
+        _download_and_upload_ecmwf(date, bucket, enabled, needs_sst)
+    finally:
+        _release_download_claim(bucket, date)
+
+
+def _download_and_upload_ecmwf(
+    date: str, bucket: str, enabled: set[str] | None, needs_sst: bool
+) -> None:
     IC_ECMWF_DIR.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(IC_UTILS))
     os.chdir(IC_UTILS)
@@ -251,6 +282,93 @@ def _download_ecmwf(date: str, bucket: str) -> None:
             f"{sst_error}"
         )
 
+
+def _head_ok(url: str) -> bool:
+    try:
+        return requests.head(url, timeout=30, allow_redirects=True).status_code == 200
+    except requests.RequestException as exc:
+        logger.warning("HEAD %s failed: %s", url, exc)
+        return False
+
+
+def _unpublished_ecmwf_files(date_str: str, enabled: set[str] | None) -> list[str]:
+    """Expected files that neither the public mirror nor the ECMWF origin serves yet."""
+    missing = []
+    for filename in _expected_ecmwf_grib_names(date_str, enabled):
+        path = _ecmwf_open_data_path(filename)
+        if not any(
+            _head_ok(base + path)
+            for base in (ECMWF_MIRROR_BASE_URL, ECMWF_ORIGIN_BASE_URL)
+        ):
+            missing.append(filename)
+    return missing
+
+
+def _download_claim_path(date: str) -> str:
+    return f"ic/ecmwf/{date}/download-claim.json"
+
+
+def _acquire_download_claim(bucket: str, date: str) -> bool:
+    """Create-if-absent claim; take over our own (Cloud Run retry) or a stale one."""
+    execution = os.environ.get("CLOUD_RUN_EXECUTION", f"local-{os.getpid()}")
+    now = datetime.now(timezone.utc)
+    payload = json.dumps(
+        {"execution": execution, "started_utc": now.strftime("%Y-%m-%dT%H:%M:%SZ")}
+    )
+    path = _download_claim_path(date)
+    try:
+        _client().bucket(bucket).blob(path).upload_from_string(
+            payload, content_type="application/json", if_generation_match=0
+        )
+        return True
+    except PreconditionFailed:
+        pass
+
+    existing = _client().bucket(bucket).get_blob(path)
+    if existing is None:
+        return _acquire_download_claim(bucket, date)
+    try:
+        claim = json.loads(existing.download_as_text())
+    except (NotFound, ValueError):
+        claim = {}
+    try:
+        started = datetime.fromisoformat(
+            str(claim.get("started_utc", "")).replace("Z", "+00:00")
+        )
+    except ValueError:
+        started = None
+    stale = (
+        started is None
+        or (now - started).total_seconds() > DOWNLOAD_CLAIM_MAX_AGE_SECONDS
+    )
+    if claim.get("execution") != execution and not stale:
+        logger.info(
+            "ECMWF download for %s already claimed by %s (started %s); exiting",
+            date,
+            claim.get("execution"),
+            claim.get("started_utc"),
+        )
+        return False
+    try:
+        _client().bucket(bucket).blob(path).upload_from_string(
+            payload,
+            content_type="application/json",
+            if_generation_match=existing.generation,
+        )
+    except PreconditionFailed:
+        logger.info("Lost a race for the ECMWF download claim for %s; exiting", date)
+        return False
+    logger.info(
+        "Took over ECMWF download claim for %s from %s", date, claim.get("execution")
+    )
+    return True
+
+
+def _release_download_claim(bucket: str, date: str) -> None:
+    try:
+        _client().bucket(bucket).blob(_download_claim_path(date)).delete()
+    except NotFound:
+        pass
 
 def _expected_ecmwf_grib_names(
     date_str: str, enabled: set[str] | None = None

@@ -600,5 +600,52 @@ class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
             self.assertNotIn(name, self.prod)
 
 
+class ExtraPipelinePassesContractTest(unittest.TestCase):
+    """PR C1: extra scheduler jobs for the early 5-minute window and the 09:30 pass."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.orch_main = (ORCHESTRATION_PATH / "main.tf").read_text()
+        cls.orch_vars = (ORCHESTRATION_PATH / "variables.tf").read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+
+    def block(self, opening):
+        return self.orch_main.split(opening, 1)[1].split("\n}\n", 1)[0]
+
+    def test_extra_jobs_mirror_the_main_trigger(self):
+        main = self.block('resource "google_cloud_scheduler_job" "pipeline_trigger" {')
+        extra = self.block(
+            'resource "google_cloud_scheduler_job" "pipeline_trigger_extra" {'
+        )
+        self.assertIn("for_each = var.extra_pipeline_schedules", extra)
+        self.assertIn(
+            'name        = "${var.name_prefix}-${var.environment}-pipeline-trigger-${each.key}"',
+            extra,
+        )
+        self.assertIn("schedule    = each.value", extra)
+        for shared in (
+            'time_zone   = "UTC"',
+            "paused      = var.scheduler_paused",
+            'uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.main_pipeline.id}/executions"',
+            "argument = jsonencode({})",
+            "retry_count          = 3",
+        ):
+            with self.subTest(shared=shared):
+                self.assertIn(shared, main)
+                self.assertIn(shared, extra)
+        self.assertIn(
+            "default     = {}",
+            self.orch_vars.split('variable "extra_pipeline_schedules" {', 1)[1],
+        )
+
+    def test_dev_adds_the_early_window_and_0930_and_prod_none(self):
+        self.assertIn('pipeline_schedule       = "0 8-14 * * *"', self.dev)
+        extra = self.dev.split("extra_pipeline_schedules = {", 1)[1].split("}", 1)[0]
+        self.assertIn('early       = "*/5 7-8 * * *"', extra)
+        self.assertIn('ncmrwf-0930 = "30 9 * * *"', extra)
+        self.assertNotIn("extra_pipeline_schedules", self.prod)
+
+
 if __name__ == "__main__":
     unittest.main()

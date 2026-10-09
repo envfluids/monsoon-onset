@@ -135,23 +135,26 @@ BLEND_MODEL_TO_PIPELINE_MODEL = {
 # External IC probing
 # ---------------------------------------------------------------------------
 
-def ecmwf_url(date: datetime) -> str:
-    ymd = date.strftime("%Y%m%d")
-    stamp = date.strftime("%Y%m%d%H0000")
-    return f"https://data.ecmwf.int/forecasts/{ymd}/00z/ifs/0p25/oper/{stamp}-0h-oper-fc.grib2"
-
-
-def ecmwf_google_url(date: datetime) -> str:
-    ymd = date.strftime("%Y%m%d")
-    stamp = date.strftime("%Y%m%d%H0000")
-    return f"https://storage.googleapis.com/ecmwf-open-data/{ymd}/00z/ifs/0p25/oper/{stamp}-0h-oper-fc.grib2"
-
-
-def ecmwf_probe_urls(date: datetime) -> list[tuple[str, str]]:
+def ecmwf_file_probe_urls(filename: str) -> list[tuple[str, str]]:
+    """Public mirror first, then the ECMWF origin — the order the downloader uses."""
+    path = f"{filename[:8]}/{filename[8:10]}z/ifs/0p25/{filename.split('-0h-', 1)[1].split('-fc.', 1)[0]}/{filename}"
     return [
-        ("google", ecmwf_google_url(date)),
-        ("ecmwf", ecmwf_url(date)),
+        ("google", f"https://storage.googleapis.com/ecmwf-open-data/{path}"),
+        ("ecmwf", f"https://data.ecmwf.int/forecasts/{path}"),
     ]
+
+
+def ecmwf_unpublished_files(date_str: str) -> list[str]:
+    """Required ECMWF open-data files for `date_str` that neither source serves yet."""
+    missing = []
+    for gcs_path in ic_ecmwf_paths(date_str):
+        filename = gcs_path.rsplit("/", 1)[-1]
+        if not any(
+            _head_status_with_backoff("ecmwf", date_str, provider, url) == 200
+            for provider, url in ecmwf_file_probe_urls(filename)
+        ):
+            missing.append(filename)
+    return missing
 
 
 def ncep_url(date: datetime) -> str:
@@ -230,12 +233,20 @@ def latest_external_00z(source: str, lookback_days: int, today: datetime) -> str
             )
             return date_str
 
-        probe_urls = (
-            ecmwf_probe_urls(candidate)
-            if source == "ecmwf"
-            else [("ncep", ncep_url(candidate))]
-        )
-        for provider, url in probe_urls:
+        if source == "ecmwf":
+            # Every required file (oper/wave at 00z and the previous 18z for AIFS)
+            # must be published, so the downloader never starts on a partial date.
+            missing = ecmwf_unpublished_files(date_str)
+            if not missing:
+                return date_str
+            logger.info(
+                "ecmwf_incomplete date=%s missing=%s",
+                date_str,
+                ",".join(missing),
+            )
+            continue
+
+        for provider, url in [("ncep", ncep_url(candidate))]:
             status = _head_status_with_backoff(source, date_str, provider, url)
             if status == 200:
                 return date_str

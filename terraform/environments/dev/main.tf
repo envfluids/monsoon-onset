@@ -410,6 +410,13 @@ module "orchestration" {
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
+  # Every 5 min 07:00-08:55 to start as soon as ECMWF 00z is published (~07:34),
+  # and 09:30 for NCMRWF uploads that land after the 08:xx DryWetCast poll ends.
+  extra_pipeline_schedules = {
+    early       = "*/5 7-8 * * *"
+    ncmrwf-0930 = "30 9 * * *"
+  }
+
   # Delivery deadline check for today's India ensemble marker, and a retry cap so a
   # failing ensemble isn't resubmitted on every hourly pass.
   delivery_check_schedule = format(
