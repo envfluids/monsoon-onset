@@ -182,6 +182,12 @@ locals {
       ENABLE_DRIVE    = "true"
       MONSOON_CLUSTER = var.environment == "dev" ? "gcp-dev" : "gcp"
     }
+    # A 20-min NCMRWF poll keeps a run (~23 min with setup) shorter than the
+    # 30-min pass spacing, so its claim never blocks the next pass, and a
+    # 13:30 run ends before the 14:00 cutoff pass.
+    drywetcast = {
+      NCMRWF_WAIT_MINUTES = "20"
+    }
   }
 
   all_cloud_run_services = {

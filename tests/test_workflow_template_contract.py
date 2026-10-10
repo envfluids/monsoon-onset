@@ -363,7 +363,8 @@ class DryWetCastJobContractTest(unittest.TestCase):
         self.assertEqual(self.workflow.count("cloud_run_jobs.drywetcast"), 1)
 
     def test_compute_job_is_optional_and_references_the_existing_secret(self):
-        job = self.compute_main.split("    drywetcast = {", 1)[1].split("    }", 1)[0]
+        services = self.compute_main.split("all_cloud_run_services = {", 1)[1]
+        job = services.split("    drywetcast = {", 1)[1].split("    }", 1)[0]
         for expected in (
             'memory  = "8Gi"',
             'cpu     = "4"',
@@ -601,7 +602,7 @@ class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
 
 
 class ExtraPipelinePassesContractTest(unittest.TestCase):
-    """PR C1: extra scheduler jobs for the early 5-minute window and the 09:30 pass."""
+    """Extra scheduler jobs: the early 5-minute window and the half-hourly NCMRWF passes."""
 
     @classmethod
     def setUpClass(cls):
@@ -639,12 +640,25 @@ class ExtraPipelinePassesContractTest(unittest.TestCase):
             self.orch_vars.split('variable "extra_pipeline_schedules" {', 1)[1],
         )
 
-    def test_dev_adds_the_early_window_and_0930_and_prod_none(self):
+    def test_dev_adds_the_early_window_and_half_hourly_passes_and_prod_none(self):
         self.assertIn('pipeline_schedule       = "0 8-14 * * *"', self.dev)
         extra = self.dev.split("extra_pipeline_schedules = {", 1)[1].split("}", 1)[0]
         self.assertIn('early       = "*/5 7-8 * * *"', extra)
-        self.assertIn('ncmrwf-0930 = "30 9 * * *"', extra)
+        self.assertIn('ncmrwf-half = "30 8-13 * * *"', extra)
+        self.assertNotIn("ncmrwf-0930", self.dev)
         self.assertNotIn("extra_pipeline_schedules", self.prod)
+
+    def test_drywetcast_poll_is_shorter_than_the_pass_spacing(self):
+        # A run is ~2.5 min of setup plus the poll. It must end before the next
+        # :00/:30 pass so the claim doesn't skip it, and a 13:30 run must end
+        # before the 14:00 cutoff pass.
+        compute = COMPUTE_MAIN_PATH.read_text()
+        env = compute.split("  cloud_run_job_env = {", 1)[1].split("\n  }\n", 1)[0]
+        self.assertIn('NCMRWF_WAIT_MINUTES = "20"', env.split("drywetcast = {", 1)[1])
+        dwc = (
+            Path(__file__).resolve().parents[1] / "docker/drywetcast/src/main.py"
+        ).read_text()
+        self.assertIn('os.environ.get("NCMRWF_WAIT_MINUTES", "30")', dwc)
 
 
 if __name__ == "__main__":
