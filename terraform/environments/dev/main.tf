@@ -411,10 +411,11 @@ module "orchestration" {
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
   # Every 5 min 07:00-08:55 to start as soon as ECMWF 00z is published (~07:34),
-  # and 09:30 for NCMRWF uploads that land after the 08:xx DryWetCast poll ends.
+  # and at :30 from 08:30 to 13:30 so, with the hourly passes, a DryWetCast NCMRWF
+  # poll can start every 30 min (NEPS has landed between ~09:00 and ~10:00).
   extra_pipeline_schedules = {
     early       = "*/5 7-8 * * *"
-    ncmrwf-0930 = "30 9 * * *"
+    ncmrwf-half = "30 8-13 * * *"
   }
 
   # Delivery deadline check for today's India ensemble marker, and a retry cap so a
