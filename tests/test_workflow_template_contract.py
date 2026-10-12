@@ -643,7 +643,10 @@ class ExtraPipelinePassesContractTest(unittest.TestCase):
     def test_dev_adds_the_early_window_and_half_hourly_passes_and_prod_none(self):
         self.assertIn('pipeline_schedule       = "0 8-14 * * *"', self.dev)
         extra = self.dev.split("extra_pipeline_schedules = {", 1)[1].split("}", 1)[0]
-        self.assertIn('early       = "*/5 7-8 * * *"', extra)
+        # The early window ends at 07:55 so a 5-min pass can't relaunch DryWetCast
+        # between the ensemble-triggered run and the :00/:30 passes.
+        self.assertIn('early       = "*/5 7 * * *"', extra)
+        self.assertNotIn("7-8", extra)
         self.assertIn('ncmrwf-half = "30 8-13 * * *"', extra)
         self.assertNotIn("ncmrwf-0930", self.dev)
         self.assertNotIn("extra_pipeline_schedules", self.prod)
@@ -659,6 +662,26 @@ class ExtraPipelinePassesContractTest(unittest.TestCase):
             Path(__file__).resolve().parents[1] / "docker/drywetcast/src/main.py"
         ).read_text()
         self.assertIn('os.environ.get("NCMRWF_WAIT_MINUTES", "30")', dwc)
+
+    def test_cloud_run_resources_ignore_gcloud_client_fields(self):
+        # gcloud deploys set client/client_version; without the ignore they show
+        # up as drift in every plan.
+        compute = COMPUTE_MAIN_PATH.read_text()
+        for resource, image in (
+            (
+                'resource "google_cloud_run_v2_job" "pipeline_jobs"',
+                "template[0].template[0].containers[0].image,",
+            ),
+            (
+                'resource "google_cloud_run_v2_service" "pipeline_state"',
+                "template[0].containers[0].image,",
+            ),
+        ):
+            with self.subTest(resource=resource):
+                body = compute.split(resource, 1)[1].split("\nresource ", 1)[0]
+                ignored = body.split("ignore_changes = [", 1)[1].split("]\n", 1)[0]
+                for field in (image, "client,", "client_version,"):
+                    self.assertIn(field, ignored)
 
 
 if __name__ == "__main__":
