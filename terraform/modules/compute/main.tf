@@ -436,8 +436,11 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
   }
 
   lifecycle {
+    # gcloud deploys set client/client_version; ignore them with the image.
     ignore_changes = [
       template[0].template[0].containers[0].image,
+      client,
+      client_version,
     ]
   }
 }
@@ -525,8 +528,11 @@ resource "google_cloud_run_v2_service" "pipeline_state" {
   }
 
   lifecycle {
+    # gcloud deploys set client/client_version; ignore them with the image.
     ignore_changes = [
       template[0].containers[0].image,
+      client,
+      client_version,
     ]
   }
 }

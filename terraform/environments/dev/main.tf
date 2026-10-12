@@ -410,11 +410,14 @@ module "orchestration" {
   call_log_level          = "LOG_ALL_CALLS"
   execution_history_level = "EXECUTION_HISTORY_DETAILED"
 
-  # Every 5 min 07:00-08:55 to start as soon as ECMWF 00z is published (~07:34),
+  # Every 5 min 07:00-07:55 to start as soon as ECMWF 00z is published (~07:34),
   # and at :30 from 08:30 to 13:30 so, with the hourly passes, a DryWetCast NCMRWF
-  # poll can start every 30 min (NEPS has landed between ~09:00 and ~10:00).
+  # poll can start every 30 min (NEPS has landed between ~09:00 and ~10:00). The
+  # early window stops before the ensemble finishes (~08:25) so no 5-min pass
+  # relaunches DryWetCast off the :00/:30 grid; a late ECMWF day is still picked
+  # up by the 08:00 and 08:30 passes.
   extra_pipeline_schedules = {
-    early       = "*/5 7-8 * * *"
+    early       = "*/5 7 * * *"
     ncmrwf-half = "30 8-13 * * *"
   }
 
