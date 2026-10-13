@@ -713,10 +713,12 @@ class DriveSyncContractTest(unittest.TestCase):
                 self.assertIn(expected, block)
         self.assertNotIn("severity: ERROR", block)
 
-    def test_dev_drywetcast_rule_is_behind_a_switch_that_defaults_off(self):
+    def test_dev_drywetcast_rule_is_behind_a_switch_that_is_on(self):
+        # On after the sync job's probe passed; the switch stays so Drive
+        # delivery can be turned off without touching the rules.
         variable = hcl_block(self.dev, 'variable "drywetcast_drive_sync" {')
         self.assertIn("type        = bool", variable)
-        self.assertIn("default     = false", variable)
+        self.assertRegex(variable, r"default += true")
         india = hcl_block(hcl_block(self.dev, "base_regions = {"), "india = {")
         self.assertIn('var.drywetcast_drive_sync ? ["drywetcast"] : []', india)
         always = hcl_block(india, "sync = {").split("concat(", 1)[1].split("var.", 1)[0]
@@ -772,7 +774,7 @@ class DriveSyncContractTest(unittest.TestCase):
             'gcs_prefix: "output/drywetcast/{date}/"',
             'gcs_stage_dir: "drywetcast/output/india/{date}"',
             'local_root: "drywetcast/output/india"',
-            'drive_path: "{drive_root}/drywetcast/{date}"',
+            'drive_path: "{drive_root}/{date}"',
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, rule)

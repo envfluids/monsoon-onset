@@ -57,7 +57,7 @@ class DryWetCastRuleTest(unittest.TestCase):
         for item in items:
             parts = [part for part in item.drive_path.split("/") if part]
             config = item.relative_path.split("/")[0]
-            self.assertEqual(parts, ["drywetcast", DAY, config])
+            self.assertEqual(parts, [DAY, config])  # the folder is "drywetcast"
             self.assertEqual(item.rule, "drywetcast")
 
     def test_without_a_folder_id_it_uses_the_my_drive_path(self):
@@ -65,8 +65,8 @@ class DryWetCastRuleTest(unittest.TestCase):
         self.assertEqual(
             {item.drive_path for item in items},
             {
-                f"/MO_operational_data_2026/gcp-dev/drywetcast/{DAY}/gefs_full",
-                f"/MO_operational_data_2026/gcp-dev/drywetcast/{DAY}/gefs_reduced",
+                f"/MO_operational_data_2026/gcp-dev/{DAY}/gefs_full",
+                f"/MO_operational_data_2026/gcp-dev/{DAY}/gefs_reduced",
             },
         )
 
