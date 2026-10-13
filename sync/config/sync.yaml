@@ -80,14 +80,14 @@ regions:
         date_regex: "\\d{8}T\\d{2}"
 
       # One item per finished DryWetCast config: output/drywetcast/<date>/<config>/
-      # -> {drive_root}/drywetcast/<date>/<config>/. With MONSOON_DRIVE_FOLDER_ID
-      # set, {drive_root} is that folder.
+      # -> {drive_root}/<date>/<config>/. With MONSOON_DRIVE_FOLDER_ID set,
+      # {drive_root} is that folder, which is itself the drywetcast folder.
       - name: drywetcast
         kind: dated_directory
         gcs_prefix: "output/drywetcast/{date}/"
         gcs_stage_dir: "drywetcast/output/india/{date}"
         local_root: "drywetcast/output/india"
-        drive_path: "{drive_root}/drywetcast/{date}"
+        drive_path: "{drive_root}/{date}"
         date_regex: "\\d{8}T\\d{2}"
 
       - name: IMD

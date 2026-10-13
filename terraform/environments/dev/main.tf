@@ -162,7 +162,9 @@ variable "ensemble_max_attempts" {
 variable "drywetcast_drive_sync" {
   description = "Mirror each finished DryWetCast config to the Drive folder (adds the india drywetcast sync rule). Turn on only after the sync job's ACTION=probe passes."
   type        = bool
-  default     = false
+  # On since the probe passed (Oct 13, 2026): token valid, folder writable.
+  # Set false to stop Drive delivery; the bucket outputs don't depend on it.
+  default = true
 }
 
 variable "scheduler_paused" {
