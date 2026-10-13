@@ -109,6 +109,90 @@ resource "google_monitoring_alert_policy" "delivery_late" {
   }
 }
 
+# Alert: DryWetCast ran without its subdistrict products. These problems are
+# deliberately non-fatal (the execution succeeds), so the Cloud Run Job Failure
+# alert never sees them; the wrapper logs one of these tokens at ERROR instead.
+resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {
+  count = var.enable_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] DryWetCast Subdistrict Products Missing"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Subdistrict bundle unavailable or subdistrict step failed"
+
+    condition_matched_log {
+      filter = <<-EOT
+        resource.type="cloud_run_job"
+        resource.labels.job_name="${var.name_prefix}-${var.environment}-drywetcast"
+        (textPayload:"DRYWETCAST_SUBDISTRICT_UNAVAILABLE" OR textPayload:"DRYWETCAST_SUBDISTRICT_FAILED")
+      EOT
+    }
+  }
+
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s" # Max 1 notification per hour
+    }
+    auto_close = "86400s"
+  }
+
+  documentation {
+    content   = "DRYWETCAST_SUBDISTRICT_UNAVAILABLE: the subdistrict bundle could not be copied or failed its manifest check, so every config ran without subdistrict products. DRYWETCAST_SUBDISTRICT_FAILED: DryWetCast failed with the bundle for one config, which was rerun without it. The core products and outlook were still delivered; see the day's manifest.json (subdistrict_bundle, this_run.<config>.subdistrict)."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "warning"
+  }
+}
+
+# Alert: a sync item failed in SYNC_ITEM_MAX_ATTEMPTS separate executions and
+# will not be retried. Each failed execution also fires the Cloud Run Job
+# Failure alert; this one says the job has given up.
+resource "google_monitoring_alert_policy" "sync_gave_up" {
+  count = var.enable_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] Monsoon Sync Failing Repeatedly"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Sync items reached their attempt cap"
+
+    condition_matched_log {
+      filter = <<-EOT
+        resource.type="cloud_run_job"
+        resource.labels.job_name="${var.name_prefix}-${var.environment}-sync"
+        textPayload:"SYNC_ITEMS_GAVE_UP"
+      EOT
+    }
+  }
+
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s" # Max 1 notification per hour
+    }
+    auto_close = "86400s"
+  }
+
+  documentation {
+    content   = "SYNC_ITEMS_GAVE_UP: the listed sync items (e.g. DryWetCast configs bound for Google Drive) failed in their maximum number of executions and won't be retried. The bucket outputs are unaffected. Run the sync job with ACTION=probe to check the Drive login and folder, fix it, then delete sync-items/<date>/<type>/<name>.failed.json in the region bucket to let the next pass retry."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "warning"
+  }
+}
+
 # Alert: Pipeline execution failed
 resource "google_monitoring_alert_policy" "pipeline_failure" {
   count = var.enable_alerts ? 1 : 0

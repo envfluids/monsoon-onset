@@ -159,6 +159,12 @@ variable "ensemble_max_attempts" {
   default     = 3
 }
 
+variable "drywetcast_drive_sync" {
+  description = "Mirror each finished DryWetCast config to the Drive folder (adds the india drywetcast sync rule). Turn on only after the sync job's ACTION=probe passes."
+  type        = bool
+  default     = false
+}
+
 variable "scheduler_paused" {
   description = "Pause the pipeline Cloud Scheduler job. Workflow runs can still be started manually."
   type        = bool
@@ -206,8 +212,13 @@ locals {
       models = ["AIFS_single_v2", "AIFS_ENS_v2", "neuralgcm"]
       stages = ["model_diagnostics", "drywetcast", "sync"]
       sync = {
-        rules     = ["AIFS_single_v2", "NeuralGCM", "model_diagnostics"]
-        git_push  = true
+        rules = concat(
+          ["AIFS_single_v2", "NeuralGCM", "model_diagnostics"],
+          var.drywetcast_drive_sync ? ["drywetcast"] : [],
+        )
+        # No operational repo is wired up in the cloud; keep it off so a future
+        # push implementation can't start pushing from dev.
+        git_push  = false
         date_kind = "date"
       }
     }
@@ -315,6 +326,9 @@ module "storage" {
 
 module "compute" {
   source = "../../modules/compute"
+
+  # Adam's DryWetCast delivery folder (UChicago Drive); see drywetcast_drive_sync.
+  drive_folder_id = "1zGAcTf_kovWZvKlI1j2ud9Hrx207Sv04"
 
   project_id  = var.project_id
   region      = var.region

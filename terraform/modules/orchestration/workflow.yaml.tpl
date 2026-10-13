@@ -512,26 +512,39 @@ submit_ready_work:
                     next: end_sync_iteration
                   - condition: true
                     next: run_sync
+            # Fire and forget: a slow or failing sync (e.g. Google Drive) must never
+            # hold up or abort the pass. The sync job records its own failures.
             - run_sync:
-                call: googleapis.run.v2.projects.locations.jobs.run
-                args:
-                  name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.sync.name}"
-                  body:
-                    overrides:
-                      containerOverrides:
-                        - env:
-                            - name: DATE
-                              value: $${sync_action.date}
-                            - name: FORECAST_REGION
-                              value: $${region_name}
-                            - name: GCS_REGION_BUCKETS
-                              value: $${json.encode_to_string(region_buckets)}
-                            - name: SYNC_SPEC
-                              value: $${json.encode_to_string(region_cfg.sync)}
-                            - name: SYNC_FINGERPRINT
-                              value: $${sync_action.fingerprint}
-                            - name: SYNC_ITEMS
-                              value: $${json.encode_to_string(sync_action.items)}
+                try:
+                  call: googleapis.run.v2.projects.locations.jobs.run
+                  args:
+                    name: "projects/${project_id}/locations/${region}/jobs/${cloud_run_jobs.sync.name}"
+                    body:
+                      overrides:
+                        containerOverrides:
+                          - env:
+                              - name: DATE
+                                value: $${sync_action.date}
+                              - name: FORECAST_REGION
+                                value: $${region_name}
+                              - name: GCS_REGION_BUCKETS
+                                value: $${json.encode_to_string(region_buckets)}
+                              - name: SYNC_SPEC
+                                value: $${json.encode_to_string(region_cfg.sync)}
+                              - name: SYNC_FINGERPRINT
+                                value: $${sync_action.fingerprint}
+                              - name: SYNC_ITEMS
+                                value: $${json.encode_to_string(sync_action.items)}
+                    connector_params:
+                      skip_polling: true
+                except:
+                  as: e
+                  steps:
+                    - log_sync_start_error:
+                        call: sys.log
+                        args:
+                          severity: WARNING
+                          text: '$${"sync job start failed for " + region_name + " " + sync_action.date + ": " + json.encode_to_string(e)}'
             - end_sync_iteration:
                 assign:
                   - last_sync_region_checked: $${region_name}

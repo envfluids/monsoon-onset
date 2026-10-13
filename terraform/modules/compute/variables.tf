@@ -345,3 +345,9 @@ variable "gencast_tpu_request_valid_duration" {
   type        = string
   default     = "14400s"
 }
+
+variable "drive_folder_id" {
+  description = "Google Drive folder ID the sync job writes under (MONSOON_DRIVE_FOLDER_ID). Empty keeps the sync.yaml path from the account's My Drive root."
+  type        = string
+  default     = ""
+}
