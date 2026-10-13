@@ -191,8 +191,11 @@ locals {
     # A 20-min NCMRWF poll keeps a run (~23 min with setup) shorter than the
     # 30-min pass spacing, so its claim never blocks the next pass, and a
     # 13:30 run ends before the 14:00 cutoff pass.
+    # The subdistrict bundle (with subdistrict_manifest.tsv) is copied from here
+    # and verified before DryWetCast uses it; ~425 MiB more in /tmp.
     drywetcast = {
-      NCMRWF_WAIT_MINUTES = "20"
+      NCMRWF_WAIT_MINUTES        = "20"
+      DRYWETCAST_SUBDISTRICT_GCS = "gs://${var.common_gcs_bucket}/weights/drywetcast/subdistrict/v1/"
     }
   }
 

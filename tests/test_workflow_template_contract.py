@@ -457,11 +457,13 @@ class DryWetCastJobContractTest(unittest.TestCase):
         for expected in (
             "FROM python:3.11-slim-bookworm",
             "libgomp1",
-            "ARG DRYWETCAST_COMMIT=56f4805a532718afd61176c85eec75fa8c46b137",
-            "ARG DRYWETCAST_SHA256=a77fb404bb26c1732e19aed3f2a11770cb1d8ec18670161af37cc8a7f39afe18",
+            "ARG DRYWETCAST_COMMIT=22cdbe5beccd3a776ce9e6039a1f603e3d404604",
+            "ARG DRYWETCAST_SHA256=93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5",
             "sha256sum -c -",
             "pip install --no-cache-dir --no-deps -r requirements.lock",
             "import xgboost",
+            "pandas, geopandas, pyogrio, shapely, pyproj",
+            "inference, outlook, subdistrict",
         ):
             self.assertIn(expected, self.dwc_dockerfile)
         self.assertGreater(
@@ -474,6 +476,12 @@ class DryWetCastJobContractTest(unittest.TestCase):
             "xgboost-cpu==3.2.0",
             "zarr==3.1.6",
             "netcdf4==1.7.4",
+            # 22cdbe5's subdistrict product
+            "pandas==3.0.6",
+            "geopandas==1.2.0",
+            "pyogrio==0.13.0",
+            "shapely==2.2.0",
+            "pyproj==3.7.2",
         ):
             self.assertIn(pin, self.dwc_lock)
         self.assertNotIn("nvidia", self.dwc_lock)
@@ -657,11 +665,28 @@ class ExtraPipelinePassesContractTest(unittest.TestCase):
         # before the 14:00 cutoff pass.
         compute = COMPUTE_MAIN_PATH.read_text()
         env = compute.split("  cloud_run_job_env = {", 1)[1].split("\n  }\n", 1)[0]
-        self.assertIn('NCMRWF_WAIT_MINUTES = "20"', env.split("drywetcast = {", 1)[1])
+        self.assertRegex(
+            env.split("drywetcast = {", 1)[1], r'NCMRWF_WAIT_MINUTES += "20"'
+        )
         dwc = (
             Path(__file__).resolve().parents[1] / "docker/drywetcast/src/main.py"
         ).read_text()
         self.assertIn('os.environ.get("NCMRWF_WAIT_MINUTES", "30")', dwc)
+
+    def test_drywetcast_job_gets_the_versioned_subdistrict_bundle(self):
+        compute = COMPUTE_MAIN_PATH.read_text()
+        env = compute.split("  cloud_run_job_env = {", 1)[1].split("\n  }\n", 1)[0]
+        self.assertIn(
+            'DRYWETCAST_SUBDISTRICT_GCS = "gs://${var.common_gcs_bucket}/weights/drywetcast/subdistrict/v1/"',
+            env.split("drywetcast = {", 1)[1],
+        )
+        dwc = (
+            Path(__file__).resolve().parents[1] / "docker/drywetcast/src/main.py"
+        ).read_text()
+        self.assertIn('os.environ.get("DRYWETCAST_SUBDISTRICT_GCS", "")', dwc)
+        # The job must never set the path DryWetCast reads; the wrapper sets it
+        # only after the copy verifies.
+        self.assertNotIn("DRYWETCAST_SUBDISTRICT_DATA", compute)
 
     def test_cloud_run_resources_ignore_gcloud_client_fields(self):
         # gcloud deploys set client/client_version; without the ignore they show

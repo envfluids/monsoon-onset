@@ -1,3 +1,4 @@
+import hashlib
 import importlib.util
 import json
 import logging
@@ -22,6 +23,8 @@ COMMON = "common"
 INDIA = "india-bucket"
 CONFIGS = ["gefs_reduced", "gefs_full", "ncmrwf_reduced", "ncmrwf_full"]
 START = datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc)
+BUNDLE_PREFIX = "weights/drywetcast/subdistrict/v1/"
+BUNDLE_URI = f"gs://{COMMON}/{BUNDLE_PREFIX}"
 
 
 def _exceptions_module():
@@ -166,6 +169,8 @@ class DryWetCastJobTest(unittest.TestCase):
         self.clock = [START]
         self.calls = []
         self.fail_configs = set()
+        self.fail_subdistrict = set()
+        self.subdistrict_dirs = []  # (config, dir passed to DryWetCast)
         self.fail_gefs_downloads = 0
         self.ncmrwf_answers = []
         self.sleeps = []
@@ -182,7 +187,29 @@ class DryWetCastJobTest(unittest.TestCase):
         )
         self.gcs.put(INDIA, f"{prefix}/tp/0.0.0.0.0", b"chunk")
 
-    def fake_run(self, args):
+    def put_bundle(self, manifest=None, corrupt=None):
+        """The required files plus a README, and a manifest without a header."""
+        names = [*self.module.SUBDISTRICT_REQUIRED, "README.txt"]
+        rows = []
+        for name in names:
+            data = f"content of {name}".encode()
+            rows.append(f"{len(data)}\t{hashlib.sha256(data).hexdigest()}\t{name}")
+            if name == corrupt:
+                data += b" tampered"
+            self.gcs.put(COMMON, BUNDLE_PREFIX + name, data)
+        self.gcs.put(
+            COMMON,
+            BUNDLE_PREFIX + "subdistrict_manifest.tsv",
+            manifest if manifest is not None else "\n".join(rows) + "\n",
+        )
+        self.module.SUBDISTRICT_GCS = BUNDLE_URI
+
+    def bundle_downloads(self):
+        return [
+            n for b, n in self.gcs.writes if b == COMMON and n.startswith(BUNDLE_PREFIX)
+        ]
+
+    def fake_run(self, args, subdistrict_dir=None):
         def value(flag):
             return args[args.index(flag) + 1]
 
@@ -202,11 +229,21 @@ class DryWetCastJobTest(unittest.TestCase):
             return
         config = value("--config")
         self.calls.append(("run", config))
+        self.subdistrict_dirs.append((config, subdistrict_dir))
         if config in self.fail_configs:
             raise subprocess.CalledProcessError(1, f"run_forecast.py --config {config}")
         fig = Path(value("--fig-out"))
         fig.write_bytes(b"png")
         fig.with_suffix(".npz").write_bytes(b"npz")
+        fig.with_name(f"{fig.stem}_outlook.png").write_bytes(b"outlook")
+        if subdistrict_dir is not None:
+            # DryWetCast checks the bundle is complete before using it.
+            for name in self.module.SUBDISTRICT_REQUIRED:
+                assert (Path(subdistrict_dir) / name).is_file(), name
+            fig.with_name(f"{fig.stem}_subdistrict.pkl").write_bytes(b"pkl")
+            if config in self.fail_subdistrict:
+                raise subprocess.CalledProcessError(1, "run_forecast.py subdistrict")
+            fig.with_name(f"{fig.stem}_subdistrict.png").write_bytes(b"map")
         archive = Path(value("--archive-dir")) / config
         archive.mkdir(parents=True, exist_ok=True)
         (archive / f"{DAY}_00.npz").write_bytes(b"npz")
@@ -398,11 +435,11 @@ class DryWetCastJobTest(unittest.TestCase):
 
         original = self.fake_run
 
-        def run_with_partial_file(args):
+        def run_with_partial_file(args, **kwargs):
             if "--download-only" in args and self.fail_gefs_downloads:
                 stale.mkdir(parents=True, exist_ok=True)
                 (stale / "truncated.grb2").write_bytes(b"x")
-            original(args)
+            original(args, **kwargs)
 
         self.fake_run = run_with_partial_file
         result = self.invoke(configs=["gefs_reduced"])
@@ -444,6 +481,202 @@ class DryWetCastJobTest(unittest.TestCase):
         )
         self.assertEqual(result.exit_code, 1)
         self.assertIn("00z", result.output)
+
+    # -- subdistrict bundle and products (22cdbe5) ---------------------------
+    def product(self, config, suffix):
+        return f"{self.module.product_prefix(DATE, config)}/{DAY}_00{suffix}"
+
+    def test_verified_bundle_adds_subdistrict_products_before_the_marker(self):
+        self.put_bundle()
+        result = self.invoke()
+        self.assertEqual(result.exit_code, 0, result.output)
+        staged = self.module.WORK_DIR / DATE / "subdistrict"
+        self.assertEqual(
+            self.subdistrict_dirs, [(config, staged) for config in CONFIGS]
+        )
+        writes = [name for _, name in self.gcs.writes]
+        for config in CONFIGS:
+            for suffix in (
+                ".png",
+                ".npz",
+                "_outlook.png",
+                "_subdistrict.pkl",
+                "_subdistrict.png",
+            ):
+                with self.subTest(config=config, suffix=suffix):
+                    self.assertLess(
+                        writes.index(self.product(config, suffix)),
+                        writes.index(self.marker(config)),
+                    )
+        manifest = self.gcs.json(INDIA, self.module.manifest_path(DATE))
+        bundle = manifest["subdistrict_bundle"]
+        self.assertEqual(bundle["state"], "staged")
+        self.assertEqual(bundle["source"], BUNDLE_URI)
+        self.assertEqual(bundle["files"], 12)
+        manifest_text = self.gcs.text(
+            COMMON, BUNDLE_PREFIX + "subdistrict_manifest.tsv"
+        ).encode()
+        self.assertEqual(
+            bundle["manifest_sha256"], hashlib.sha256(manifest_text).hexdigest()
+        )
+        run = manifest["this_run"]["gefs_full"]
+        self.assertEqual(run["subdistrict"], "done")
+        self.assertEqual(
+            run["files"],
+            [
+                f"{DAY}_00.png",
+                f"{DAY}_00.npz",
+                f"{DAY}_00_outlook.png",
+                f"{DAY}_00_subdistrict.pkl",
+                f"{DAY}_00_subdistrict.png",
+            ],
+        )
+
+    def assert_core_products_without_subdistrict(self, result):
+        self.assertEqual(result.exit_code, 0, result.output)
+        for config in CONFIGS:
+            self.assertTrue(self.gcs.has(COMMON, self.marker(config)))
+            self.assertTrue(self.gcs.has(INDIA, self.product(config, "_outlook.png")))
+            self.assertFalse(
+                self.gcs.has(INDIA, self.product(config, "_subdistrict.pkl"))
+            )
+            self.assertFalse(
+                self.gcs.has(INDIA, self.product(config, "_subdistrict.png"))
+            )
+
+    def test_bad_checksum_skips_subdistrict_products_but_not_the_configs(self):
+        self.put_bundle(corrupt="target_to_index.pkl")
+        result = self.invoke()
+        self.assert_core_products_without_subdistrict(result)
+        self.assertEqual({d for _, d in self.subdistrict_dirs}, {None})
+        self.assertFalse((self.module.WORK_DIR / DATE / "subdistrict").exists())
+        bundle = self.gcs.json(INDIA, self.module.manifest_path(DATE))[
+            "subdistrict_bundle"
+        ]
+        self.assertEqual(bundle["state"], "unavailable")
+        self.assertIn("target_to_index.pkl", bundle["message"])
+        self.assertTrue(
+            any(
+                line.startswith("ERROR:DRYWETCAST_SUBDISTRICT_UNAVAILABLE")
+                for line in self.logs
+            )
+        )
+
+    def test_bad_manifests_are_rejected(self):
+        required = self.module.SUBDISTRICT_REQUIRED
+        sha = "0" * 64
+        cases = {
+            "header line": "size\tsha256\tname\n",
+            "missing required file": "".join(
+                f"1\t{sha}\t{name}\n" for name in required[1:]
+            ),
+            "path in name": f"1\t{sha}\t../weight_matrix.npy\n",
+            "empty": "",
+        }
+        for label, manifest in cases.items():
+            with self.subTest(label):
+                self.setUp()
+                self.put_bundle(manifest=manifest)
+                result = self.invoke(configs=["gefs_reduced"])
+                self.assertEqual(result.exit_code, 0, result.output)
+                self.assertEqual(self.subdistrict_dirs, [("gefs_reduced", None)])
+                bundle = self.gcs.json(INDIA, self.module.manifest_path(DATE))[
+                    "subdistrict_bundle"
+                ]
+                self.assertEqual(bundle["state"], "unavailable")
+
+    def test_without_a_bundle_setting_only_the_outlook_is_added(self):
+        result = self.invoke()
+        self.assert_core_products_without_subdistrict(result)
+        manifest = self.gcs.json(INDIA, self.module.manifest_path(DATE))
+        self.assertEqual(manifest["subdistrict_bundle"], {"state": "not_configured"})
+        self.assertEqual(manifest["this_run"]["ncmrwf_full"]["subdistrict"], "skipped")
+
+    def test_subdistrict_step_failure_reruns_the_config_without_it(self):
+        self.put_bundle()
+        self.fail_subdistrict = {"gefs_full"}
+        result = self.invoke()
+        self.assertEqual(result.exit_code, 0, result.output)
+        staged = self.module.WORK_DIR / DATE / "subdistrict"
+        self.assertEqual(
+            [d for c, d in self.subdistrict_dirs if c == "gefs_full"], [staged, None]
+        )
+        self.assertTrue(self.gcs.has(COMMON, self.marker("gefs_full")))
+        self.assertTrue(self.gcs.has(INDIA, self.product("gefs_full", "_outlook.png")))
+        # The pickle left by the failed attempt is not uploaded.
+        self.assertFalse(
+            self.gcs.has(INDIA, self.product("gefs_full", "_subdistrict.pkl"))
+        )
+        self.assertTrue(
+            self.gcs.has(INDIA, self.product("gefs_reduced", "_subdistrict.png"))
+        )
+        run = self.gcs.json(INDIA, self.module.manifest_path(DATE))["this_run"]
+        self.assertEqual(run["gefs_full"]["subdistrict"], "failed")
+        self.assertEqual(run["gefs_reduced"]["subdistrict"], "done")
+        self.assertTrue(
+            any(
+                line.startswith("ERROR:DRYWETCAST_SUBDISTRICT_FAILED gefs_full")
+                for line in self.logs
+            )
+        )
+
+    def test_a_core_failure_still_fails_the_config_after_the_rerun(self):
+        self.put_bundle()
+        self.fail_configs = {"gefs_full"}
+        result = self.invoke()
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.calls.count(("run", "gefs_full")), 2)
+        self.assertEqual(self.status()["gefs_full"]["state"], "failed")
+
+    def test_bundle_is_not_copied_when_no_config_runs(self):
+        self.put_bundle()
+        before = len(self.bundle_downloads())
+        self.ncmrwf_answers = [False] * 20
+        result = self.invoke(configs=["ncmrwf_reduced", "ncmrwf_full"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertFalse((self.module.WORK_DIR / DATE / "subdistrict").exists())
+        self.assertEqual(len(self.bundle_downloads()), before)
+        bundle = self.gcs.json(INDIA, self.module.manifest_path(DATE))[
+            "subdistrict_bundle"
+        ]
+        self.assertEqual(bundle["state"], "not_staged")
+
+    def test_run_drywetcast_passes_only_the_verified_bundle_path(self):
+        with (
+            mock.patch.dict(
+                self.module.os.environ, {"DRYWETCAST_SUBDISTRICT_DATA": "/unverified"}
+            ),
+            mock.patch.object(self.module.subprocess, "run") as run,
+        ):
+            self.module.run_drywetcast(["--config", "gefs_reduced"])
+            self.module.run_drywetcast(
+                ["--config", "gefs_reduced"], subdistrict_dir=Path("/tmp/ok")
+            )
+        first, second = (call.kwargs["env"] for call in run.call_args_list)
+        self.assertNotIn("DRYWETCAST_SUBDISTRICT_DATA", first)
+        self.assertEqual(second["DRYWETCAST_SUBDISTRICT_DATA"], "/tmp/ok")
+
+    def test_gcs_uri_and_manifest_parsing(self):
+        self.assertEqual(self.module.parse_gcs_uri(BUNDLE_URI), (COMMON, BUNDLE_PREFIX))
+        self.assertEqual(
+            self.module.parse_gcs_uri(f"gs://{COMMON}/{BUNDLE_PREFIX.rstrip('/')}"),
+            (COMMON, BUNDLE_PREFIX),
+        )
+        with self.assertRaises(ValueError):
+            self.module.parse_gcs_uri(f"{COMMON}/{BUNDLE_PREFIX}")
+        sha = "a" * 64
+        self.assertEqual(
+            self.module.parse_subdistrict_manifest(f"995\t{sha}\tREADME.txt\n\n"),
+            [(995, sha, "README.txt")],
+        )
+        for bad in (
+            f"995 {sha} README.txt",
+            f"995\t{sha.upper()}\tREADME.txt",
+            f"995\t{sha}\tdir/README.txt",
+            f"-1\t{sha}\tREADME.txt",
+        ):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.module.parse_subdistrict_manifest(bad)
 
     def test_probe_reports_reachability(self):
         portal = types.SimpleNamespace(list_folder=lambda path: [{"name": "2026"}])
