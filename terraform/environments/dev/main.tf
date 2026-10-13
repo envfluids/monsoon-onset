@@ -342,15 +342,19 @@ module "compute" {
   # SPOT default; the GCS mount settings match the module default.
   batch_model_resources = {
     AIFS_ENS_v2 = {
-      # One A100: a2-highgpu-4g stocked out on 2 of 3 India runs (Oct 7-8), while
-      # 1-GPU VMs start most reliably. run_model_ENS.py uses one worker per visible
-      # GPU, so 51 members run back to back (~45 min vs ~11 min on 4 GPUs).
-      machine_type        = "a2-highgpu-1g"
+      # Two A100s (the whole a2-highgpu-2g). Prabal confirmed the products should
+      # be ready by 14:00 IST, when NCMRWF runs its pipeline. On 1 GPU the GEFS
+      # products landed at 13:56-13:58 IST (Oct 10-13), only 2-4 min early.
+      # run_model_ENS.py runs one worker per visible GPU; runs fit ~105 s fixed
+      # plus ~44 s per round of members, so 51 members in 26 rounds take ~21 min
+      # instead of ~40 min on 1 GPU (~18 min sooner). The 4g stocked out on 2 of 3
+      # India runs (Oct 7-8); 1g started in ~6 min on Oct 9-13.
+      machine_type        = "a2-highgpu-2g"
       boot_disk_size_gb   = 300
-      cpu_milli           = 12000
-      memory_mib          = 87040
+      cpu_milli           = 24000
+      memory_mib          = 174080
       install_gpu_drivers = true
-      max_run_duration    = "10800s"
+      max_run_duration    = "7200s"
       mount_common_bucket = true
       gcs_mount_options = [
         "--implicit-dirs",
