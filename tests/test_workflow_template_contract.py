@@ -153,9 +153,9 @@ class WorkflowTemplateContractTest(unittest.TestCase):
             self.workflow,
         )
         self.assertIn("FORECAST_REGION: $${region_name}", self.workflow)
-        self.assertIn("SYNC_SPEC\n                              value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
-        self.assertIn("SYNC_FINGERPRINT\n                              value: $${sync_action.fingerprint}", self.workflow)
-        self.assertIn("SYNC_ITEMS\n                              value: $${json.encode_to_string(sync_action.items)}", self.workflow)
+        self.assertIn("SYNC_SPEC\n                                value: $${json.encode_to_string(region_cfg.sync)}", self.workflow)
+        self.assertIn("SYNC_FINGERPRINT\n                                value: $${sync_action.fingerprint}", self.workflow)
+        self.assertIn("SYNC_ITEMS\n                                value: $${json.encode_to_string(sync_action.items)}", self.workflow)
 
     def test_diagnostics_batch_has_longer_timeout_than_blend(self):
         compute_main = COMPUTE_MAIN_PATH.read_text()
@@ -682,6 +682,125 @@ class ExtraPipelinePassesContractTest(unittest.TestCase):
                 ignored = body.split("ignore_changes = [", 1)[1].split("]\n", 1)[0]
                 for field in (image, "client,", "client_version,"):
                     self.assertIn(field, ignored)
+
+
+class DriveSyncContractTest(unittest.TestCase):
+    """DryWetCast outputs to Google Drive through the sync job."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.compute = COMPUTE_MAIN_PATH.read_text()
+        cls.compute_vars = (cls.ROOT / "terraform/modules/compute/variables.tf").read_text()
+        cls.monitoring = (cls.ROOT / "terraform/modules/monitoring/main.tf").read_text()
+        cls.sync_yaml = (cls.ROOT / "sync/config/sync.yaml").read_text()
+
+    def test_run_sync_is_async_and_never_fails_the_pass(self):
+        block = self.workflow.split("    - submit_sync:", 1)[1].split("    - submit_", 1)[0]
+        for expected in (
+            "- run_sync:\n                try:",
+            "call: googleapis.run.v2.projects.locations.jobs.run",
+            "skip_polling: true",
+            "except:",
+            "- log_sync_start_error:",
+            "severity: WARNING",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, block)
+        self.assertNotIn("severity: ERROR", block)
+
+    def test_dev_drywetcast_rule_is_behind_a_switch_that_defaults_off(self):
+        variable = hcl_block(self.dev, 'variable "drywetcast_drive_sync" {')
+        self.assertIn("type        = bool", variable)
+        self.assertIn("default     = false", variable)
+        india = hcl_block(hcl_block(self.dev, "base_regions = {"), "india = {")
+        self.assertIn('var.drywetcast_drive_sync ? ["drywetcast"] : []', india)
+        always = hcl_block(india, "sync = {").split("concat(", 1)[1].split("var.", 1)[0]
+        self.assertNotIn("drywetcast", always)
+
+    def test_git_push_is_off_for_every_dev_region(self):
+        # Prod's spec is left as is; the sync job's git push is a no-op there.
+        self.assertNotIn("git_push  = true", self.dev)
+        india = hcl_block(hcl_block(self.dev, "base_regions = {"), "india = {")
+        self.assertIn("git_push  = false", india)
+
+    def test_sync_job_is_headless_and_gets_the_folder_id(self):
+        sync_env = self.compute.split("    sync = merge(", 1)[1].split("\n    )\n", 1)[0]
+        self.assertIn('MONSOON_DRIVE_HEADLESS = "1"', sync_env)
+        self.assertIn(
+            'var.drive_folder_id == "" ? {} : { MONSOON_DRIVE_FOLDER_ID = var.drive_folder_id }',
+            sync_env,
+        )
+        self.assertIn('default     = ""', hcl_block(self.compute_vars, 'variable "drive_folder_id" {'))
+        self.assertIn(
+            'drive_folder_id = "1zGAcTf_kovWZvKlI1j2ud9Hrx207Sv04"',
+            hcl_block(self.dev, 'module "compute" {'),
+        )
+
+    def test_stale_sync_claims_outlast_every_attempt_of_the_sync_job(self):
+        # A claim is stale only after the job's attempts could all have run, and
+        # pipeline-state and the sync job must agree on when that is.
+        import re
+
+        state = (self.ROOT / "docker/pipeline-state/src/main.py").read_text()
+        wrapper = (self.ROOT / "docker/sync/src/main.py").read_text()
+        ttl = {}
+        for name, source in (
+            ("ACTIVE_SYNC_MAX_AGE_SECONDS", state),
+            ("SYNC_ITEM_CLAIM_TTL_SECONDS", wrapper),
+        ):
+            match = re.search(rf'"{name}", str\((\d+) \* 60\)\)', source)
+            self.assertIsNotNone(match, name)
+            ttl[name] = int(match.group(1)) * 60
+        self.assertEqual(ttl["ACTIVE_SYNC_MAX_AGE_SECONDS"], 45 * 60)
+        self.assertEqual(ttl["ACTIVE_SYNC_MAX_AGE_SECONDS"], ttl["SYNC_ITEM_CLAIM_TTL_SECONDS"])
+
+        services = self.compute.split("all_cloud_run_services = {", 1)[1]
+        job = services.split("    sync = {", 1)[1].split("    }", 1)[0]
+        timeout = int(re.search(r'timeout = "(\d+)s"', job).group(1))
+        retries = int(re.search(r"retries = (\d+)", job).group(1))
+        self.assertGreater(ttl["ACTIVE_SYNC_MAX_AGE_SECONDS"], timeout * (retries + 1))
+
+    def test_sync_yaml_drywetcast_rule_mirrors_config_folders(self):
+        rule = self.sync_yaml.split("      - name: drywetcast\n", 1)[1].split("\n\n", 1)[0]
+        for expected in (
+            "kind: dated_directory",
+            'gcs_prefix: "output/drywetcast/{date}/"',
+            'gcs_stage_dir: "drywetcast/output/india/{date}"',
+            'local_root: "drywetcast/output/india"',
+            'drive_path: "{drive_root}/drywetcast/{date}"',
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, rule)
+
+    def test_log_alerts_for_subdistrict_and_repeated_sync_failures(self):
+        for resource, tokens, job in (
+            (
+                'resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {',
+                ("DRYWETCAST_SUBDISTRICT_UNAVAILABLE", "DRYWETCAST_SUBDISTRICT_FAILED"),
+                "drywetcast",
+            ),
+            (
+                'resource "google_monitoring_alert_policy" "sync_gave_up" {',
+                ("SYNC_ITEMS_GAVE_UP",),
+                "sync",
+            ),
+        ):
+            with self.subTest(resource=resource):
+                block = hcl_block(self.monitoring, resource)
+                self.assertIn("count = var.enable_alerts ? 1 : 0", block)
+                self.assertIn(
+                    f'resource.labels.job_name="${{var.name_prefix}}-${{var.environment}}-{job}"',
+                    block,
+                )
+                for token in tokens:
+                    self.assertIn(f'textPayload:"{token}"', block)
+                self.assertIn('period = "3600s"', block)
+                self.assertIn("notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]", block)
 
 
 if __name__ == "__main__":

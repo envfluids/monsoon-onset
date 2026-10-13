@@ -92,7 +92,15 @@ EXTERNAL_PROBE_BACKOFF_FACTOR_SECONDS = float(
 RETRYABLE_EXTERNAL_PROBE_STATUS = {429, 500, 502, 503, 504, "timeout"}
 INACTIVE_DISPATCH_STATES = {"CLEANING_UP", "SUCCEEDED", "FAILED"}
 ACTIVE_DISPATCH_MAX_AGE_SECONDS = 30 * 60 * 60
-ACTIVE_SYNC_MAX_AGE_SECONDS = int(os.environ.get("ACTIVE_SYNC_MAX_AGE_SECONDS", str(6 * 60 * 60)))
+# A sync claim older than this belongs to a killed execution: the sync job runs
+# at most 3 attempts of 600 s (30 min), so 45 min leaves margin. Normal failures
+# release their claim at once; this covers timeouts. Keep in step with
+# SYNC_ITEM_CLAIM_TTL_SECONDS in docker/sync/src/main.py.
+ACTIVE_SYNC_MAX_AGE_SECONDS = int(os.environ.get("ACTIVE_SYNC_MAX_AGE_SECONDS", str(45 * 60)))
+# Sync item types with per-item claims (shared with docker/sync/src/main.py).
+SYNC_ITEM_TYPES = {"blend", "model_diagnostics", "drywetcast"}
+# An item that failed in this many sync executions is not retried.
+SYNC_ITEM_MAX_ATTEMPTS = int(os.environ.get("SYNC_ITEM_MAX_ATTEMPTS", "3"))
 
 # DryWetCast-India runs after the India AIFS ensemble store is validated. The
 # path and marker conventions are shared with docker/drywetcast/src/main.py.
@@ -464,14 +472,23 @@ def tpu_dispatch_active(status: dict, now: datetime) -> bool:
 
 def sync_item_done(region: str, date: str, item: dict) -> bool:
     bucket = REGION_BUCKETS.get(region)
-    if not bucket or item.get("type") not in {"blend", "model_diagnostics"}:
+    if not bucket or item.get("type") not in SYNC_ITEM_TYPES:
         return False
     return gcs_object_exists(bucket, sync_item_marker_path(date, item, "done"))
 
 
+def sync_item_attempts(region: str, date: str, item: dict) -> int:
+    """Sync executions that failed for this item (its .failed.json marker)."""
+    bucket = REGION_BUCKETS.get(region)
+    if not bucket or item.get("type") not in SYNC_ITEM_TYPES:
+        return 0
+    marker = read_gcs_json(bucket, sync_item_marker_path(date, item, "failed"))
+    return len(marker.get("executions", []))
+
+
 def sync_item_active(region: str, date: str, item: dict, now: datetime) -> bool:
     bucket = REGION_BUCKETS.get(region)
-    if not bucket or item.get("type") not in {"blend", "model_diagnostics"}:
+    if not bucket or item.get("type") not in SYNC_ITEM_TYPES:
         return False
 
     marker = read_gcs_json(bucket, sync_item_marker_path(date, item, "active"))
@@ -1118,7 +1135,8 @@ def _sync_inventory_for_region(
     """Return the latest completed sync-relevant inventory for a region.
 
     Sync is intentionally incremental: each completed blend or diagnostics
-    combination can trigger one same-date sync pass for that combination.
+    combination, and each done DryWetCast config (when the region's sync rules
+    include drywetcast), can trigger one same-date sync pass for that item.
     """
     if region not in REGION_BUCKETS:
         return {"date": "", "items": [], "fingerprint": ""}
@@ -1136,6 +1154,16 @@ def _sync_inventory_for_region(
                 items_by_date.setdefault(item_date, []).append({
                     "type": stage_name,
                     "name": item_name,
+                })
+
+    if DRYWETCAST_STAGE in cfg.get("sync", {}).get("rules", []):
+        block = per_region_block.get(DRYWETCAST_STAGE, {})
+        drywetcast_date = block.get("date", "")
+        for config in block.get("done", []):
+            if drywetcast_date:
+                items_by_date.setdefault(drywetcast_date, []).append({
+                    "type": DRYWETCAST_STAGE,
+                    "name": config,
                 })
 
     if not items_by_date:
@@ -1177,8 +1205,10 @@ def _unsynced_sync_items(
     unsynced = []
     for item in current_items:
         key = (item.get("type", ""), item.get("name", ""))
-        if item.get("type") in {"blend", "model_diagnostics"}:
+        if item.get("type") in SYNC_ITEM_TYPES:
             if sync_item_done(region, date, item):
+                continue
+            if sync_item_attempts(region, date, item) >= SYNC_ITEM_MAX_ATTEMPTS:
                 continue
             if key in synced_keys:
                 continue

@@ -6,7 +6,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaInMemoryUpload
 import logging
 import argparse
 
@@ -28,6 +28,12 @@ auth_dir = Path(__file__).resolve().parent.parent / ".auth"
 CREDENTIALS_FILE = auth_dir / "credentials.json"
 TOKEN_FILE = auth_dir / "token.json"
 NUM_API_RETRIES = 3
+FOLDER_MIME_TYPE = "application/vnd.google-apps.folder"
+
+
+def headless():
+    """True where no one can complete a browser login (e.g. a Cloud Run job)."""
+    return os.environ.get("MONSOON_DRIVE_HEADLESS", "").lower() in ("1", "true", "yes")
 
 # --- Google Drive Helper Functions ---
 
@@ -72,6 +78,12 @@ def authenticate():
                 creds = None  # Force re-authentication
         # --- This block now correctly handles the case where creds were invalid ---
         # Run flow if creds are None (initial run, failed load, failed refresh)
+        if not creds and headless():
+            logging.error(
+                "No valid or refreshable Google Drive token, and MONSOON_DRIVE_HEADLESS "
+                "is set; not starting the browser login. Create a new token.json."
+            )
+            return None
         if not creds:
             logging.warning(
                 "No valid credentials found. Starting authentication flow..."
@@ -144,6 +156,10 @@ def get_or_create_folder_id(service, folder_name, parent_id="root"):
                 fields="files(id, name)",
                 # Increase pageSize if many folders share name (unlikely here)
                 pageSize=10,
+                # Without these, a folder in a Shared Drive is never found and
+                # a duplicate is created on every run.
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
             )
             .execute()
         )
@@ -274,29 +290,111 @@ def resolve_folder_path(service, path_string, create=False):
 
 
 class GoogleDriveClient:
-    """Small path-oriented wrapper used by the configurable sync engine."""
+    """Small path-oriented wrapper used by the configurable sync engine.
 
-    def __init__(self, service):
+    Paths resolve from `root_folder_id`: the token owner's My Drive ("root") by
+    default, or the folder in MONSOON_DRIVE_FOLDER_ID, which may be shared with
+    the account or live in a Shared Drive.
+    """
+
+    def __init__(self, service, root_folder_id="root"):
         self.service = service
-        self._folder_id_cache = {"": "root"}
+        self.root_folder_id = root_folder_id
+        self._folder_id_cache = {"": root_folder_id}
         self._folder_id_cache_lock = threading.RLock()
 
     @classmethod
-    def authenticated(cls):
+    def authenticated(cls, root_folder_id=None):
         service = authenticate()
         if not service:
             raise RuntimeError("Could not authenticate with Google Drive")
-        return cls(service)
+        return cls(
+            service,
+            root_folder_id or os.environ.get("MONSOON_DRIVE_FOLDER_ID") or "root",
+        )
 
     def new_worker_client(self):
-        return type(self).authenticated()
+        return type(self).authenticated(self.root_folder_id)
+
+    def folder_info(self, folder_id=None):
+        """Metadata for a folder (default: the root); raises if it can't be used."""
+        folder_id = folder_id or self.root_folder_id
+        info = (
+            self.service.files()
+            .get(
+                fileId=folder_id,
+                fields="id, name, mimeType, driveId, capabilities(canAddChildren, canListChildren)",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        if info.get("mimeType") != FOLDER_MIME_TYPE:
+            raise RuntimeError(f"Drive item {folder_id} is not a folder")
+        if not info.get("capabilities", {}).get("canAddChildren"):
+            raise RuntimeError(
+                f"This account can't add files to Drive folder {folder_id} "
+                f"({info.get('name')!r}); it needs Editor access"
+            )
+        return info
+
+    def list_children(self, folder_id=None, page_size=20):
+        """First `page_size` items directly in a folder (default: the root)."""
+        response = (
+            self.service.files()
+            .list(
+                q=f"'{folder_id or self.root_folder_id}' in parents and trashed=false",
+                spaces="drive",
+                fields="files(id, name, mimeType)",
+                pageSize=page_size,
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            )
+            .execute()
+        )
+        return response.get("files", [])
+
+    def account_email(self):
+        about = self.service.about().get(fields="user(emailAddress)").execute()
+        return about.get("user", {}).get("emailAddress", "")
+
+    def create_small_file(self, name, data, folder_id=None):
+        media = MediaInMemoryUpload(data, mimetype="text/plain", resumable=False)
+        return (
+            self.service.files()
+            .create(
+                body={"name": name, "parents": [folder_id or self.root_folder_id]},
+                media_body=media,
+                fields="id, name, size, md5Checksum",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+
+    def get_file(self, file_id):
+        return (
+            self.service.files()
+            .get(fileId=file_id, fields="id, name, size, md5Checksum", supportsAllDrives=True)
+            .execute()
+        )
+
+    def remove_file(self, file_id):
+        """Delete a file; fall back to trashing it. Returns "deleted" or "trashed"."""
+        try:
+            self.service.files().delete(fileId=file_id, supportsAllDrives=True).execute()
+            return "deleted"
+        except HttpError as error:
+            logging.warning("Delete refused (%s); moving the file to the trash", error)
+            self.service.files().update(
+                fileId=file_id, body={"trashed": True}, supportsAllDrives=True
+            ).execute()
+            return "trashed"
 
     def _resolve_folder_path(self, drive_path, create=False):
         path_parts = [part for part in drive_path.strip("/").split("/") if part]
         if not path_parts:
-            return "root"
+            return self.root_folder_id
 
-        current_parent_id = "root"
+        current_parent_id = self.root_folder_id
         current_path_parts = []
         for part in path_parts:
             current_path_parts.append(part)

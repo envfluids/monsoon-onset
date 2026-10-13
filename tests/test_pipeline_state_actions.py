@@ -794,6 +794,33 @@ class PipelineStateActionsTest(unittest.TestCase):
         self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["date"], DATE)
         self.assertEqual(state["actions"]["regions_to_sync_by_region"]["ethiopia"]["items"], [item])
 
+    def test_a_killed_syncs_claim_is_retried_after_45_minutes(self):
+        # The sync job runs at most 3 x 600 s, so a claim this old is from an
+        # execution that was killed before it could release it.
+        self.assertEqual(self.module.ACTIVE_SYNC_MAX_AGE_SECONDS, 45 * 60)
+        self.module.utc_now = lambda: self.today  # claim ages are measured from now
+        self.module.REGIONS = {
+            "ethiopia": {
+                "models": ["AIFS_single_v2", "AIFS_ENS_v2"],
+                "stages": ["blend", "sync"],
+                "sync": {"date_kind": "aifs_date"},
+            }
+        }
+        self.module.REGION_BUCKETS = {"ethiopia": ETHIOPIA_BUCKET}
+        self.module.BLENDS = [default_blends()[1]]
+        self.add_ic("ecmwf")
+        self.add_model_done("AIFS_single_v2", "ethiopia")
+        self.add_model_done("AIFS_ENS_v2", "ethiopia")
+        self.add_blend_config_done("ethiopia", "AIFS_single_v2_AIFS_ENS_v2")
+        item = {"type": "blend", "name": "AIFS_single_v2_AIFS_ENS_v2"}
+
+        for minutes, offered in ((40, False), (50, True)):
+            with self.subTest(claim_age_minutes=minutes):
+                claimed = (self.today - timedelta(minutes=minutes)).isoformat()
+                self.add_sync_item_marker("ethiopia", item, state="active", updated_at=claimed)
+                action = self.compute()["actions"]["regions_to_sync_by_region"]["ethiopia"]
+                self.assertEqual(action["items"], [item] if offered else [])
+
 
 
 class DryWetCastStageTest(unittest.TestCase):
@@ -988,6 +1015,60 @@ class DryWetCastStageTest(unittest.TestCase):
             state["per_region"]["india"]["drywetcast"]["reason"], "model_not_in_region"
         )
         self.assertEqual(action["date"], "")
+
+    # -- Drive sync items for done configs ------------------------------------
+    def with_drive_rule(self):
+        self.module.REGIONS["india"]["sync"]["rules"] = ["drywetcast"]
+
+    def sync_action(self):
+        state = self.module.compute_state(DATE, 7, self.today)
+        return state["actions"]["regions_to_sync_by_region"]["india"]
+
+    def put_item_marker(self, config, state, payload=None):
+        item = {"type": "drywetcast", "name": config}
+        self.storage.put_json(
+            INDIA_BUCKET,
+            self.module.sync_item_marker_path(DATE, item, state),
+            payload or {"updated_at": self.now.isoformat()},
+        )
+
+    def test_done_configs_become_sync_items_only_with_the_drywetcast_rule(self):
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        self.put_status({"ncmrwf_full": {"state": "ncmrwf_unavailable"}})
+        self.assertEqual(self.sync_action()["date"], "")  # switch off: no rule
+
+        self.with_drive_rule()
+        action = self.sync_action()
+        self.assertEqual(action["date"], DATE)
+        self.assertEqual(
+            action["items"],
+            [
+                {"type": "drywetcast", "name": "gefs_full"},
+                {"type": "drywetcast", "name": "gefs_reduced"},
+            ],
+        )
+
+    def test_done_or_active_sync_items_are_not_resubmitted(self):
+        self.with_drive_rule()
+        self.ensemble_done()
+        self.config_done("gefs_reduced")
+        self.config_done("gefs_full")
+        self.put_item_marker("gefs_reduced", "done")
+        self.put_item_marker("gefs_full", "active")
+        self.assertEqual(self.sync_action()["date"], "")
+
+    def test_items_stop_after_max_failed_executions(self):
+        self.with_drive_rule()
+        self.ensemble_done()
+        self.config_done("gefs_full")
+        self.put_item_marker("gefs_full", "failed", {"executions": ["e1", "e2"]})
+        self.assertEqual(
+            self.sync_action()["items"], [{"type": "drywetcast", "name": "gefs_full"}]
+        )
+        self.put_item_marker("gefs_full", "failed", {"executions": ["e1", "e2", "e3"]})
+        self.assertEqual(self.sync_action()["date"], "")
 
 
 class EcmwfPublicationCheckTest(unittest.TestCase):

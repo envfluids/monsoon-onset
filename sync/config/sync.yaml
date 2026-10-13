@@ -79,6 +79,17 @@ regions:
         drive_path: "{drive_root}/{date}/model_diagnostics"
         date_regex: "\\d{8}T\\d{2}"
 
+      # One item per finished DryWetCast config: output/drywetcast/<date>/<config>/
+      # -> {drive_root}/drywetcast/<date>/<config>/. With MONSOON_DRIVE_FOLDER_ID
+      # set, {drive_root} is that folder.
+      - name: drywetcast
+        kind: dated_directory
+        gcs_prefix: "output/drywetcast/{date}/"
+        gcs_stage_dir: "drywetcast/output/india/{date}"
+        local_root: "drywetcast/output/india"
+        drive_path: "{drive_root}/drywetcast/{date}"
+        date_regex: "\\d{8}T\\d{2}"
+
       - name: IMD
         kind: files
         local_root: "IMD/output"
