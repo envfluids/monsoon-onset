@@ -1,5 +1,5 @@
-# DryWetCast-India 56f4805 requirements (requirements.txt), pinned to the versions
-# tested end to end on Oct 7-8, 2026; pytest dropped. Plus the job wrapper's deps.
+# DryWetCast-India 22cdbe5 requirements (requirements.txt), pinned to the versions
+# tested locally on Oct 13, 2026; pytest dropped. Plus the job wrapper's deps.
 numpy==2.4.6
 rasterio==1.4.4
 xarray==2026.9.0
@@ -9,6 +9,11 @@ xgboost-cpu==3.2.0  # CPU-only build of xgboost 3.2.0 (same `xgboost` module, no
 matplotlib==3.11.2
 requests==2.34.2
 zarr==3.1.6
+pandas==3.0.6     # subdistrict product (22cdbe5)
+geopandas==1.2.0  # subdistrict map (22cdbe5)
+pyogrio==0.13.0   # geopandas I/O backend
+shapely==2.2.0
+pyproj==3.7.2
 # job wrapper
 google-cloud-storage
 click

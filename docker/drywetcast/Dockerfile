@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # DryWetCast-India at a fixed commit. Bumping it means changing both values.
-ARG DRYWETCAST_COMMIT=56f4805a532718afd61176c85eec75fa8c46b137
-ARG DRYWETCAST_SHA256=a77fb404bb26c1732e19aed3f2a11770cb1d8ec18670161af37cc8a7f39afe18
+ARG DRYWETCAST_COMMIT=22cdbe5beccd3a776ce9e6039a1f603e3d404604
+ARG DRYWETCAST_SHA256=93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5
 RUN curl -fsSL -o /tmp/drywetcast.tar.gz \
         "https://github.com/pdasiitism/DryWetCast-India/archive/${DRYWETCAST_COMMIT}.tar.gz" \
     && echo "${DRYWETCAST_SHA256}  /tmp/drywetcast.tar.gz" | sha256sum -c - \
@@ -34,8 +34,8 @@ RUN pip install --no-cache-dir --no-deps -r requirements.lock
 
 # Fail the build if a native dependency (e.g. libgomp for XGBoost) is missing.
 RUN cd /opt/drywetcast && python -c "\
-import xgboost, rasterio, netCDF4, zarr, matplotlib; \
-from pipeline import configs, aifs_features, gefs_features, ncmrwf_features, download_ncmrwf, inference; \
+import xgboost, rasterio, netCDF4, zarr, matplotlib, pandas, geopandas, pyogrio, shapely, pyproj; \
+from pipeline import configs, aifs_features, gefs_features, ncmrwf_features, download_ncmrwf, inference, outlook, subdistrict; \
 print('drywetcast imports ok, xgboost', xgboost.__version__)"
 
 COPY docker/drywetcast/src/ ./src/

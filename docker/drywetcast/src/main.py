@@ -17,6 +17,12 @@ Flow for ACTION=run:
      cutoff) one last check, then marked unavailable and logged at ERROR.
   5. Manifest, overall done marker when all four configs are done, release the claim.
 
+Each config uploads its PNG, NPZ and outlook PNG, plus the subdistrict pickle and
+PNG when the subdistrict bundle is available. The bundle is copied from
+DRYWETCAST_SUBDISTRICT_GCS before the first config runs and every file is checked
+against its manifest; DryWetCast only sees it (DRYWETCAST_SUBDISTRICT_DATA) once it
+verifies. Subdistrict problems are logged at ERROR and never fail a config.
+
 ACTION=probe only checks that NOAA GEFS and the NCMRWF portal are reachable.
 
 Environment Variables:
@@ -28,11 +34,15 @@ Environment Variables:
     GCS_REGION_BUCKETS    : JSON {region: bucket}
     NCMRWF_API_KEY        : NCMRWF portal key (Secret Manager); read by DryWetCast
     NCMRWF_WAIT_MINUTES   : how long to poll for the NCMRWF file (default 30)
+    DRYWETCAST_SUBDISTRICT_GCS : gs:// prefix of the subdistrict bundle and its
+                            subdistrict_manifest.tsv; empty skips subdistrict products
 """
 
+import hashlib
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -65,6 +75,23 @@ NCMRWF_WAIT_MINUTES = float(os.environ.get("NCMRWF_WAIT_MINUTES", "30"))
 NCMRWF_POLL_MINUTES = float(os.environ.get("NCMRWF_POLL_MINUTES", "5"))
 GEFS_DOWNLOAD_ATTEMPTS = int(os.environ.get("GEFS_DOWNLOAD_ATTEMPTS", "3"))
 GEFS_PROBE_URL = "https://noaa-gefs-pds.s3.amazonaws.com/"
+
+SUBDISTRICT_GCS = os.environ.get("DRYWETCAST_SUBDISTRICT_GCS", "")
+SUBDISTRICT_MANIFEST = "subdistrict_manifest.tsv"
+# pipeline/subdistrict.py REQUIRED_FILES at 22cdbe5; the bundle must contain these.
+SUBDISTRICT_REQUIRED = (
+    "source_to_index.pkl",
+    "target_to_index.pkl",
+    "weight_matrix.npy",
+    "Sub_districts_India_ESRI.shp",
+    "Sub_districts_India_ESRI.shx",
+    "Sub_districts_India_ESRI.dbf",
+    "Sub_districts_India_ESRI.prj",
+    "STATE_BOUNDARY.shp",
+    "STATE_BOUNDARY.shx",
+    "STATE_BOUNDARY.dbf",
+    "STATE_BOUNDARY.prj",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +129,19 @@ def archive_path(date: str, config: str) -> str:
 
 def manifest_path(date: str) -> str:
     return f"output/drywetcast/{date}/manifest.json"
+
+
+# DryWetCast names its extra products after --fig-out (outlook.output_path and
+# subdistrict.output_paths at 22cdbe5).
+def outlook_file(fig: Path) -> Path:
+    return fig.with_name(f"{fig.stem}_outlook.png")
+
+
+def subdistrict_files(fig: Path) -> tuple[Path, Path]:
+    return (
+        fig.with_name(f"{fig.stem}_subdistrict.pkl"),
+        fig.with_name(f"{fig.stem}_subdistrict.png"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -263,14 +303,102 @@ def update_status(
 
 
 # ---------------------------------------------------------------------------
+# Subdistrict bundle
+# ---------------------------------------------------------------------------
+
+
+def parse_gcs_uri(uri: str) -> tuple[str, str]:
+    """gs://bucket/some/prefix -> ("bucket", "some/prefix/")."""
+    match = re.fullmatch(r"gs://([^/]+)/(.+?)/*", uri.strip())
+    if not match:
+        raise ValueError(f"not a gs://bucket/prefix URI: {uri!r}")
+    return match.group(1), match.group(2) + "/"
+
+
+def parse_subdistrict_manifest(text: str) -> list[tuple[int, str, str]]:
+    """Rows of (size, sha256, name); tab-separated, no header line."""
+    rows = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            raise ValueError(f"manifest line {number}: expected size, sha256, name")
+        size, sha256, name = fields
+        if (
+            not size.isdigit()
+            or not re.fullmatch(r"[0-9a-f]{64}", sha256)
+            or not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]*", name)
+        ):
+            raise ValueError(f"manifest line {number}: bad entry {line!r}")
+        rows.append((int(size), sha256, name))
+    if not rows:
+        raise ValueError("manifest is empty")
+    return rows
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def stage_subdistrict_bundle(uri: str, dest: Path) -> dict:
+    """Copy the files listed in the bundle's manifest to `dest` and verify each one.
+
+    Raises on any problem, so an unverified file (two of them are pickles) is
+    never handed to DryWetCast.
+    """
+    bucket_name, prefix = parse_gcs_uri(uri)
+    bucket = _client().bucket(bucket_name)
+    manifest_text = bucket.blob(prefix + SUBDISTRICT_MANIFEST).download_as_text()
+    entries = parse_subdistrict_manifest(manifest_text)
+    missing = sorted(set(SUBDISTRICT_REQUIRED) - {name for _, _, name in entries})
+    if missing:
+        raise RuntimeError(f"manifest lacks required files: {', '.join(missing)}")
+
+    shutil.rmtree(dest, ignore_errors=True)
+    dest.mkdir(parents=True)
+    for size, sha256, name in entries:
+        target = dest / name
+        bucket.blob(prefix + name).download_to_filename(str(target))
+        actual_size = target.stat().st_size
+        if actual_size != size:
+            raise RuntimeError(f"{name}: {actual_size} bytes, manifest says {size}")
+        if sha256_file(target) != sha256:
+            raise RuntimeError(f"{name}: SHA-256 does not match the manifest")
+    total = sum(size for size, _, _ in entries)
+    logger.info(
+        "Subdistrict bundle verified: %d files, %d bytes from %s",
+        len(entries),
+        total,
+        uri,
+    )
+    return {
+        "state": "staged",
+        "source": uri,
+        "manifest_sha256": hashlib.sha256(manifest_text.encode()).hexdigest(),
+        "files": len(entries),
+        "bytes": total,
+    }
+
+
+# ---------------------------------------------------------------------------
 # DryWetCast invocation
 # ---------------------------------------------------------------------------
 
 
-def run_drywetcast(args: list[str]) -> None:
+def run_drywetcast(args: list[str], subdistrict_dir: Path | None = None) -> None:
     command = [sys.executable, str(DRYWETCAST_HOME / "run_forecast.py"), *args]
+    # DryWetCast reads the bundle path from this variable; only a verified copy
+    # may be passed, so never inherit it from the job environment.
+    env = {k: v for k, v in os.environ.items() if k != "DRYWETCAST_SUBDISTRICT_DATA"}
+    if subdistrict_dir is not None:
+        env["DRYWETCAST_SUBDISTRICT_DATA"] = str(subdistrict_dir)
     logger.info("Running: %s", " ".join(command))
-    subprocess.run(command, cwd=DRYWETCAST_HOME, check=True)
+    subprocess.run(command, cwd=DRYWETCAST_HOME, check=True, env=env)
 
 
 def ncmrwf_module():
@@ -411,6 +539,26 @@ def run(
     store = work / "aifs" / f"init_{day}T00.zarr"
     errors: list[str] = []
     results: dict[str, dict] = {}
+    bundle = {"state": "pending" if SUBDISTRICT_GCS else "not_configured"}
+
+    def subdistrict_dir() -> Path | None:
+        """The verified bundle, staged before the first config that runs."""
+        if bundle["state"] == "pending":
+            try:
+                bundle.update(
+                    stage_subdistrict_bundle(SUBDISTRICT_GCS, work / "subdistrict")
+                )
+            except Exception as exc:
+                logger.exception(
+                    "DRYWETCAST_SUBDISTRICT_UNAVAILABLE for %s; running without the "
+                    "subdistrict products",
+                    date,
+                )
+                shutil.rmtree(work / "subdistrict", ignore_errors=True)
+                bundle.update(
+                    state="unavailable", source=SUBDISTRICT_GCS, message=str(exc)[:500]
+                )
+        return work / "subdistrict" if bundle["state"] == "staged" else None
 
     todo = [
         c
@@ -425,26 +573,55 @@ def run(
         try:
             fig = products / config / f"{day}_00.png"
             fig.parent.mkdir(parents=True, exist_ok=True)
-            run_drywetcast(
-                [
-                    "--config",
+            args = [
+                "--config",
+                config,
+                "--date",
+                day,
+                "--cycle",
+                "00",
+                "--skip-download",
+                "--aifs-zarr",
+                str(store),
+                "--out-dir",
+                str(scratch),
+                "--fig-out",
+                str(fig),
+                "--archive-dir",
+                str(archive),
+            ]
+            sub_dir = subdistrict_dir()
+            subdistrict = "done" if sub_dir else "skipped"
+            try:
+                run_drywetcast(args, subdistrict_dir=sub_dir)
+            except subprocess.CalledProcessError:
+                if sub_dir is None:
+                    raise
+                # The subdistrict step runs last; redo the config without it so
+                # the core products still ship.
+                logger.error(
+                    "DRYWETCAST_SUBDISTRICT_FAILED %s for %s; rerunning without the "
+                    "subdistrict products",
                     config,
-                    "--date",
-                    day,
-                    "--cycle",
-                    "00",
-                    "--skip-download",
-                    "--aifs-zarr",
-                    str(store),
-                    "--out-dir",
-                    str(scratch),
-                    "--fig-out",
-                    str(fig),
-                    "--archive-dir",
-                    str(archive),
-                ]
-            )
-            for local in (fig, fig.with_suffix(".npz")):
+                    date,
+                )
+                subdistrict = "failed"
+                run_drywetcast(args, subdistrict_dir=None)
+
+            uploads = [fig, fig.with_suffix(".npz"), outlook_file(fig)]
+            if subdistrict == "done":
+                produced = [p for p in subdistrict_files(fig) if p.exists()]
+                if len(produced) == 2:
+                    uploads += produced
+                else:
+                    logger.error(
+                        "DRYWETCAST_SUBDISTRICT_FAILED %s for %s: subdistrict files "
+                        "missing after the run",
+                        config,
+                        date,
+                    )
+                    subdistrict = "failed"
+            for local in uploads:
                 upload_file(
                     bucket, local, f"{product_prefix(date, config)}/{local.name}"
                 )
@@ -456,6 +633,8 @@ def run(
             results[config] = {
                 "state": "done",
                 "seconds": round(time.monotonic() - started, 1),
+                "files": [local.name for local in uploads],
+                "subdistrict": subdistrict,
             }
         except Exception as exc:
             logger.exception("DryWetCast %s failed for %s", config, date)
@@ -562,7 +741,9 @@ def run(
                 )
                 results[config] = {"state": "ncmrwf_pending"}
 
-    write_manifest(bucket, date, region, results, finalize, store, scratch)
+    if bundle["state"] == "pending":  # no config ran, so it was never needed
+        bundle["state"] = "not_staged"
+    write_manifest(bucket, date, region, results, finalize, store, scratch, bundle)
     if all(
         blob_exists(common_bucket, config_marker_path(region, c, date)) for c in CONFIGS
     ):
@@ -570,7 +751,9 @@ def run(
     return errors
 
 
-def write_manifest(bucket, date, region, results, finalize, store, scratch) -> None:
+def write_manifest(
+    bucket, date, region, results, finalize, store, scratch, bundle
+) -> None:
     status, _ = read_json(bucket, status_path(date))
     store_attrs = {}
     attrs_file = store / ".zattrs"
@@ -591,6 +774,7 @@ def write_manifest(bucket, date, region, results, finalize, store, scratch) -> N
         if ncmrwf_file.exists()
         else None,
         "finalize": finalize,
+        "subdistrict_bundle": bundle,
         "this_run": results,
         "status": status.get("configs", {}),
     }
