@@ -163,6 +163,10 @@ resource "google_workflows_workflow" "main_pipeline" {
 
     batch_model_max_attempts = var.batch_model_max_attempts
     delivery_check_marker    = var.delivery_check_schedule == null ? "" : var.delivery_check_marker
+    ensemble_ladder = {
+      for model, ladder in var.ensemble_ladder : model => ladder
+      if contains(local.batch_models_in_use, model)
+    }
   })
 
   labels = {
@@ -305,5 +309,40 @@ resource "google_cloud_scheduler_job" "delivery_check" {
     retry_count          = 3
     min_backoff_duration = "5s"
     max_backoff_duration = "300s"
+  }
+}
+
+# -----------------------------------------------------------------------------
+# Cloud Scheduler — fallback-ladder check (only with ensemble_ladder)
+# -----------------------------------------------------------------------------
+
+resource "google_cloud_scheduler_job" "ensemble_ladder" {
+  count = length(var.ensemble_ladder) > 0 ? 1 : 0
+
+  name        = "${var.name_prefix}-${var.environment}-ensemble-ladder"
+  project     = var.project_id
+  region      = var.region
+  description = "Starts fallback Batch jobs for a stuck ensemble and cancels the losers"
+  schedule    = var.ensemble_ladder_schedule
+  time_zone   = "UTC"
+  paused      = var.scheduler_paused
+
+  http_target {
+    uri         = "https://workflowexecutions.googleapis.com/v1/${google_workflows_workflow.main_pipeline.id}/executions"
+    http_method = "POST"
+
+    body = base64encode(jsonencode({
+      argument = jsonencode({ action = "check_ensemble" })
+    }))
+
+    oauth_token {
+      service_account_email = google_service_account.workflow.email
+      scope                 = "https://www.googleapis.com/auth/cloud-platform"
+    }
+  }
+
+  # A missed check is retried by the next one 2 min later.
+  retry_config {
+    retry_count = 0
   }
 }

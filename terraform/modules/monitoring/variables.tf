@@ -30,6 +30,12 @@ variable "enable_alerts" {
   default     = false
 }
 
+variable "enable_ensemble_fallback_alert" {
+  description = "Email when the ensemble fallback ladder submits a fallback job (ENSEMBLE_FALLBACK_SUBMITTED) or a fallback job wins (ENSEMBLE_FALLBACK_WON). Needs enable_alerts."
+  type        = bool
+  default     = false
+}
+
 variable "enable_delivery_alert" {
   description = "Alert on DELIVERY_LATE (delivery deadline missed) and BATCH_RETRY_CAP (a Batch job stopped being retried) workflow logs. Needs enable_alerts."
   type        = bool

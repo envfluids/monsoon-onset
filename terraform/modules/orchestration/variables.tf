@@ -84,6 +84,51 @@ variable "delivery_check_schedule" {
   default     = null
 }
 
+variable "ensemble_ladder" {
+  description = <<-EOT
+    Fallback ladder per Batch model ({} = off). When the model's job hasn't
+    started after_minutes after it was submitted, the next step's job is added
+    beside it (same forecast, another machine or region); the first job to
+    start claims the date and the others are cancelled. Step names are the job
+    id suffix (<model job id>-<name>). force (tests only) submits that step at
+    once and gives it the claim.
+  EOT
+  type = map(object({
+    marker_region = string
+    after_minutes = number
+    force         = optional(string, "")
+    steps = list(object({
+      name              = string
+      region            = string
+      subnet            = string
+      machine_type      = string
+      cpu_milli         = number
+      memory_mib        = number
+      gpu_count         = number
+      max_run_duration  = string
+      upload_full_field = bool
+    }))
+  }))
+  default = {}
+
+  validation {
+    condition = alltrue(flatten([
+      for model, ladder in var.ensemble_ladder : concat(
+        [ladder.after_minutes >= 1, length(ladder.steps) >= 1],
+        [ladder.force == "" || contains([for step in ladder.steps : step.name], ladder.force)],
+        [for step in ladder.steps : can(regex("^fb[0-9]$", step.name))],
+      )
+    ]))
+    error_message = "ensemble_ladder: after_minutes >= 1, at least one step, step names fb0-fb9, and force empty or a step name."
+  }
+}
+
+variable "ensemble_ladder_schedule" {
+  description = "Cron (UTC) for the fallback-ladder check (action=check_ensemble); only created when ensemble_ladder is set."
+  type        = string
+  default     = "*/2 7-9 * * *"
+}
+
 variable "delivery_check_marker" {
   description = "Common-bucket object the delivery check expects; %DATE% becomes today's YYYYMMDDT00."
   type        = string

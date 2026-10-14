@@ -36,6 +36,13 @@ main:
             next: check_delivery_init
 
 %{ endif ~}
+%{ if length(ensemble_ladder) > 0 ~}
+    - maybe_check_ensemble:
+        switch:
+          - condition: $${action == "check_ensemble"}
+            next: check_ensemble_init
+
+%{ endif ~}
     - maybe_advance_from_event:
         switch:
           - condition: $${event_type != "" and text.match_regex(event_object_name, "^intermediate/.*_done$")}
@@ -245,6 +252,38 @@ main:
           status: "delivery_checked"
           marker: $${delivery_marker}
 %{ endif ~}
+%{ if length(ensemble_ladder) > 0 ~}
+
+    # -------------------------------------------------------------------------
+    # Fallback-ladder check (scheduled every 2 min with action=check_ensemble):
+    # starts the next fallback job for a Batch model that hasn't started, and
+    # cancels the other jobs once one has claimed the date. Today's date unless
+    # args.date is given. Never submits any other stage.
+    # -------------------------------------------------------------------------
+    - check_ensemble_init:
+        assign:
+          - ladder_date: $${text.replace_all(text.substring(time.format(sys.now()), 0, 10), "-", "") + "T00"}
+    - maybe_requested_ladder_date:
+        switch:
+          - condition: $${requested_date != ""}
+            steps:
+              - use_requested_ladder_date:
+                  assign:
+                    - ladder_date: $${requested_date}
+%{ for model in keys(ensemble_ladder) ~}
+    - check_ladder_${model}:
+        call: ensemble_ladder_${model}
+        args:
+          date: $${ladder_date}
+          regions: []
+          run_primary: false
+        result: ladder_${model}_result
+%{ endfor ~}
+    - return_ensemble_checked:
+        return:
+          status: "ensemble_checked"
+          date: $${ladder_date}
+%{ endif ~}
 
 
 # -----------------------------------------------------------------------------
@@ -289,6 +328,15 @@ submit_ready_work:
                           next: ${model}_submit_done
                         - condition: true
                           next: submit_${model}_batch
+%{ if contains(keys(ensemble_ladder), model) ~}
+                  # Fallback ladder: resubmits only the job that owns the date.
+                  - submit_${model}_batch:
+                      call: ensemble_ladder_${model}
+                      args:
+                        date: $${${model}_action.date}
+                        regions: $${${model}_action.regions}
+                        run_primary: true
+%{ else ~}
                   - submit_${model}_batch:
                       call: submit_batch_stage
                       args:
@@ -318,6 +366,7 @@ submit_ready_work:
 %{ for name, value in try(batch_model_env[model], {}) ~}
                           ${name}: ${jsonencode(value)}
 %{ endfor ~}
+%{ endif ~}
                   - ${model}_submit_done:
                       assign:
                         - ${model}_submit_branch_done: true
@@ -616,22 +665,28 @@ submit_batch_stage:
     - volumes
     - env_vars
     - max_attempts  # attempts per job id before FAILED/CANCELLED stops being resubmitted; 0 = unlimited
+    # Fallback-ladder jobs override these; the defaults are today's job.
+    - batch_region: "${region}"
+    - batch_subnet: "${batch_config.vpc_subnet}"
+    - initial_attempt: 1
+    - extra_labels: {}
   steps:
     - init_batch_submit:
         assign:
-          - job_name: $${"projects/${project_id}/locations/${region}/jobs/" + job_id}
+          - job_name: $${"projects/${project_id}/locations/" + batch_region + "/jobs/" + job_id}
           - recreate_attempted: false
-          - attempt: 1
+          - attempt: $${initial_attempt}
+          - batch_labels: $${extra_labels}
+          - batch_labels.attempt: $${string(attempt)}
     - create_batch_job:
         try:
           call: http.post
           args:
-            url: $${"https://batch.googleapis.com/v1/projects/${project_id}/locations/${region}/jobs?jobId=" + job_id}
+            url: $${"https://batch.googleapis.com/v1/projects/${project_id}/locations/" + batch_region + "/jobs?jobId=" + job_id}
             auth:
               type: OAuth2
             body:
-              labels:
-                attempt: $${string(attempt)}
+              labels: $${batch_labels}
               taskGroups:
                 - taskCount: 1
                   taskSpec:
@@ -661,11 +716,12 @@ submit_batch_stage:
                       provisioningModel: $${provisioning_model}
                       accelerators: $${accelerators}
                 location:
-                  allowedLocations: ["regions/${region}"]
+                  allowedLocations:
+                    - $${"regions/" + batch_region}
                 network:
                   networkInterfaces:
                     - network: "${batch_config.vpc_network}"
-                      subnetwork: "${batch_config.vpc_subnet}"
+                      subnetwork: $${batch_subnet}
                       noExternalIpAddress: true
               logsPolicy:
                 destination: CLOUD_LOGGING
@@ -757,6 +813,7 @@ submit_batch_stage:
         assign:
           - recreate_attempted: true
           - attempt: $${previous_attempt + 1}
+          - batch_labels.attempt: $${string(attempt)}
 
     - wait_for_batch_delete:
         call: sys.sleep
@@ -787,6 +844,327 @@ submit_batch_stage:
         return: "changed"
 
 
+%{ for model, ladder in ensemble_ladder ~}
+# -----------------------------------------------------------------------------
+# Fallback ladder for ${model}: the primary job, then ${join(", ", [for step in ladder.steps : step.name])}.
+# pipeline-state (/ensemble_ladder) decides; this subroutine acts. Each job
+# claims the date when it starts (docker/aifs-ens-v2), so only the first job
+# to start runs; the others are cancelled here.
+# -----------------------------------------------------------------------------
+
+ensemble_ladder_${model}:
+  params: [date, regions, run_primary]
+  steps:
+    # A pipeline-state image without the endpoint (404, e.g. mid-rollout) means
+    # no ladder: submit the primary exactly as before. Other errors raise.
+    - fetch_ladder:
+        try:
+          call: http.get
+          args:
+            url: $${"${pipeline_state_url}/ensemble_ladder?model=${model}&date=" + date}
+            auth:
+              type: OIDC
+          result: ladder_response
+        except:
+          as: e
+          steps:
+            - classify_ladder_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) != 404}
+                    raise: $${e}
+            - log_ladder_unavailable:
+                call: sys.log
+                args:
+                  severity: WARNING
+                  text: '$${"ENSEMBLE_LADDER_UNAVAILABLE ${model} " + date + ": pipeline-state has no /ensemble_ladder; primary only"}'
+            - no_ladder:
+                assign:
+                  - ladder_response:
+                      body:
+                        decision: "none"
+                        reason: "ladder_unavailable"
+                        winner_step: ""
+                        ladder_active: false
+                        log_won: false
+    - read_ladder:
+        assign:
+          - ladder: $${ladder_response.body}
+          - claim_prefix: $${"batch-state/${model}/" + date}
+    - maybe_submit_owner:
+        switch:
+          - condition: $${run_primary and ladder.winner_step != ""}
+            next: resubmit_ladder_winner
+          - condition: $${run_primary and not ladder.ladder_active}
+            next: submit_ladder_primary
+          - condition: true
+            next: act_on_ladder
+    # The job that claimed the date is the only one resubmitted (retry cap as usual).
+    - resubmit_ladder_winner:
+        call: ladder_submit_${model}
+        args:
+          date: $${date}
+          regions: $${regions}
+          step: $${ladder.winner_step}
+          attempt: $${int(ladder.primary_attempt)}
+        result: owner_submit
+        next: act_on_ladder
+    - submit_ladder_primary:
+        call: ladder_submit_${model}
+        args:
+          date: $${date}
+          regions: $${regions}
+          step: "primary"
+          attempt: 1
+        result: owner_submit
+    - act_on_ladder:
+        switch:
+          - condition: $${ladder.decision == "submit"}
+            next: maybe_force_ladder_claim
+          - condition: $${ladder.decision == "cancel"}
+            next: cancel_ladder_losers
+          - condition: true
+            next: maybe_log_ladder_won
+
+    # Forced test runs (dev only): claim the date for the forced step before
+    # it exists, so the primary stops at start and is cancelled.
+    - maybe_force_ladder_claim:
+        switch:
+          - condition: $${ladder.force_claim}
+            next: write_forced_ladder_claim
+          - condition: true
+            next: submit_ladder_step
+    - write_forced_ladder_claim:
+        try:
+          call: googleapis.storage.v1.objects.insert
+          args:
+            bucket: "${common_bucket}"
+            name: $${claim_prefix + "/winner"}
+            ifGenerationMatch: 0
+            uploadType: "media"
+            body:
+              job_id: $${map.get(ladder.jobs, ladder.step).job_id}
+              forced: true
+        except:
+          as: e
+          steps:
+            - classify_forced_claim_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 412}
+                    next: submit_ladder_step
+                  - condition: true
+                    raise: $${e}
+    - submit_ladder_step:
+        call: ladder_submit_${model}
+        args:
+          date: $${date}
+          regions: $${ladder.regions}
+          step: $${ladder.step}
+          attempt: $${int(ladder.primary_attempt)}
+        result: step_submit
+    - maybe_log_step_submitted:
+        switch:
+          - condition: $${step_submit.status == "created"}
+            next: log_ladder_step_submitted
+          - condition: true
+            next: ladder_done
+    - log_ladder_step_submitted:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: '$${"ENSEMBLE_FALLBACK_SUBMITTED ${model} " + date + ": " + step_submit.job_id + " (" + step_submit.machine_type + ", " + step_submit.region + "); primary " + ladder.jobs.primary.state + " for " + string(ladder.jobs.primary.waited_minutes) + " min (" + ladder.reason + ")"}'
+        next: ladder_done
+
+    # Re-read each loser and cancel it only if it is the same job (uid) and
+    # still unfinished. A loser that starts anyway stops at its claim check.
+    - cancel_ladder_losers:
+        for:
+          value: loser
+          in: $${ladder.cancel}
+          steps:
+            - recheck_ladder_loser:
+                try:
+                  call: googleapis.batch.v1.projects.locations.jobs.get
+                  args:
+                    name: $${loser.name}
+                  result: loser_job
+                except:
+                  as: e
+                  steps:
+                    - classify_loser_get_error:
+                        switch:
+                          - condition: $${default(map.get(e, "code"), 0) == 404}
+                            next: continue
+                          - condition: true
+                            raise: $${e}
+            - maybe_cancel_ladder_loser:
+                switch:
+                  - condition: $${loser_job.uid == loser.uid and (loser_job.status.state == "QUEUED" or loser_job.status.state == "SCHEDULED" or loser_job.status.state == "RUNNING")}
+                    next: cancel_ladder_loser
+                  - condition: true
+                    next: continue
+            - cancel_ladder_loser:
+                try:
+                  call: http.post
+                  args:
+                    url: $${"https://batch.googleapis.com/v1/" + loser.name + ":cancel"}
+                    auth:
+                      type: OAuth2
+                    body: {}
+                except:
+                  as: e
+                  steps:
+                    - log_ladder_cancel_failed:
+                        call: sys.log
+                        args:
+                          severity: WARNING
+                          text: '$${"ENSEMBLE_LADDER_CANCEL_FAILED " + loser.name + ": " + json.encode_to_string(e)}'
+                        next: continue
+            - log_ladder_loser_cancelled:
+                call: sys.log
+                args:
+                  severity: INFO
+                  text: '$${"ENSEMBLE_LADDER_CANCELLED " + loser.name + " (" + loser.step + "); " + ladder.reason + " " + ladder.winner}'
+
+    # One ENSEMBLE_FALLBACK_WON per date: the create-only marker picks the pass.
+    - maybe_log_ladder_won:
+        switch:
+          - condition: $${ladder.log_won}
+            next: mark_ladder_won_logged
+          - condition: true
+            next: ladder_done
+    - mark_ladder_won_logged:
+        try:
+          call: googleapis.storage.v1.objects.insert
+          args:
+            bucket: "${common_bucket}"
+            name: $${claim_prefix + "/won_logged"}
+            ifGenerationMatch: 0
+            uploadType: "media"
+            body:
+              winner: $${ladder.winner}
+        except:
+          as: e
+          steps:
+            - classify_won_logged_error:
+                switch:
+                  - condition: $${default(map.get(e, "code"), 0) == 412}
+                    next: ladder_done
+                  - condition: true
+                    raise: $${e}
+    - log_ladder_won:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: '$${"ENSEMBLE_FALLBACK_WON ${model} " + date + ": " + ladder.winner + " (" + ladder.winner_step + ") started first; the other ladder jobs are cancelled"}'
+    - ladder_done:
+        return: $${ladder.decision}
+
+
+ladder_submit_${model}:
+  params: [date, regions, step, attempt]
+  steps:
+    - ladder_job_ids:
+        assign:
+          - primary_job_id: $${"${replace(lower(model), "_", "-")}-" + text.replace_all(date, "T", "-")}
+          - claim_object: $${"batch-state/${model}/" + date + "/winner"}
+    - pick_ladder_step:
+        switch:
+          - condition: $${step == "primary"}
+            next: submit_ladder_job_primary
+%{ for step in ladder.steps ~}
+          - condition: $${step == "${step.name}"}
+            next: submit_ladder_job_${step.name}
+%{ endfor ~}
+          - condition: true
+            raise: $${"unknown ladder step " + step}
+    - submit_ladder_job_primary:
+        call: submit_batch_stage
+        args:
+          job_id: $${primary_job_id}
+          image: "${model_images[model]}"
+          machine_type: "${batch_config.model_resources[model].machine_type}"
+          cpu_milli: ${batch_config.model_resources[model].cpu_milli}
+          memory_mib: ${batch_config.model_resources[model].memory_mib}
+          boot_disk_size_gb: ${batch_config.model_resources[model].boot_disk_size_gb}
+          boot_disk_type: "${batch_config.model_resources[model].boot_disk_type}"
+          install_gpu_drivers: ${batch_config.model_resources[model].install_gpu_drivers}
+          provisioning_model: "${batch_config.model_resources[model].provisioning_model}"
+          max_run_duration: "${batch_config.model_resources[model].max_run_duration}"
+          accelerators: ${batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ? jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = batch_config.model_resources[model].gpu_count }]) : "[]"}
+          volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
+          max_attempts: ${try(batch_model_max_attempts[model], 0)}
+          initial_attempt: $${attempt}
+          env_vars:
+            DATE: $${date}
+            MODEL: "${model}"
+            FORECAST_REGIONS: $${json.encode_to_string(regions)}
+            GCS_COMMON_BUCKET: "${common_bucket}"
+            GCS_REGION_BUCKETS: '${jsonencode(region_buckets)}'
+            REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
+            REGIONS: '${jsonencode(regions)}'
+            PROJECT_ID: "${project_id}"
+            UPLOAD_FULL_FIELD: "${contains(full_field_models, model) ? "true" : "false"}"
+            ENSEMBLE_CLAIM_OBJECT: $${claim_object}
+            LADDER_JOB_ID: $${primary_job_id}
+%{ for name, value in try(batch_model_env[model], {}) ~}
+            ${name}: ${jsonencode(value)}
+%{ endfor ~}
+        result: submit_status
+    - return_ladder_job_primary:
+        return:
+          status: $${submit_status}
+          job_id: $${primary_job_id}
+          region: "${region}"
+          machine_type: "${batch_config.model_resources[model].machine_type}"
+%{ for step in ladder.steps ~}
+    - submit_ladder_job_${step.name}:
+        call: submit_batch_stage
+        args:
+          job_id: $${primary_job_id + "-${step.name}"}
+          image: "${model_images[model]}"
+          machine_type: "${step.machine_type}"
+          cpu_milli: ${step.cpu_milli}
+          memory_mib: ${step.memory_mib}
+          boot_disk_size_gb: ${batch_config.model_resources[model].boot_disk_size_gb}
+          boot_disk_type: "${batch_config.model_resources[model].boot_disk_type}"
+          install_gpu_drivers: true
+          provisioning_model: "${batch_config.model_resources[model].provisioning_model}"
+          max_run_duration: "${step.max_run_duration}"
+          accelerators: ${jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = step.gpu_count }])}
+          volumes: ${step.upload_full_field && batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
+          max_attempts: ${try(batch_model_max_attempts[model], 0)}
+          batch_region: "${step.region}"
+          batch_subnet: "${step.subnet}"
+          initial_attempt: $${attempt}
+          extra_labels:
+            ladder-step: "${step.name}"
+            ladder-of: $${primary_job_id}
+          env_vars:
+            DATE: $${date}
+            MODEL: "${model}"
+            FORECAST_REGIONS: $${json.encode_to_string(regions)}
+            GCS_COMMON_BUCKET: "${common_bucket}"
+            GCS_REGION_BUCKETS: '${jsonencode(region_buckets)}'
+            REGION_MODELS: '${jsonencode({ for k, v in regions : k => v.models })}'
+            REGIONS: '${jsonencode(regions)}'
+            PROJECT_ID: "${project_id}"
+            UPLOAD_FULL_FIELD: "${step.upload_full_field && contains(full_field_models, model) ? "true" : "false"}"
+            ENSEMBLE_CLAIM_OBJECT: $${claim_object}
+            LADDER_JOB_ID: $${primary_job_id + "-${step.name}"}
+%{ for name, value in try(batch_model_env[model], {}) ~}
+            ${name}: ${jsonencode(value)}
+%{ endfor ~}
+        result: submit_status
+    - return_ladder_job_${step.name}:
+        return:
+          status: $${submit_status}
+          job_id: $${primary_job_id + "-${step.name}"}
+          region: "${step.region}"
+          machine_type: "${step.machine_type}"
+%{ endfor ~}
+
+
+%{ endfor ~}
 pipeline_state:
   params: [base_url, date]
   steps:

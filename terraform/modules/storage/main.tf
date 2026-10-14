@@ -225,6 +225,15 @@ resource "google_project_iam_member" "pipeline_batch_agent_reporter" {
   member  = "serviceAccount:${google_service_account.pipeline.email}"
 }
 
+# pipeline-state reads Batch job states for the ensemble fallback ladder.
+resource "google_project_iam_member" "pipeline_batch_job_viewer" {
+  count = var.grant_pipeline_batch_job_viewer ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/batch.jobsViewer"
+  member  = "serviceAccount:${google_service_account.pipeline.email}"
+}
+
 resource "google_project_iam_member" "pipeline_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
