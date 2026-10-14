@@ -592,7 +592,7 @@ class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
         deadline = self.dev.split('variable "india_ensemble_deadline_utc" {', 1)[
             1
         ].split("\n}\n", 1)[0]
-        self.assertIn('default     = "10:00"', deadline)
+        self.assertRegex(deadline, r'default\s+= "08:25"')
         self.assertIn(
             'tonumber(split(":", var.india_ensemble_deadline_utc)[1])', self.dev
         )
