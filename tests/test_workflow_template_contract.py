@@ -1159,6 +1159,102 @@ class EnsembleLadderContractTest(unittest.TestCase):
                 self.assertNotIn(name, self.prod)
 
 
+class EnsembleLadderRegionStepContractTest(unittest.TestCase):
+    """PR B: fb1, the 2-GPU job in a fallback region, ahead of fb2."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.networking = (cls.ROOT / "terraform/modules/networking/main.tf").read_text()
+        cls.ladder = hcl_block(cls.dev, "locals {\n  ensemble_ladder = {")
+
+    def step(self, name):
+        """The step's block in the dev ladder, from its name to its closing brace."""
+        start = self.ladder.index(f'= "{name}"')
+        return self.ladder[start:].split("},", 1)[0]
+
+    def test_fb1_comes_before_fb2(self):
+        self.assertLess(self.ladder.index('"fb1"'), self.ladder.index('"fb2"'))
+
+    def test_fb1_is_the_primary_shape_in_the_fallback_region_without_full_field(self):
+        fb1 = self.step("fb1")
+        self.assertIn("region = var.ensemble_fallback_region", fb1)
+        self.assertIn(
+            "subnet = module.networking.subnetwork_ids_by_region[var.ensemble_fallback_region]",
+            fb1,
+        )
+        self.assertRegex(fb1, r'machine_type\s+= "a2-highgpu-2g"')
+        self.assertRegex(fb1, r"gpu_count\s+= 2")
+        self.assertRegex(fb1, r"cpu_milli\s+= 24000")
+        self.assertRegex(fb1, r"memory_mib\s+= 174080")
+        self.assertRegex(fb1, r"upload_full_field = false")
+        # The primary's shape, so fb1 runs as fast as the primary would have.
+        self.assertIn('machine_type        = "a2-highgpu-2g"', self.dev)
+
+    def test_fb2_still_one_gpu_in_the_primary_region_with_full_field(self):
+        fb2 = self.step("fb2")
+        self.assertIn("region            = var.region", fb2)
+        self.assertIn('machine_type      = "a2-highgpu-1g"', fb2)
+        self.assertIn("upload_full_field = true", fb2)
+
+    def test_fallback_region_variable(self):
+        region = hcl_block(self.dev, 'variable "ensemble_fallback_region" {')
+        self.assertIn('default     = "us-east1"', region)
+        self.assertIn('["us-east1", "us-west1", "us-west3", "us-west4"]', region)
+        cidr = hcl_block(self.dev, 'variable "ensemble_fallback_subnet_cidr" {')
+        self.assertIn('default     = "10.32.0.0/20"', cidr)
+        force = hcl_block(self.dev, 'variable "ensemble_ladder_force" {')
+        self.assertIn('contains(["", "fb1", "fb2"], var.ensemble_ladder_force)', force)
+
+    def test_fallback_subnet_has_private_google_access_router_and_nat(self):
+        subnets = self.dev.split("  additional_subnets = merge(", 1)[1].split(
+            "\n  )\n", 1
+        )[0]
+        self.assertIn(
+            "ens-fallback = {\n        region = var.ensemble_fallback_region\n"
+            "        cidr   = var.ensemble_fallback_subnet_cidr",
+            subnets,
+        )
+        self.assertIn("gencast-tpu = {", subnets)  # the GenCast entry is kept
+        subnet = hcl_block(
+            self.networking, 'resource "google_compute_subnetwork" "additional" {'
+        )
+        self.assertIn("for_each = var.additional_subnets", subnet)
+        self.assertIn("private_ip_google_access = true", subnet)
+        for resource in ("google_compute_router", "google_compute_router_nat"):
+            with self.subTest(resource=resource):
+                block = hcl_block(
+                    self.networking, f'resource "{resource}" "additional" {{'
+                )
+                self.assertIn("for_each = var.additional_subnets", block)
+        nat = hcl_block(
+            self.networking, 'resource "google_compute_router_nat" "additional" {'
+        )
+        self.assertIn(
+            'source_subnetwork_ip_ranges_to_nat = "ALL_SUBNETWORKS_ALL_IP_RANGES"', nat
+        )
+        # Its CIDR joins the internal firewall's source ranges.
+        self.assertIn(
+            "[for _, subnet in var.additional_subnets : subnet.cidr]", self.networking
+        )
+
+    def test_fallback_cidr_does_not_overlap(self):
+        import ipaddress
+
+        fallback = ipaddress.ip_network("10.32.0.0/20")
+        for other in ("10.0.0.0/20", "10.16.0.0/20"):  # main subnet, GenCast TPU subnet
+            with self.subTest(other=other):
+                self.assertFalse(fallback.overlaps(ipaddress.ip_network(other)))
+
+    def test_prod_has_no_fallback_region(self):
+        for name in ("ensemble_fallback_region", "ens-fallback", "ensemble_ladder"):
+            with self.subTest(name=name):
+                self.assertNotIn(name, self.prod)
+
+
 if __name__ == "__main__":
     unittest.main()
 
