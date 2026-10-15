@@ -1,16 +1,36 @@
 # Monsoon Onset Prediction System
 
-This top-level README documents the checked-in HPC operational workflow for this
-repository. Cloud documentation is intentionally not duplicated here; see:
+## Current operational status (Oct 2026)
 
-- [README_CLOUD.md](README_CLOUD.md)
+The GCP cloud pipeline is the operational system for the India pilot. It is
+deployed from the dev environment (`terraform/environments/dev/main.tf`). Every day:
+
+1. AIFS_ENS_v2 runs 51 members × 168 h as one Cloud Batch job on an
+   `a2-highgpu-2g` (2 × A100, standard VMs, not spot).
+2. DryWetCast v2 (DryWetCast-India pinned at commit `22cdbe5`) runs on that
+   ensemble for 4 configs: `gefs_reduced`, `gefs_full`, `ncmrwf_reduced` and
+   `ncmrwf_full`. Each config produces the forecast map, an outlook map and the
+   subdistrict products.
+3. The sync job copies each finished config to Google Drive.
+
+The India flow, schedule, buckets, output paths and alerts are in
+[docs/README_CLOUD.md → Current India pilot (Oct 2026)](docs/README_CLOUD.md#current-india-pilot-oct-2026).
+
+The HPC workflow documented in the rest of this README is the previous season's
+system. It is kept for reference.
+
+## Documentation
+
+Cloud documentation is not duplicated here; see:
+
+- [docs/README_CLOUD.md](docs/README_CLOUD.md)
 - [terraform/README.md](terraform/README.md)
 - [docker/neuralgcm/README.md](docker/neuralgcm/README.md)
 
-For a hands-on, DSI-specific operations runbook (manual recovery steps, debugging,
-example commands for every stage), see:
+For a hands-on, DSI-specific operations runbook for the HPC workflow (manual
+recovery steps, debugging, example commands for every stage), see:
 
-- [OPERATIONS_MANUAL_DSI.md](OPERATIONS_MANUAL_DSI.md)
+- [docs/OPERATIONS_MANUAL_DSI.md](docs/OPERATIONS_MANUAL_DSI.md)
 
 ## HPC Layout
 
