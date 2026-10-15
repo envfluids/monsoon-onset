@@ -4,6 +4,142 @@ End-to-end reference for the GCP-based monsoon onset forecast pipeline. Covers e
 
 ---
 
+## Current India pilot (Oct 2026)
+
+This is what runs operationally today. Values come from
+`terraform/environments/dev/main.tf` and the Terraform modules; the containers named below
+hold the logic. Some of the generic reference sections further down predate this setup.
+
+### What is switched on
+
+The pilot runs in the **dev** environment. Prod sets no DryWetCast image, so it has no
+DryWetCast job.
+
+| Region | Models | Stages | Drive sync rules |
+|--------|--------|--------|------------------|
+| india | `AIFS_ENS_v2` | `drywetcast`, `sync` | `drywetcast` |
+| ethiopia | none | `sync` (no rules left) | none |
+
+`disabled_models` switches off `gencast`, `AIFS_single_v2` and `neuralgcm` everywhere.
+`disabled_region_models` switches off `AIFS_ENS_v2` for ethiopia. `disabled_stages` switches
+off india's `model_diagnostics` and ethiopia's `blend` and `model_diagnostics`.
+
+### Daily flow
+
+1. **ECMWF ICs.** A scheduled pass finds the latest 00z ECMWF cycle through pipeline-state.
+   The `monsoon-dev-downloader` Cloud Run job copies the GRIBs to
+   `gs://monsoon-dev-common-<project>/ic/ecmwf/<D>/grib/`.
+2. **Ensemble.** The workflow submits the Batch job `aifs-ens-v2-<YYYYMMDD>-00`.
+   - Image: `monsoon-aifs-ens-v2`.
+   - Machine: `a2-highgpu-2g` (2 × A100), 24 vCPU, 170 GiB, STANDARD provisioning.
+   - Limits: 7200 s maximum run time; at most `ensemble_max_attempts` = 3 attempts per date.
+   - Settings: `AIFS_ENS_N_MEMBERS=51`, `AIFS_ENS_LEAD_TIME_HOURS=168`.
+     `run_model_ENS.py` runs one worker per visible GPU.
+   - Output: the India post-processed products and the DryWetCast input store go to the
+     india bucket, and the full field goes to the common bucket. Last, the job writes
+     `intermediate/AIFS_ENS_v2_india_<D>_done`.
+3. **DryWetCast.** Once the done marker and the store's `.zmetadata` exist, pipeline-state
+   asks for a DryWetCast run and the workflow starts the `monsoon-dev-drywetcast` Cloud Run
+   job.
+   - Job limits: 4 vCPU, 8 GiB, 3600 s, no Cloud Run retries.
+   - A claim object stops two passes from running the same date.
+   - Order: the two GEFS configs run first. Each is uploaded and marked done straight away.
+   - NCMRWF configs: the job polls the NCMRWF portal for up to 20 min
+     (`NCMRWF_WAIT_MINUTES`). If the file isn't there yet, the configs stay pending for a
+     later pass.
+   - From the cutoff, `drywetcast_ncmrwf_cutoff_utc` = 14:00 UTC (19:30 IST), a pass makes
+     one last check. Missing NCMRWF configs are then marked `ncmrwf_unavailable`.
+   - A config that fails 3 times (`DRYWETCAST_MAX_ATTEMPTS`) is not retried.
+4. **Drive delivery.** The `drywetcast` sync rule (`drywetcast_drive_sync = true`) mirrors
+   each finished config, `output/drywetcast/<D>/<config>/`, to `<D>/<config>/` in the Drive
+   folder set by `drive_folder_id` in the dev `main.tf`. The date folders sit directly in
+   that folder. The sync job runs fire-and-forget, so a Drive failure never holds up a pass.
+
+Every new object under `intermediate/` in the common bucket, such as a done marker, also
+starts a workflow pass, through Pub/Sub and Eventarc. The scheduled passes cover everything
+else.
+
+### Schedule
+
+Every Cloud Scheduler job uses `time_zone = "UTC"`. IST is UTC+5:30.
+
+| Scheduler job | Cron (UTC) | UTC | IST | Purpose |
+|---------------|------------|-----|-----|---------|
+| `monsoon-dev-pipeline-trigger-early` | `*/5 7 * * *` | 07:00–07:55, every 5 min | 12:30–13:25 | Start the ensemble as soon as ECMWF 00z is published |
+| `monsoon-dev-pipeline-trigger` | `0 8-14 * * *` | 08:00–14:00, hourly | 13:30–19:30 | Main passes; the 14:00 pass makes the NCMRWF cutoff check |
+| `monsoon-dev-pipeline-trigger-ncmrwf-half` | `30 8-13 * * *` | 08:30–13:30, hourly | 14:00–19:00 | With the hourly passes, an NCMRWF poll can start every 30 min |
+| `monsoon-dev-delivery-check` | `0 10 * * *` | 10:00 | 15:30 | Logs `DELIVERY_LATE` if today's India ensemble marker is missing (`india_ensemble_deadline_utc`) |
+
+`scheduler_paused = true` pauses all of them. Workflow runs can still be started by hand.
+
+### Buckets and output paths
+
+`<D>` is the forecast date as `YYYYMMDDT00` (for example `20261014T00`), and `<YYYYMMDD>` is
+its first 8 characters.
+
+**Common bucket: `gs://monsoon-dev-common-<project>/`**
+
+| Path | Contents |
+|------|----------|
+| `ic/ecmwf/<D>/grib/` | ECMWF initial conditions |
+| `full_field/AIFS_ENS_v2/<D>/init_<D>.zarr` | Ensemble full field |
+| `intermediate/AIFS_ENS_v2_india_<D>_done` | Ensemble done for India |
+| `intermediate/drywetcast_india_<config>_<D>_done` | One DryWetCast config done |
+| `intermediate/drywetcast_india_<D>_done` | All four configs done |
+| `weights/drywetcast/subdistrict/v1/` | Subdistrict input bundle (below) |
+
+**India bucket: `gs://monsoon-dev-india-<project>/`**
+
+| Path | Contents |
+|------|----------|
+| `output/AIFS_ENS_v2/<D>/` | Ensemble post-processed products for India |
+| `output/AIFS_ENS_v2/<D>/AIFS_ENS_v2/drywetcast/init_<YYYYMMDD>T00.zarr` | DryWetCast input store |
+| `output/drywetcast/<D>/<config>/<YYYYMMDD>_00.png` | Forecast map |
+| `output/drywetcast/<D>/<config>/<YYYYMMDD>_00.npz` | Forecast data |
+| `output/drywetcast/<D>/<config>/<YYYYMMDD>_00_outlook.png` | Outlook map |
+| `output/drywetcast/<D>/<config>/<YYYYMMDD>_00_subdistrict.pkl` and `_subdistrict.png` | Subdistrict products |
+| `output/drywetcast/<D>/manifest.json` | Run summary per config, including subdistrict state |
+| `output/drywetcast/archive/<config>/<YYYYMMDD>_00.npz` | Per-config archive |
+| `drywetcast-state/<D>/claim.json`, `status.json` | DryWetCast claim, and per-config state and attempts |
+
+`<config>` is one of `gefs_reduced`, `gefs_full`, `ncmrwf_reduced` or `ncmrwf_full`.
+
+### Subdistrict bundle
+
+- **Input:** the bundle is at `gs://monsoon-dev-common-<project>/weights/drywetcast/subdistrict/v1/`
+  (`DRYWETCAST_SUBDISTRICT_GCS`).
+  - It must contain `subdistrict_manifest.tsv` plus the files DryWetCast's
+    `pipeline/subdistrict.py` requires at `22cdbe5`. These are `source_to_index.pkl`,
+    `target_to_index.pkl`, `weight_matrix.npy`, and the `Sub_districts_India_ESRI` and
+    `STATE_BOUNDARY` shapefiles (`.shp`, `.shx`, `.dbf`, `.prj`).
+  - The job copies the bundle once per run and checks every file against the manifest
+    before DryWetCast sees it.
+- **Output:** each config's `<YYYYMMDD>_00_subdistrict.pkl` and `.png` sit in
+  `output/drywetcast/<D>/<config>/` in the india bucket, and in `<D>/<config>/` on Drive.
+- **Failures don't stop delivery:**
+  - If the bundle fails to copy or verify, every config runs without it.
+  - If DryWetCast fails with the bundle, that config is rerun without it.
+  - Either way the job logs `DRYWETCAST_SUBDISTRICT_UNAVAILABLE` or
+    `DRYWETCAST_SUBDISTRICT_FAILED` at ERROR, and `manifest.json` records what happened
+    (`subdistrict_bundle`, `this_run.<config>.subdistrict`).
+
+### Alerts
+
+`enable_alerts = true` and `enable_delivery_alert = true` in dev. Alerts are emailed to
+`notification_emails` in the dev `main.tf`.
+
+| Policy | Fires on | Rate limit |
+|--------|----------|------------|
+| `[DEV] Monsoon Delivery Late` | Workflow log `DELIVERY_LATE` (the delivery check) or `BATCH_RETRY_CAP` (a Batch job used all its attempts) | 1 per hour |
+| `[DEV] DryWetCast Subdistrict Products Missing` | `DRYWETCAST_SUBDISTRICT_UNAVAILABLE` or `DRYWETCAST_SUBDISTRICT_FAILED` from the drywetcast job | 1 per hour |
+| `[DEV] Monsoon Sync Failing Repeatedly` | `SYNC_ITEMS_GAVE_UP` from the sync job (an item failed in its maximum number of executions) | 1 per hour |
+| `[DEV] Monsoon Pipeline Failure` | Any workflow log at ERROR or above | 1 per 5 min |
+| `[DEV] Cloud Run Job Failure` | A failed Cloud Run job execution (any job) | none set |
+
+`[PROD] Monsoon Pipeline Stale` exists only in prod.
+
+---
+
 ## Google Cloud Services Used
 
 | Service | Role |
@@ -29,14 +165,14 @@ Provisioned by OpenTofu in `terraform/`. Two environments share the same module 
 ```
 terraform/
   environments/
-    dev/main.tf       <- dev-specific variables (preemptible GPUs, 6h schedule, LOG_ALL_CALLS)
+    dev/main.tf       <- dev-specific variables (the India pilot; see Current India pilot above)
     prod/main.tf      <- production configuration
   modules/
     networking/       <- VPC, subnet, Cloud NAT, firewall rules
     storage/          <- GCS buckets, Artifact Registry, pipeline service account
     compute/          <- Cloud Run Jobs, IC checker service, Batch job template
     orchestration/    <- Cloud Workflows, Cloud Scheduler, Pub/Sub topics, workflow SA
-    monitoring/       <- Alerting (disabled in dev)
+    monitoring/       <- Alerting
 ```
 
 ### Buckets
@@ -91,7 +227,7 @@ latest.txt                                  <- date of last successfully complet
 **Staged static assets** (`weights/` prefix of the common bucket — no separate weights bucket)
 
 Read-only files uploaded once before the first run (see
-[terraform/README.md → Staging Static Assets](terraform/README.md#staging-static-assets) for the
+[terraform/README.md → Staging Static Assets](../terraform/README.md#staging-static-assets) for the
 upload commands). Grids and masks are baked into the container images, not staged here.
 
 ```
@@ -157,9 +293,9 @@ The workflow is defined in `terraform/modules/orchestration/workflow.yaml.tpl` a
 
 ### 1. Cloud Scheduler fires
 
-**Service: Cloud Scheduler** (`monsoon-{env}-trigger-india`)
+**Service: Cloud Scheduler** (`monsoon-{env}-pipeline-trigger`, plus any `extra_pipeline_schedules`)
 
-Runs on a cron schedule (`0 */6 * * *` in dev, more frequent in prod). Sends an HTTP POST to the Cloud Workflows Executions API:
+Runs on a cron schedule (see [Schedule](#schedule) for dev; `*/15 * * * *` in prod). Sends an HTTP POST to the Cloud Workflows Executions API:
 
 ```
 POST https://workflowexecutions.googleapis.com/v1/projects/.../workflows/monsoon-{env}-pipeline/executions
@@ -168,11 +304,11 @@ POST https://workflowexecutions.googleapis.com/v1/projects/.../workflows/monsoon
 Body:
 ```json
 {
-  "argument": "{\"region\": \"india\"}"
+  "argument": "{}"
 }
 ```
 
-`date` and `action` are intentionally omitted - the workflow detects the latest date itself. Authentication uses the workflow SA's OAuth2 token with scope `cloud-platform`.
+`region`, `date` and `action` are intentionally omitted - one execution handles every region and the workflow detects the latest date itself. Authentication uses the workflow SA's OAuth2 token with scope `cloud-platform`.
 
 ### 2. init
 
@@ -431,13 +567,13 @@ Cloud Workflows: monsoon-{env}-pipeline
 
 | Setting | Dev | Prod |
 |---------|-----|------|
-| Schedule | Every 6 hours | Configurable (default every 15 min) |
+| Schedule | See [Schedule](#schedule) | Every 15 min |
 | Workflow call log level | `LOG_ALL_CALLS` (full execution history in console) | `LOG_NONE` |
-| GPU provisioning | SPOT (preemptible) | STANDARD |
+| GPU provisioning | SPOT (preemptible), except AIFS_ENS_v2 on STANDARD | STANDARD |
 | Cloud Run Job deletion protection | Off | On |
 | GCS retention | 30 days (raw/intermediate) | Configurable with NEARLINE archival |
 | GCS versioning | Disabled | Enabled |
-| Monitoring alerts | Disabled | Enabled |
+| Monitoring alerts | Enabled, including the delivery alert | Enabled |
 | Force-destroy data buckets | Yes | No |
 
 ---
