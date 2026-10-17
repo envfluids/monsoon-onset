@@ -46,7 +46,9 @@ off india's `model_diagnostics` and ethiopia's `blend` and `model_diagnostics`.
    - Order: the two GEFS configs run first. Each is uploaded and marked done straight away.
    - NCMRWF configs: the job polls the NCMRWF portal for up to 20 min
      (`NCMRWF_WAIT_MINUTES`). If the file isn't there yet, the configs stay pending for a
-     later pass.
+     later pass. A failed download is logged as a WARNING, its partial files are cleared,
+     and it is retried once after 60 s and then at each 5-min poll. The configs fail only if
+     the download is still failing when the window ends.
    - From the cutoff, `drywetcast_ncmrwf_cutoff_utc` = 14:00 UTC (19:30 IST), a pass makes
      one last check. Missing NCMRWF configs are then marked `ncmrwf_unavailable`.
    - A config that fails 3 times (`DRYWETCAST_MAX_ATTEMPTS`) is not retried.
