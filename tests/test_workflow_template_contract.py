@@ -1098,6 +1098,17 @@ class EnsembleLadderContractTest(unittest.TestCase):
         )
         self.assertIn('default     = "*/2 7-9 * * *"', variable)
 
+    def test_scheduler_jobs_leave_default_retries_unset(self):
+        # retry_count = 0 is Cloud Scheduler's default: the API returns no
+        # retryConfig for it, so the block shows as a change on every plan.
+        job = hcl_block(
+            self.orchestration_main,
+            'resource "google_cloud_scheduler_job" "ensemble_ladder" {',
+        )
+        self.assertNotIn("retry_config {", job)
+        self.assertIn("default is no retries", job)
+        self.assertNotRegex(self.orchestration_main, r"retry_count\s*=\s*0\b")
+
     def test_pipeline_state_can_read_batch_jobs_in_dev_only(self):
         grant = hcl_block(
             self.storage,
