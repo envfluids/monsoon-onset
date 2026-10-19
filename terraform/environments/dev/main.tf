@@ -145,7 +145,10 @@ variable "drywetcast_ncmrwf_cutoff_utc" {
 variable "india_ensemble_deadline_utc" {
   description = "UTC time (HH:MM) by which today's India AIFS ensemble done marker should exist; a check at this time logs DELIVERY_LATE (alerted) if it doesn't."
   type        = string
-  default     = "10:00"
+  # The ensemble marker normally lands ~08:05 (2 GPUs; Oct 14: 08:04:46) and the
+  # GEFS products ~4-6 min later, so a check at 08:25 still leaves a few minutes'
+  # warning before the 14:00 IST (08:30 UTC) target.
+  default = "08:25"
 
   validation {
     condition     = can(regex("^([01][0-9]|2[0-3]):[0-5][0-9]$", var.india_ensemble_deadline_utc))
