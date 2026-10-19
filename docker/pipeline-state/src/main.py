@@ -7,6 +7,8 @@ a forecast date (or latest 00z if not supplied):
   GET /state                                     discover latest 00z per IC source
   GET /state?date=20260430T00                    use the supplied date directly
   GET /state?lookback_days=7                     widen the discovery window
+  GET /ensemble_ladder?model=AIFS_ENS_v2&date=20260513T00
+                                                 next fallback-ladder action
   GET /healthz                                   liveness probe
 
 Response shape (sketch — actual contents depend on the configured regions):
@@ -115,6 +117,21 @@ DRYWETCAST_CLAIM_MAX_AGE_SECONDS = int(
     os.environ.get("DRYWETCAST_CLAIM_MAX_AGE_SECONDS", str(75 * 60))
 )
 DRYWETCAST_MAX_ATTEMPTS = int(os.environ.get("DRYWETCAST_MAX_ATTEMPTS", "3"))
+
+# Fallback ladder for Batch models (rendered by Terraform; {} = off). Per model:
+#   {"project_id", "primary_region", "marker_region", "after_minutes", "force",
+#    "steps": [{"name": "fb2", "region": "us-central1"}, ...]}
+# The primary job and each step race: the first job to start claims the date's
+# winner object (docker/aifs-ens-v2/src/main.py) and every other job is cancelled.
+ENSEMBLE_LADDER = json.loads(os.environ.get("ENSEMBLE_LADDER", "{}") or "{}")
+BATCH_API = "https://batch.googleapis.com/v1"
+BATCH_FINISHED_STATES = {
+    "SUCCEEDED",
+    "FAILED",
+    "CANCELLED",
+    "CANCELLATION_IN_PROGRESS",
+    "DELETION_IN_PROGRESS",
+}
 
 GCS_COMMON_BUCKET = os.environ.get("GCS_COMMON_BUCKET", "")
 REGION_BUCKETS = json.loads(os.environ.get("GCS_REGION_BUCKETS", "{}"))
@@ -522,6 +539,226 @@ def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
+# ---------------------------------------------------------------------------
+# Fallback ladder (Batch models)
+# ---------------------------------------------------------------------------
+
+_batch_session = None
+
+
+def batch_session():
+    global _batch_session
+    if _batch_session is None:
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        credentials, _ = google.auth.default(
+            scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        _batch_session = AuthorizedSession(credentials)
+    return _batch_session
+
+
+def batch_get_job(project_id: str, region: str, job_id: str) -> dict | None:
+    """The Batch job, or None if it doesn't exist (needs batch.jobs.get)."""
+    url = f"{BATCH_API}/projects/{project_id}/locations/{region}/jobs/{job_id}"
+    response = batch_session().get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    return response.json()
+
+
+def ladder_primary_job_id(model: str, date: str) -> str:
+    # Same id the workflow gives the model's Batch job.
+    return f"{model.lower().replace('_', '-')}-{date.replace('T', '-')}"
+
+
+def ladder_state_prefix(model: str, date: str) -> str:
+    # Outside intermediate/, so these objects never trigger the workflow.
+    return f"batch-state/{model}/{date}"
+
+
+def ladder_winner_path(model: str, date: str) -> str:
+    return f"{ladder_state_prefix(model, date)}/winner"
+
+
+def ladder_won_logged_path(model: str, date: str) -> str:
+    return f"{ladder_state_prefix(model, date)}/won_logged"
+
+
+def parse_batch_time(value: object) -> datetime | None:
+    """Batch timestamps carry nanoseconds; datetime keeps microseconds."""
+    if not isinstance(value, str) or not value:
+        return None
+    text = value.replace("Z", "+00:00")
+    if "." in text:
+        head, rest = text.split(".", 1)
+        digits = "".join(ch for ch in rest if ch.isdigit())
+        text = f"{head}.{digits[:6].ljust(6, '0')}{rest[len(digits) :]}"
+    return parse_status_timestamp(text)
+
+
+def batch_job_state(job: dict) -> str:
+    return str(job.get("status", {}).get("state", ""))
+
+
+def batch_job_started(job: dict) -> bool:
+    """True once the job has run at all (a VM picked it up)."""
+    if batch_job_state(job) in {"RUNNING", "SUCCEEDED"}:
+        return True
+    return any(
+        "to RUNNING" in str(event.get("description", ""))
+        for event in job.get("status", {}).get("statusEvents", [])
+    )
+
+
+def batch_job_finished(job: dict) -> bool:
+    return batch_job_state(job) in BATCH_FINISHED_STATES
+
+
+def ensemble_ladder_decision(model: str, date: str, now: datetime) -> dict:
+    """The one next action of the fallback ladder for model/date.
+
+    decision is "none", "submit" (start `step`) or "cancel" (the jobs in
+    `cancel`, each re-checked by uid before the workflow cancels it).
+    winner_step is the step whose job owns the date ("primary", a step name,
+    or "" before any job has started); normal passes resubmit only that job.
+    """
+    cfg = ENSEMBLE_LADDER.get(model)
+    result = {
+        "model": model,
+        "date": date,
+        "decision": "none",
+        "reason": "",
+        "step": "",
+        "force_claim": False,
+        "cancel": [],
+        "log_won": False,
+        "winner": "",
+        "winner_step": "",
+        "ladder_active": False,
+        "primary_attempt": "1",
+        "regions": [],
+        "jobs": {},
+    }
+    if not cfg:
+        result["reason"] = "not_configured"
+        return result
+
+    project_id = cfg["project_id"]
+    primary_id = ladder_primary_job_id(model, date)
+    entries = [("primary", cfg["primary_region"], primary_id)] + [
+        (step["name"], step["region"], f"{primary_id}-{step['name']}")
+        for step in cfg.get("steps", [])
+    ]
+    jobs = {}
+    for name, region, job_id in entries:
+        job = batch_get_job(project_id, region, job_id)
+        jobs[name] = job
+        created = parse_batch_time(job.get("createTime")) if job else None
+        result["jobs"][name] = {
+            "job_id": job_id,
+            "region": region,
+            "state": batch_job_state(job) if job else "ABSENT",
+            "started": bool(job) and batch_job_started(job),
+            "waited_minutes": round((now - created).total_seconds() / 60, 1)
+            if created
+            else None,
+        }
+
+    primary = jobs["primary"]
+    if primary is None:
+        result["reason"] = "primary_not_submitted"
+        return result
+    result["primary_attempt"] = str(primary.get("labels", {}).get("attempt", "1"))
+    result["ladder_active"] = any(
+        jobs[name] is not None and not batch_job_finished(jobs[name])
+        for name, _, _ in entries[1:]
+    )
+
+    claim = read_gcs_json(GCS_COMMON_BUCKET, ladder_winner_path(model, date))
+    winner = str(claim.get("job_id", ""))
+    winner_step = next((name for name, _, job_id in entries if job_id == winner), "")
+    result["winner"] = winner
+    result["winner_step"] = winner_step
+    marker_present = gcs_object_exists(
+        GCS_COMMON_BUCKET, model_marker_path(model, cfg["marker_region"], date)
+    )
+    # Regions a fallback job should run: those still without their marker.
+    result["regions"] = [
+        region
+        for region in _regions_for_model(model)
+        if not gcs_object_exists(
+            GCS_COMMON_BUCKET, model_marker_path(model, region, date)
+        )
+    ]
+
+    if winner or marker_present:
+        result["cancel"] = [
+            {
+                "step": name,
+                "name": jobs[name]["name"],
+                "uid": jobs[name].get("uid", ""),
+            }
+            for name, _, job_id in entries
+            if jobs[name] is not None
+            and job_id != winner
+            and not batch_job_finished(jobs[name])
+        ]
+        result["log_won"] = bool(
+            winner_step
+            and winner_step != "primary"
+            and not gcs_object_exists(
+                GCS_COMMON_BUCKET, ladder_won_logged_path(model, date)
+            )
+        )
+        result["decision"] = "cancel" if result["cancel"] else "none"
+        result["reason"] = "winner_claimed" if winner else "marker_present"
+        return result
+
+    if any(
+        job is not None and batch_job_started(job) and not batch_job_finished(job)
+        for job in jobs.values()
+    ):
+        # Its container claims within seconds; the next check cancels the rest.
+        result["reason"] = "started_awaiting_claim"
+        return result
+    if not any(
+        job is not None and not batch_job_finished(job) for job in jobs.values()
+    ):
+        # Nothing queued: normal passes resubmit the primary (retry cap applies).
+        result["reason"] = "no_queued_job"
+        return result
+
+    force = str(cfg.get("force", "") or "")
+    if force:
+        if jobs.get(force, "absent") is None:
+            result.update(
+                decision="submit", step=force, force_claim=True, reason="forced"
+            )
+        else:
+            result["reason"] = "forced_step_submitted"
+        return result
+
+    last_created = None
+    for name, _, _ in entries:
+        job = jobs[name]
+        if job is None:
+            if last_created is None:
+                result["reason"] = "previous_step_without_create_time"
+                return result
+            waited = (now - last_created).total_seconds() / 60
+            if waited >= float(cfg["after_minutes"]):
+                result.update(decision="submit", step=name, reason="stuck")
+            else:
+                result["reason"] = f"waiting_for_{name}"
+            return result
+        last_created = parse_batch_time(job.get("createTime"))
+    result["reason"] = "ladder_exhausted"
+    return result
+
+
 def drywetcast_ncmrwf_cutoff(date: str) -> datetime:
     hour, minute = (int(part) for part in DRYWETCAST_NCMRWF_CUTOFF_UTC.split(":"))
     day = datetime.strptime(date[:8], "%Y%m%d").replace(tzinfo=timezone.utc)
@@ -795,6 +1032,17 @@ def compute_state(requested_date: str, lookback_days: int, today: datetime) -> d
             "dispatch_status": dispatch_status,
             "regions": region_results,
         }
+        if model in ENSEMBLE_LADDER and model_date:
+            # Visibility only: the decision comes from /ensemble_ladder.
+            claim = read_gcs_json(
+                GCS_COMMON_BUCKET, ladder_winner_path(model, model_date)
+            )
+            models_state[model]["ladder"] = {
+                "winner": claim.get("job_id", ""),
+                "steps": [
+                    step["name"] for step in ENSEMBLE_LADDER[model].get("steps", [])
+                ],
+            }
 
     now = utc_now()
     per_region = {}
@@ -1412,6 +1660,9 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/healthz":
             self.respond(200, {"status": "ok"})
             return
+        if parsed.path == "/ensemble_ladder":
+            self.respond_ladder(parse_qs(parsed.query))
+            return
         if parsed.path != "/state":
             self.respond(404, {"error": "not_found"})
             return
@@ -1431,6 +1682,23 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         self.respond(200, state)
+
+    def respond_ladder(self, query: dict[str, list[str]]) -> None:
+        try:
+            model = query.get("model", [""])[0]
+            date = parse_date(query)
+            if not model or not date:
+                raise ValueError("model and date are required")
+            decision = ensemble_ladder_decision(model, date, utc_now())
+        except ValueError as exc:
+            self.respond(400, {"error": "bad_request", "detail": str(exc)})
+            return
+        except Exception as exc:
+            logger.exception("ensemble_ladder_failed")
+            self.respond(500, {"error": "internal_error", "detail": str(exc)})
+            return
+        logger.info("ensemble_ladder %s", json.dumps(decision, sort_keys=True))
+        self.respond(200, decision)
 
     def log_message(self, fmt: str, *args: object) -> None:
         logger.info("%s - %s", self.address_string(), fmt % args)

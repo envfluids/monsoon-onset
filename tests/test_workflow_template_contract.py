@@ -81,7 +81,7 @@ class WorkflowTemplateContractTest(unittest.TestCase):
 
     def test_batch_jobs_are_private_idempotent_and_retryable(self):
         self.assertInOrder(
-            "url: $${\"https://batch.googleapis.com/v1/projects/${project_id}/locations/${region}/jobs?jobId=\" + job_id}",
+            'url: $${"https://batch.googleapis.com/v1/projects/${project_id}/locations/" + batch_region + "/jobs?jobId=" + job_id}',
             "auth:\n              type: OAuth2",
             "maxRetryCount: 3",
             "serviceAccount:\n                  email: \"${pipeline_sa}\"",
@@ -259,7 +259,15 @@ class PerModelEnvAndRegionModelsContractTest(unittest.TestCase):
         )
         self.assertIn(loop, env_block)
         self.assertLess(env_block.index("UPLOAD_FULL_FIELD"), env_block.index(loop))
-        self.assertEqual(self.workflow.count("batch_model_env"), 1)
+        # Plus the fallback ladder's primary and step jobs, which get the same env.
+        ladder_loop = (
+            "%{ for name, value in try(batch_model_env[model], {}) ~}\n"
+            "            ${name}: ${jsonencode(value)}\n"
+            "%{ endfor ~}\n"
+        )
+        ladder = self.workflow.split("ladder_submit_${model}:", 1)[1]
+        self.assertEqual(ladder.count(ladder_loop), 2)
+        self.assertEqual(self.workflow.count("batch_model_env"), 3)
 
     def test_orchestration_module_passes_batch_model_env_with_safe_default(self):
         self.assertIn(
@@ -596,7 +604,7 @@ class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
         self.assertIn(
             'tonumber(split(":", var.india_ensemble_deadline_utc)[1])', self.dev
         )
-        self.assertIn("enable_delivery_alert = true", self.dev)
+        self.assertRegex(self.dev, r"enable_delivery_alert\s+= true")
         self.assertIn(
             "default     = 3",
             self.dev.split('variable "ensemble_max_attempts" {', 1)[1],
@@ -828,6 +836,301 @@ class DriveSyncContractTest(unittest.TestCase):
                     self.assertIn(f'textPayload:"{token}"', block)
                 self.assertIn('period = "3600s"', block)
                 self.assertIn("notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]", block)
+
+
+
+class EnsembleLadderContractTest(unittest.TestCase):
+    """The fallback ladder: pipeline-state decides, the workflow acts, jobs claim."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.orchestration_main = (ORCHESTRATION_PATH / "main.tf").read_text()
+        cls.orchestration_vars = (ORCHESTRATION_PATH / "variables.tf").read_text()
+        cls.monitoring = (cls.ROOT / "terraform/modules/monitoring/main.tf").read_text()
+        cls.storage = (cls.ROOT / "terraform/modules/storage/main.tf").read_text()
+        cls.storage_vars = (
+            cls.ROOT / "terraform/modules/storage/variables.tf"
+        ).read_text()
+        cls.pipeline_state = (
+            cls.ROOT / "docker/pipeline-state/src/main.py"
+        ).read_text()
+        cls.ens_wrapper = (cls.ROOT / "docker/aifs-ens-v2/src/main.py").read_text()
+        cls.ladder = cls.workflow.split("ensemble_ladder_${model}:\n", 1)[1].split(
+            "\nladder_submit_${model}:", 1
+        )[0]
+        cls.ladder_submit = cls.workflow.split("ladder_submit_${model}:\n", 1)[1].split(
+            "\npipeline_state:", 1
+        )[0]
+        cls.submit = cls.workflow.split("submit_batch_stage:\n  params:", 1)[1].split(
+            "\npipeline_state:", 1
+        )[0]
+
+    def assertOrdered(self, text, *snippets):
+        positions = [text.index(snippet) for snippet in snippets]
+        self.assertEqual(positions, sorted(positions), snippets)
+
+    def test_ladder_is_rendered_only_for_configured_models(self):
+        self.assertIn(
+            "%{ for model, ladder in ensemble_ladder ~}\n# ----", self.workflow
+        )
+        self.assertIn(
+            "%{ if length(ensemble_ladder) > 0 ~}\n    - maybe_check_ensemble:",
+            self.workflow,
+        )
+        self.assertIn("%{ if contains(keys(ensemble_ladder), model) ~}", self.workflow)
+        self.assertIn(
+            "if contains(local.batch_models_in_use, model)", self.orchestration_main
+        )
+
+    def test_check_action_only_runs_the_ladder(self):
+        block = self.workflow.split("- check_ensemble_init:", 1)[1].split(
+            "- return_ensemble_checked:", 1
+        )[0]
+        self.assertIn("call: ensemble_ladder_${model}", block)
+        self.assertIn("run_primary: false", block)
+        self.assertNotIn("submit_ready_work", block)
+        self.assertNotIn("drywetcast", block)
+        self.assertIn("next: check_ensemble_init", self.workflow)
+        self.assertIn('condition: $${action == "check_ensemble"}', self.workflow)
+
+    def test_normal_passes_resubmit_only_the_job_that_owns_the_date(self):
+        self.assertIn(
+            "call: ensemble_ladder_${model}\n"
+            "                      args:\n"
+            "                        date: $${${model}_action.date}\n"
+            "                        regions: $${${model}_action.regions}\n"
+            "                        run_primary: true",
+            self.workflow,
+        )
+        self.assertOrdered(
+            self.ladder,
+            'condition: $${run_primary and ladder.winner_step != ""}',
+            "next: resubmit_ladder_winner",
+            "condition: $${run_primary and not ladder.ladder_active}",
+            "next: submit_ladder_primary",
+        )
+        # The primary is never resubmitted while a fallback is queued or owns the date.
+        self.assertEqual(self.ladder.count('step: "primary"'), 1)
+
+    def test_decision_comes_from_pipeline_state(self):
+        self.assertIn(
+            'url: $${"${pipeline_state_url}/ensemble_ladder?model=${model}&date=" + date}',
+            self.ladder,
+        )
+        self.assertIn("type: OIDC", self.ladder)
+        # An old pipeline-state image (404) falls back to today's primary-only submit.
+        fetch = self.ladder.split("- fetch_ladder:", 1)[1].split("- read_ladder:", 1)[0]
+        self.assertIn('condition: $${default(map.get(e, "code"), 0) != 404}', fetch)
+        self.assertIn("raise: $${e}", fetch)
+        self.assertIn("ENSEMBLE_LADDER_UNAVAILABLE", fetch)
+        self.assertIn("ladder_active: false", fetch)
+        self.assertIn('winner_step: ""', fetch)
+        self.assertIn('if parsed.path == "/ensemble_ladder":', self.pipeline_state)
+
+    def test_losers_are_cancelled_only_after_a_uid_recheck(self):
+        self.assertOrdered(
+            self.ladder,
+            "- cancel_ladder_losers:",
+            "in: $${ladder.cancel}",
+            "call: googleapis.batch.v1.projects.locations.jobs.get",
+            "loser_job.uid == loser.uid",
+            '$${"https://batch.googleapis.com/v1/" + loser.name + ":cancel"}',
+            "ENSEMBLE_LADDER_CANCELLED",
+        )
+        self.assertNotIn("jobs.delete", self.ladder)
+        self.assertIn('loser_job.status.state == "QUEUED"', self.ladder)
+        self.assertIn("ENSEMBLE_LADDER_CANCEL_FAILED", self.ladder)
+
+    def test_claims_are_create_only(self):
+        for step in ("- write_forced_ladder_claim:", "- mark_ladder_won_logged:"):
+            with self.subTest(step=step):
+                block = self.ladder.split(step, 1)[1].split("\n    - ", 1)[0]
+                self.assertIn("ifGenerationMatch: 0", block)
+                self.assertIn("== 412", block)
+        self.assertIn('name: $${claim_prefix + "/winner"}', self.ladder)
+        self.assertIn('name: $${claim_prefix + "/won_logged"}', self.ladder)
+        # The forced claim is written before the forced step is submitted.
+        self.assertOrdered(
+            self.ladder, "- write_forced_ladder_claim:", "- submit_ladder_step:"
+        )
+
+    def test_one_claim_path_everywhere(self):
+        self.assertIn('claim_prefix: $${"batch-state/${model}/" + date}', self.ladder)
+        self.assertIn(
+            'claim_object: $${"batch-state/${model}/" + date + "/winner"}',
+            self.ladder_submit,
+        )
+        self.assertIn('return f"batch-state/{model}/{date}"', self.pipeline_state)
+        self.assertIn(
+            'return f"{ladder_state_prefix(model, date)}/winner"', self.pipeline_state
+        )
+        self.assertIn('os.environ.get("ENSEMBLE_CLAIM_OBJECT", "")', self.ens_wrapper)
+
+    def test_every_ladder_job_claims_before_running(self):
+        self.assertEqual(
+            self.ladder_submit.count("ENSEMBLE_CLAIM_OBJECT: $${claim_object}"), 2
+        )
+        self.assertIn("LADDER_JOB_ID: $${primary_job_id}\n", self.ladder_submit)
+        self.assertIn(
+            'LADDER_JOB_ID: $${primary_job_id + "-${step.name}"}', self.ladder_submit
+        )
+        main = self.ens_wrapper.split("def main(", 1)[1]
+        self.assertOrdered(
+            main,
+            "if not claim_ladder_win(common_bucket, model, date):",
+            "_setup_directories(regions, model)",
+            "_download_inputs(date, model, common_bucket)",
+        )
+        self.assertIn("if_generation_match=0", self.ens_wrapper)
+        # Without GCS the primary runs and fallbacks exit, so the container's
+        # primary id must be the workflow's.
+        self.assertIn(
+            '$${"${replace(lower(model), "_", "-")}-" + '
+            'text.replace_all(date, "T", "-")}',
+            self.ladder_submit,
+        )
+        self.assertIn(
+            "primary_job_id = f\"{model.lower().replace('_', '-')}-"
+            "{date.replace('T', '-')}\"",
+            self.ens_wrapper,
+        )
+
+    def test_step_jobs_use_their_own_shape_region_and_labels(self):
+        step = self.ladder_submit.split("- submit_ladder_job_${step.name}:", 1)[1]
+        self.assertIn('job_id: $${primary_job_id + "-${step.name}"}', step)
+        self.assertIn('machine_type: "${step.machine_type}"', step)
+        self.assertIn("count = step.gpu_count", step)
+        self.assertIn('batch_region: "${step.region}"', step)
+        self.assertIn('batch_subnet: "${step.subnet}"', step)
+        self.assertIn('ladder-step: "${step.name}"', step)
+        self.assertIn("ladder-of: $${primary_job_id}", step)
+        # A stockout isn't a failed attempt: steps inherit the primary's attempt.
+        self.assertIn("initial_attempt: $${attempt}", step)
+        self.assertIn("attempt: $${int(ladder.primary_attempt)}", self.ladder)
+        # No full-field mirror (and no bucket mount) unless the step keeps it.
+        self.assertIn(
+            '${step.upload_full_field && contains(full_field_models, model) ? "true" : "false"}',
+            step,
+        )
+        self.assertIn("volumes: ${step.upload_full_field && batch_config", step)
+
+    def test_submit_batch_stage_defaults_are_todays_job(self):
+        self.assertIn('- batch_region: "${region}"', self.submit)
+        self.assertIn('- batch_subnet: "${batch_config.vpc_subnet}"', self.submit)
+        self.assertIn("- initial_attempt: 1", self.submit)
+        self.assertIn("- extra_labels: {}", self.submit)
+        self.assertIn('- $${"regions/" + batch_region}', self.submit)
+        self.assertIn("subnetwork: $${batch_subnet}", self.submit)
+        self.assertIn("labels: $${batch_labels}", self.submit)
+        # The attempt label follows every (re)create.
+        self.assertEqual(
+            self.submit.count("- batch_labels.attempt: $${string(attempt)}"), 2
+        )
+        self.assertNotIn('"regions/${region}"', self.workflow)
+
+    def test_fallback_logs_feed_the_fallback_alert(self):
+        self.assertIn("ENSEMBLE_FALLBACK_SUBMITTED ${model}", self.ladder)
+        self.assertIn("ENSEMBLE_FALLBACK_WON ${model}", self.ladder)
+        self.assertIn('condition: $${step_submit.status == "created"}', self.ladder)
+        policy = hcl_block(
+            self.monitoring,
+            'resource "google_monitoring_alert_policy" "ensemble_fallback" {',
+        )
+        self.assertIn(
+            "count = var.enable_alerts && var.enable_ensemble_fallback_alert ? 1 : 0",
+            policy,
+        )
+        self.assertIn(
+            '(textPayload:"ENSEMBLE_FALLBACK_SUBMITTED" OR textPayload:"ENSEMBLE_FALLBACK_WON")',
+            policy,
+        )
+        self.assertIn('period = "300s"', policy)
+        self.assertRegex(self.dev, r"enable_ensemble_fallback_alert\s+= true")
+
+    def test_claim_unavailable_feeds_the_fallback_alert(self):
+        self.assertEqual(
+            self.ens_wrapper.count('"ENSEMBLE_LADDER_CLAIM_UNAVAILABLE gs://'), 2
+        )
+        policy = hcl_block(
+            self.monitoring,
+            'resource "google_monitoring_alert_policy" "ensemble_fallback" {',
+        )
+        self.assertIn('combiner     = "OR"', policy)
+        condition = policy.split('display_name = "Ladder claim unavailable"', 1)[1]
+        condition = condition.split("EOT\n", 2)[1]
+        # The token comes from the Batch job's container log, not the workflow.
+        self.assertIn('resource.type="batch.googleapis.com/Job"', condition)
+        self.assertIn('textPayload:"ENSEMBLE_LADDER_CLAIM_UNAVAILABLE"', condition)
+        self.assertNotIn("severity", condition)
+        documentation = policy.split("documentation {", 1)[1]
+        self.assertIn("ENSEMBLE_LADDER_CLAIM_UNAVAILABLE", documentation)
+
+    def test_two_minute_check_schedule(self):
+        job = hcl_block(
+            self.orchestration_main,
+            'resource "google_cloud_scheduler_job" "ensemble_ladder" {',
+        )
+        self.assertIn("count = length(var.ensemble_ladder) > 0 ? 1 : 0", job)
+        self.assertIn('argument = jsonencode({ action = "check_ensemble" })', job)
+        self.assertIn("paused      = var.scheduler_paused", job)
+        variable = hcl_block(
+            self.orchestration_vars, 'variable "ensemble_ladder_schedule" {'
+        )
+        self.assertIn('default     = "*/2 7-9 * * *"', variable)
+
+    def test_pipeline_state_can_read_batch_jobs_in_dev_only(self):
+        grant = hcl_block(
+            self.storage,
+            'resource "google_project_iam_member" "pipeline_batch_job_viewer" {',
+        )
+        self.assertIn('role    = "roles/batch.jobsViewer"', grant)
+        self.assertIn("count = var.grant_pipeline_batch_job_viewer ? 1 : 0", grant)
+        self.assertIn(
+            "default     = false",
+            hcl_block(
+                self.storage_vars, 'variable "grant_pipeline_batch_job_viewer" {'
+            ),
+        )
+        self.assertIn("grant_pipeline_batch_job_viewer = true", self.dev)
+
+    def test_dev_ladder_is_fb2_on_one_gpu_after_ten_minutes(self):
+        ladder = hcl_block(self.dev, "locals {\n  ensemble_ladder = {")
+        self.assertIn("after_minutes = var.ensemble_ladder_after_minutes", ladder)
+        wait = hcl_block(self.dev, 'variable "ensemble_ladder_after_minutes" {')
+        self.assertIn("default     = 10", wait)
+        self.assertIn("var.ensemble_ladder_after_minutes >= 1", wait)
+        self.assertIn('marker_region = "india"', ladder)
+        self.assertIn('name              = "fb2"', ladder)
+        self.assertIn('machine_type      = "a2-highgpu-1g"', ladder)
+        self.assertIn("gpu_count         = 1", ladder)
+        self.assertIn("region            = var.region", ladder)
+        self.assertIn("upload_full_field = true", ladder)
+        self.assertIn("force         = var.ensemble_ladder_force", ladder)
+        force = hcl_block(self.dev, 'variable "ensemble_ladder_force" {')
+        self.assertIn('default     = ""', force)
+        self.assertIn("ensemble_ladder       = local.ensemble_ladder", self.dev)
+        self.assertIn("ENSEMBLE_LADDER = jsonencode({", self.dev)
+
+    def test_ladder_variable_defaults_off_and_is_validated(self):
+        variable = hcl_block(self.orchestration_vars, 'variable "ensemble_ladder" {')
+        self.assertIn("default = {}", variable)
+        self.assertIn('regex("^fb[0-9]$", step.name)', variable)
+        self.assertIn("ladder.after_minutes >= 1", variable)
+
+    def test_prod_has_no_ladder(self):
+        for name in (
+            "ensemble_ladder",
+            "ENSEMBLE_LADDER",
+            "grant_pipeline_batch_job_viewer",
+            "enable_ensemble_fallback_alert",
+        ):
+            with self.subTest(name=name):
+                self.assertNotIn(name, self.prod)
 
 
 if __name__ == "__main__":

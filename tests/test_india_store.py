@@ -14,8 +14,15 @@ import click
 import dask.array as da
 import numpy as np
 import pandas as pd
+import requests
 import xarray as xr
 import zarr
+from google.api_core.exceptions import (
+    Forbidden,
+    InternalServerError,
+    ServiceUnavailable,
+    TooManyRequests,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AIFS_UTILS = REPO_ROOT / "AIFS" / "utils"
@@ -506,6 +513,24 @@ class RealDataTest(unittest.TestCase):
         np.testing.assert_allclose(daily[:, 0], np.clip(d1, 0, None), rtol=1e-6)
 
 
+class PreconditionFailedStub(Exception):
+    pass
+
+
+def install_api_core_exceptions_stub():
+    # Other test modules may have stubbed google.api_core.exceptions already
+    # (with NotFound only); the wrapper also imports PreconditionFailed.
+    api_core = sys.modules.setdefault(
+        "google.api_core", types.ModuleType("google.api_core")
+    )
+    exceptions = sys.modules.setdefault(
+        "google.api_core.exceptions", types.ModuleType("google.api_core.exceptions")
+    )
+    if not hasattr(exceptions, "PreconditionFailed"):
+        exceptions.PreconditionFailed = PreconditionFailedStub
+    api_core.exceptions = exceptions
+
+
 def load_ens_wrapper():
     google_module = sys.modules.setdefault("google", types.ModuleType("google"))
     cloud_module = sys.modules.setdefault(
@@ -517,6 +542,7 @@ def load_ens_wrapper():
     storage_module.Client = object
     cloud_module.storage = storage_module
     google_module.cloud = cloud_module
+    install_api_core_exceptions_stub()
 
     module_name = "aifs_ens_wrapper_under_test"
     sys.modules.pop(module_name, None)
@@ -527,6 +553,189 @@ def load_ens_wrapper():
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
+
+
+class FakeClaimBlob:
+    """A GCS object with create-only (if_generation_match=0) semantics.
+
+    Each request first pops the next entry of `faults`, if any: an exception
+    to raise, or ("after_write", exc) for a write that lands but whose
+    response is lost.
+    """
+
+    def __init__(self, store, name, precondition_failed, faults):
+        self.store = store
+        self.name = name
+        self.precondition_failed = precondition_failed
+        self.faults = faults
+
+    def _fault(self):
+        return self.faults.pop(0) if self.faults else None
+
+    def upload_from_string(
+        self, data, content_type=None, if_generation_match=None, timeout=None, retry=0
+    ):
+        assert retry is None  # the wrapper's own attempts are the only retries
+        fault = self._fault()
+        if isinstance(fault, Exception):
+            raise fault
+        if if_generation_match == 0 and self.name in self.store:
+            raise self.precondition_failed(self.name)
+        self.store[self.name] = data
+        if fault is not None:
+            raise fault[1]
+
+    def download_as_text(self, timeout=None, retry=0):
+        assert retry is None
+        fault = self._fault()
+        if fault is not None:
+            raise fault
+        return self.store[self.name]
+
+
+class EnsWrapperLadderClaimTest(unittest.TestCase):
+    CLAIM = "batch-state/AIFS_ENS_v2/20261015T00/winner"
+
+    def run_job(self, job_id, store, claim_object=CLAIM, faults=None, sleeps=None):
+        """Run main() as Batch job `job_id`; returns the steps that ran."""
+        module = load_ens_wrapper()
+        calls = []
+        faults = [] if faults is None else faults
+        sleeps = [] if sleeps is None else sleeps
+        bucket = mock.Mock()
+        bucket.blob.side_effect = lambda name: FakeClaimBlob(
+            store, name, module.PreconditionFailed, faults
+        )
+        client = mock.Mock()
+        client.bucket.return_value = bucket
+        patches = {
+            "_client": lambda: client,
+            "_setup_directories": lambda *a: calls.append("setup"),
+            "_download_inputs": lambda *a: calls.append("download"),
+            "_zarr_mirror_target": lambda *a: None,
+            "_run_inference": lambda *a: calls.append("inference"),
+            "_upload_full_field": lambda *a: None,
+            "_run_india_store": lambda *a: calls.append("india_store"),
+            "_upload_region_outputs": lambda *a: calls.append("upload"),
+            "_write_completion_marker": lambda *a: calls.append("marker"),
+        }
+        env = {"LADDER_JOB_ID": job_id}
+        if claim_object:
+            env["ENSEMBLE_CLAIM_OBJECT"] = claim_object
+        with (
+            mock.patch.dict("os.environ", env),
+            mock.patch.multiple(module, **patches),
+            mock.patch.object(module.time, "sleep", sleeps.append),
+        ):
+            module.main.main(
+                args=[
+                    "--date",
+                    "20261015T00",
+                    "--regions",
+                    '["india"]',
+                    "--common-bucket",
+                    "common",
+                    "--region-buckets",
+                    '{"india": "b-india"}',
+                    "--upload-full-field",
+                    "false",
+                ],
+                standalone_mode=False,
+            )
+        return calls
+
+    def test_first_job_claims_and_runs(self):
+        store = {}
+        calls = self.run_job("aifs-ens-v2-20261015-00-fb2", store)
+        self.assertEqual(calls[0], "setup")
+        self.assertIn("marker", calls)
+        self.assertEqual(
+            json.loads(store[self.CLAIM])["job_id"], "aifs-ens-v2-20261015-00-fb2"
+        )
+
+    def test_loser_exits_before_downloading_anything(self):
+        store = {self.CLAIM: json.dumps({"job_id": "aifs-ens-v2-20261015-00-fb2"})}
+        calls = self.run_job("aifs-ens-v2-20261015-00", store)
+        self.assertEqual(calls, [])  # exit 0: no setup, download, outputs or marker
+        self.assertIn("-fb2", store[self.CLAIM])  # the claim is untouched
+
+    def test_retry_of_the_winner_keeps_its_claim(self):
+        store = {self.CLAIM: json.dumps({"job_id": "aifs-ens-v2-20261015-00"})}
+        calls = self.run_job("aifs-ens-v2-20261015-00", store)
+        self.assertIn("marker", calls)
+
+    def test_transient_errors_are_retried_with_backoff(self):
+        store, sleeps = {}, []
+        faults = [ServiceUnavailable("503"), TooManyRequests("429")]
+        calls = self.run_job(
+            "aifs-ens-v2-20261015-00-fb2", store, faults=faults, sleeps=sleeps
+        )
+        self.assertIn("marker", calls)
+        self.assertEqual(sleeps, [5, 10])
+        self.assertIn("-fb2", store[self.CLAIM])
+
+    def test_a_write_whose_response_was_lost_is_reclaimed_on_retry(self):
+        store = {}
+        faults = [("after_write", requests.exceptions.ReadTimeout("timeout"))]
+        calls = self.run_job("aifs-ens-v2-20261015-00", store, faults=faults)
+        self.assertIn("marker", calls)
+        self.assertEqual(
+            json.loads(store[self.CLAIM])["job_id"], "aifs-ens-v2-20261015-00"
+        )
+
+    def test_primary_runs_when_the_claim_is_unavailable(self):
+        for fault in (
+            Forbidden("403"),
+            TooManyRequests("429"),
+            InternalServerError("500"),
+            requests.exceptions.ConnectTimeout("timeout"),
+        ):
+            with self.subTest(fault=fault):
+                store, sleeps = {}, []
+                with self.assertLogs(level="ERROR") as logs:
+                    calls = self.run_job(
+                        "aifs-ens-v2-20261015-00",
+                        store,
+                        faults=[fault] * 3,
+                        sleeps=sleeps,
+                    )
+                self.assertIn("marker", calls)
+                self.assertEqual(sleeps, [5, 10])  # 3 attempts
+                self.assertEqual(store, {})
+                self.assertIn("ENSEMBLE_LADDER_CLAIM_UNAVAILABLE", logs.output[0])
+                self.assertIn("primary", logs.output[0])
+
+    def test_fallback_exits_when_the_claim_is_unavailable(self):
+        for job_id in ("aifs-ens-v2-20261015-00-fb1", "aifs-ens-v2-20261015-00-fb2"):
+            with self.subTest(job_id=job_id):
+                store = {}
+                with self.assertLogs(level="ERROR") as logs:
+                    calls = self.run_job(
+                        job_id, store, faults=[ServiceUnavailable("503")] * 3
+                    )
+                self.assertEqual(calls, [])  # exit 0 before downloading anything
+                self.assertIn("ENSEMBLE_LADDER_CLAIM_UNAVAILABLE", logs.output[0])
+                self.assertIn("fallback", logs.output[0])
+
+    def test_an_unreadable_winner_counts_as_unavailable(self):
+        # The create gets 412 but the winner can't be read: the fallback exits
+        # (it may have lost) and the primary runs.
+        for job_id, ran in (
+            ("aifs-ens-v2-20261015-00-fb2", False),
+            ("aifs-ens-v2-20261015-00", True),
+        ):
+            with self.subTest(job_id=job_id):
+                store = {self.CLAIM: "{}"}
+                faults = [None, Forbidden("403")] * 3
+                with self.assertLogs(level="ERROR"):
+                    calls = self.run_job(job_id, store, faults=faults)
+                self.assertEqual("marker" in calls, ran)
+
+    def test_without_a_ladder_there_is_no_claim(self):
+        store = {}
+        calls = self.run_job("aifs-ens-v2-20261015-00", store, claim_object="")
+        self.assertIn("marker", calls)
+        self.assertEqual(store, {})
 
 
 class EnsWrapperRegionTest(unittest.TestCase):

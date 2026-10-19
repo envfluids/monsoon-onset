@@ -156,6 +156,28 @@ variable "india_ensemble_deadline_utc" {
   }
 }
 
+variable "ensemble_ladder_force" {
+  description = "Tests only: submit this fallback step as soon as the ensemble's primary job exists and give it the date (\"\" = normal ladder). Every forced run needs approval; see the ladder test plan."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains(["", "fb2"], var.ensemble_ladder_force)
+    error_message = "ensemble_ladder_force must be \"\" or fb2."
+  }
+}
+
+variable "ensemble_ladder_after_minutes" {
+  description = "Minutes a ladder job may wait without starting before the next fallback step is queued. 10 normally (a normal start takes ~6-6.5 min); 1 only for the race test."
+  type        = number
+  default     = 10
+
+  validation {
+    condition     = var.ensemble_ladder_after_minutes >= 1 && floor(var.ensemble_ladder_after_minutes) == var.ensemble_ladder_after_minutes
+    error_message = "ensemble_ladder_after_minutes must be a whole number >= 1."
+  }
+}
+
 variable "ensemble_max_attempts" {
   description = "Batch attempts per date for the AIFS_ENS_v2 job before a FAILED/CANCELLED job stops being resubmitted."
   type        = number
@@ -323,6 +345,9 @@ module "storage" {
   retention_days     = 30
   enable_versioning  = false
   archive_after_days = null
+
+  # pipeline-state reads Batch job states for the ensemble fallback ladder.
+  grant_pipeline_batch_job_viewer = true
 }
 
 # -----------------------------------------------------------------------------
@@ -400,9 +425,53 @@ module "compute" {
   drywetcast_ncmrwf_secret_id = "ncmrwf-api-key"
   pipeline_state_env = {
     DRYWETCAST_NCMRWF_CUTOFF_UTC = var.drywetcast_ncmrwf_cutoff_utc
+    # What pipeline-state needs to find the ladder's jobs (not their specs).
+    ENSEMBLE_LADDER = jsonencode({
+      for model, ladder in local.ensemble_ladder : model => {
+        project_id     = var.project_id
+        primary_region = var.region
+        marker_region  = ladder.marker_region
+        after_minutes  = ladder.after_minutes
+        force          = ladder.force
+        steps          = [for step in ladder.steps : { name = step.name, region = step.region }]
+      }
+    })
   }
 
   depends_on = [module.networking, module.storage]
+}
+
+# -----------------------------------------------------------------------------
+# Ensemble fallback ladder
+# -----------------------------------------------------------------------------
+
+# If the India ensemble's 2-GPU job hasn't started 10 min after it was submitted
+# (a normal start takes ~6-6.5 min), a 1-GPU job (fb2) is queued beside it in the
+# same region; the first job to start claims the date and the other is cancelled.
+# 1-GPU VMs started in ~6 min on Oct 9-13 while 4g stocked out, but a 1-GPU run
+# takes ~40 min, so an fb2 day delivers ~10-25 min after 14:00 IST; it limits
+# a stockout to minutes late instead of hours.
+locals {
+  ensemble_ladder = {
+    AIFS_ENS_v2 = {
+      marker_region = "india"
+      after_minutes = var.ensemble_ladder_after_minutes
+      force         = var.ensemble_ladder_force
+      steps = [
+        {
+          name              = "fb2"
+          region            = var.region
+          subnet            = module.networking.subnetwork_id
+          machine_type      = "a2-highgpu-1g"
+          cpu_milli         = 12000
+          memory_mib        = 87040
+          gpu_count         = 1
+          max_run_duration  = "10800s" # ~40 min run; the 1g limit before #25
+          upload_full_field = true     # same region as the bucket
+        },
+      ]
+    }
+  }
 }
 
 # -----------------------------------------------------------------------------
@@ -452,6 +521,7 @@ module "orchestration" {
     tonumber(split(":", var.india_ensemble_deadline_utc)[0]),
   )
   delivery_check_marker = "intermediate/AIFS_ENS_v2_india_%DATE%_done"
+  ensemble_ladder       = local.ensemble_ladder
   batch_model_max_attempts = {
     AIFS_ENS_v2 = var.ensemble_max_attempts
   }
@@ -505,9 +575,10 @@ module "monitoring" {
   region      = var.region
   environment = local.environment
 
-  enable_alerts         = true
-  enable_delivery_alert = true
-  notification_emails   = ["zachary.freitag.johnson7@gmail.com"]
+  enable_alerts                  = true
+  enable_delivery_alert          = true
+  enable_ensemble_fallback_alert = true
+  notification_emails            = ["zachary.freitag.johnson7@gmail.com"]
 
   depends_on = [module.orchestration]
 }

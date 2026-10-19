@@ -52,3 +52,9 @@ variable "artifact_registry_cleanup_older_than" {
   type        = string
   default     = "604800s"
 }
+
+variable "grant_pipeline_batch_job_viewer" {
+  description = "Give the pipeline service account roles/batch.jobsViewer, so pipeline-state can read Batch job states for the ensemble fallback ladder."
+  type        = bool
+  default     = false
+}

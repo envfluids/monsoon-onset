@@ -11,10 +11,12 @@ import logging
 import os
 import subprocess
 import sys
-from datetime import datetime, timedelta
+import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import click
+from google.api_core.exceptions import PreconditionFailed
 from google.cloud import storage
 
 LOG_FORMAT = (
@@ -39,10 +41,98 @@ SPARSE_DOWNLOAD_NAME = "9533e90f8433424400ab53c7fafc87ba1a04453093311c0b5bd0b35f
 SPARSE_RUN_NAME = "7f0be51c7c1f522592c7639e0d3f95bcbff8a044292aa281c1e73b842736d9bf.npz"
 AIFS_ENS_MIRROR_WORKERS = os.environ.get("AIFS_ENS_MIRROR_WORKERS", "16")
 GCS_UPLOAD_WORKERS = int(os.environ.get("AIFS_GCS_UPLOAD_WORKERS", "16"))
+# Ladder claim: attempts before giving up, first backoff (doubled each retry)
+# and the per-request timeout. The client's own retries are off (retry=None),
+# so these bound the delay: ~15 s of backoff plus the timeouts.
+CLAIM_ATTEMPTS = 3
+CLAIM_BACKOFF_SECONDS = 5
+CLAIM_TIMEOUT_SECONDS = 30
 
 
 def _client():
     return storage.Client()
+
+
+def _ladder_claim_owner(common_bucket: str, claim_object: str, job_id: str) -> str:
+    """Create the claim if it is free; return the job id that owns it."""
+    blob = _client().bucket(common_bucket).blob(claim_object)
+    claim = {"job_id": job_id, "claimed_utc": datetime.now(timezone.utc).isoformat()}
+    try:
+        blob.upload_from_string(
+            json.dumps(claim),
+            content_type="application/json",
+            if_generation_match=0,
+            timeout=CLAIM_TIMEOUT_SECONDS,
+            retry=None,
+        )
+    except PreconditionFailed:
+        claim = json.loads(
+            blob.download_as_text(timeout=CLAIM_TIMEOUT_SECONDS, retry=None)
+        )
+        winner = str(claim.get("job_id", ""))
+        if winner == job_id:
+            logger.info("ENSEMBLE_LADDER_RECLAIMED %s (retry of the winner)", job_id)
+        return winner
+    logger.info(
+        "ENSEMBLE_LADDER_CLAIMED gs://%s/%s for %s", common_bucket, claim_object, job_id
+    )
+    return job_id
+
+
+def claim_ladder_win(common_bucket: str, model: str, date: str) -> bool:
+    """Claim the date for this job if it is part of a fallback ladder.
+
+    The workflow may queue the same forecast in several Batch jobs; the first
+    one to start creates the winner object (create-only) and the others stop
+    here, before downloading or writing anything. A retry of the winner (same
+    job id) keeps its claim. Without ENSEMBLE_CLAIM_OBJECT there is no ladder.
+
+    If GCS can't be reached after CLAIM_ATTEMPTS (403, 429, 5xx, timeout...),
+    the primary runs without a claim and the fallback jobs exit, so a storage
+    outage neither fails a normal day nor produces two runs.
+    """
+    claim_object = os.environ.get("ENSEMBLE_CLAIM_OBJECT", "")
+    if not claim_object:
+        return True
+    job_id = os.environ["LADDER_JOB_ID"]
+    # Same id the workflow gives the primary; fallback jobs add "-<step>".
+    primary_job_id = f"{model.lower().replace('_', '-')}-{date.replace('T', '-')}"
+    for attempt in range(1, CLAIM_ATTEMPTS + 1):
+        try:
+            winner = _ladder_claim_owner(common_bucket, claim_object, job_id)
+            break
+        except Exception as exc:  # noqa: BLE001 - any GCS failure is retried
+            logger.warning(
+                "Ladder claim attempt %d/%d for %s failed: %r",
+                attempt,
+                CLAIM_ATTEMPTS,
+                job_id,
+                exc,
+            )
+            if attempt < CLAIM_ATTEMPTS:
+                time.sleep(CLAIM_BACKOFF_SECONDS * 2 ** (attempt - 1))
+    else:
+        if job_id == primary_job_id:
+            logger.error(
+                "ENSEMBLE_LADDER_CLAIM_UNAVAILABLE gs://%s/%s: primary %s runs without a claim",
+                common_bucket,
+                claim_object,
+                job_id,
+            )
+            return True
+        logger.error(
+            "ENSEMBLE_LADDER_CLAIM_UNAVAILABLE gs://%s/%s: fallback %s exits without running",
+            common_bucket,
+            claim_object,
+            job_id,
+        )
+        return False
+    if winner == job_id:
+        return True
+    logger.warning(
+        "ENSEMBLE_LADDER_LOST %s to %s; exiting without running", job_id, winner
+    )
+    return False
 
 
 def download_gcs_file(bucket_name: str, gcs_path: str, local_path: Path) -> None:
@@ -118,6 +208,8 @@ def main(date, model, regions, common_bucket, region_buckets, upload_full_field)
         upload_full_field,
     )
 
+    if not claim_ladder_win(common_bucket, model, date):
+        return
     _setup_directories(regions, model)
     _download_inputs(date, model, common_bucket)
     zarr_mirror_target = _zarr_mirror_target(date, model, upload_full_field)
