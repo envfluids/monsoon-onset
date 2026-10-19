@@ -1062,19 +1062,28 @@ class EnsembleLadderContractTest(unittest.TestCase):
         self.assertEqual(
             self.ens_wrapper.count('"ENSEMBLE_LADDER_CLAIM_UNAVAILABLE gs://'), 2
         )
+        # Its own policy: a log-match policy takes exactly one condition.
         policy = hcl_block(
             self.monitoring,
-            'resource "google_monitoring_alert_policy" "ensemble_fallback" {',
+            'resource "google_monitoring_alert_policy" "ensemble_ladder_claim_unavailable" {',
         )
-        self.assertIn('combiner     = "OR"', policy)
-        condition = policy.split('display_name = "Ladder claim unavailable"', 1)[1]
-        condition = condition.split("EOT\n", 2)[1]
-        # The token comes from the Batch job's container log, not the workflow.
+        self.assertIn(
+            "count = var.enable_alerts && var.enable_ensemble_fallback_alert ? 1 : 0",
+            policy,
+        )
+        condition = policy.split("filter = <<-EOT\n", 1)[1].split("EOT\n", 1)[0]
+        # The token comes from the Batch job's container log, not the workflow;
+        # Batch logs every stderr line at ERROR, so no severity filter.
         self.assertIn('resource.type="batch.googleapis.com/Job"', condition)
         self.assertIn('textPayload:"ENSEMBLE_LADDER_CLAIM_UNAVAILABLE"', condition)
         self.assertNotIn("severity", condition)
         documentation = policy.split("documentation {", 1)[1]
         self.assertIn("ENSEMBLE_LADDER_CLAIM_UNAVAILABLE", documentation)
+        fallback = hcl_block(
+            self.monitoring,
+            'resource "google_monitoring_alert_policy" "ensemble_fallback" {',
+        )
+        self.assertNotIn("ENSEMBLE_LADDER_CLAIM_UNAVAILABLE", fallback)
 
     def test_two_minute_check_schedule(self):
         job = hcl_block(
@@ -1344,3 +1353,50 @@ class WorkflowSyntaxContractTest(unittest.TestCase):
         self.assertLess(
             ladder.index("- ladder_response: null"), ladder.index("- fetch_ladder:")
         )
+
+
+class MonitoringAlertPolicyContractTest(unittest.TestCase):
+    """Cloud Monitoring API rules `tofu validate` can't see (#33's apply
+    failed on the first): a policy with a log-match condition has exactly one
+    condition, and needs a notification rate limit."""
+
+    MONITORING = ORCHESTRATION_PATH.parent / "monitoring/main.tf"
+
+    @classmethod
+    def setUpClass(cls):
+        content = cls.MONITORING.read_text()
+        names = re.findall(
+            r'^resource "google_monitoring_alert_policy" "(\w+)" \{',
+            content,
+            re.MULTILINE,
+        )
+        cls.policies = {
+            name: hcl_block(
+                content, f'resource "google_monitoring_alert_policy" "{name}" {{'
+            )
+            for name in names
+        }
+
+    def test_log_match_policies_have_exactly_one_condition(self):
+        log_policies = [
+            name
+            for name, block in self.policies.items()
+            if "condition_matched_log" in block
+        ]
+        for name in log_policies:
+            block = self.policies[name]
+            with self.subTest(policy=name):
+                self.assertEqual(
+                    len(re.findall(r"^\s*conditions \{", block, re.MULTILINE)), 1
+                )
+                self.assertEqual(block.count("condition_matched_log {"), 1)
+                self.assertIn("notification_rate_limit {", block)
+        self.assertGreaterEqual(len(log_policies), 5)
+
+    def test_every_policy_has_conditions(self):
+        for name, block in self.policies.items():
+            with self.subTest(policy=name):
+                self.assertGreaterEqual(
+                    len(re.findall(r"^\s*conditions \{", block, re.MULTILINE)), 1
+                )
+        self.assertGreaterEqual(len(self.policies), 7)

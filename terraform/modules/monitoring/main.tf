@@ -110,8 +110,9 @@ resource "google_monitoring_alert_policy" "delivery_late" {
 }
 
 # Alert: the ensemble fallback ladder was used (a fallback job was submitted, or
-# one started first and owns the date; logged by the workflow at WARNING), or a
-# ladder job couldn't write its claim (logged by the Batch job at ERROR).
+# one started first and owns the date). Logged by the workflow at WARNING.
+# A policy with a log-match condition takes exactly one condition, so the claim
+# token (a different resource type) has its own policy below.
 resource "google_monitoring_alert_policy" "ensemble_fallback" {
   count = var.enable_alerts && var.enable_ensemble_fallback_alert ? 1 : 0
 
@@ -130,6 +131,36 @@ resource "google_monitoring_alert_policy" "ensemble_fallback" {
     }
   }
 
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "300s" # the submit and the win are minutes apart; both get through
+    }
+    auto_close = "86400s"
+  }
+
+  documentation {
+    content   = "ENSEMBLE_FALLBACK_SUBMITTED: the India AIFS ensemble's Batch job hadn't started after the ladder's wait (GPU stockout), so a fallback job was queued beside it. ENSEMBLE_FALLBACK_WON: a fallback job started first and owns the date; the others were cancelled. A 1-GPU win (fb2) delivers about 25 min after 14:00 IST. See the workflow log line and the jobs' status events; the claim is gs://<common>/batch-state/AIFS_ENS_v2/<date>/winner."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "warning"
+  }
+}
+
+# Alert: a ladder job couldn't write its claim. Logged by the Batch job's
+# container; Batch logs all container stderr at ERROR, so this matches the
+# token, not the severity.
+resource "google_monitoring_alert_policy" "ensemble_ladder_claim_unavailable" {
+  count = var.enable_alerts && var.enable_ensemble_fallback_alert ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] Monsoon Ensemble Ladder Claim Unavailable"
+  combiner     = "OR"
+
   conditions {
     display_name = "Ladder claim unavailable"
 
@@ -145,19 +176,19 @@ resource "google_monitoring_alert_policy" "ensemble_fallback" {
 
   alert_strategy {
     notification_rate_limit {
-      period = "300s" # the submit and the win are minutes apart; both get through
+      period = "300s"
     }
     auto_close = "86400s"
   }
 
   documentation {
-    content   = "ENSEMBLE_FALLBACK_SUBMITTED: the India AIFS ensemble's Batch job hadn't started after the ladder's wait (GPU stockout), so a fallback job was queued beside it. ENSEMBLE_FALLBACK_WON: a fallback job started first and owns the date; the others were cancelled. A 1-GPU win (fb2) delivers about 25 min after 14:00 IST. See the workflow log line and the jobs' status events; the claim is gs://<common>/batch-state/AIFS_ENS_v2/<date>/winner. ENSEMBLE_LADDER_CLAIM_UNAVAILABLE (Batch job log): GCS refused or timed out the claim 3 times; the primary ran without a claim and fallback jobs exited without running. Check GCS status and the job's earlier 'Ladder claim attempt' warnings. If a fallback was still queued and GCS recovers before it starts, it can claim the date and the primary gets cancelled; cancel that fallback by hand."
+    content   = "ENSEMBLE_LADDER_CLAIM_UNAVAILABLE (Batch job log): GCS refused or timed out the ensemble ladder's claim 3 times; the primary ran without a claim and fallback jobs exited without running. Check GCS status and the job's earlier 'Ladder claim attempt' warnings. If a fallback was still queued and GCS recovers before it starts, it can claim the date and the primary gets cancelled; cancel that fallback by hand."
     mime_type = "text/markdown"
   }
 
   user_labels = {
     environment = var.environment
-    severity    = "warning"
+    severity    = "high"
   }
 }
 
