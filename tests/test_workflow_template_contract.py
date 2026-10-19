@@ -1,5 +1,8 @@
+import re
 import unittest
 from pathlib import Path
+
+import yaml
 
 
 WORKFLOW_PATH = (
@@ -1023,7 +1026,10 @@ class EnsembleLadderContractTest(unittest.TestCase):
         self.assertIn('- batch_region: "${region}"', self.submit)
         self.assertIn('- batch_subnet: "${batch_config.vpc_subnet}"', self.submit)
         self.assertIn("- initial_attempt: 1", self.submit)
-        self.assertIn("- extra_labels: {}", self.submit)
+        # No default (a map isn't a literal): every call passes it, {} for none.
+        self.assertIn("    - extra_labels  #", self.submit)
+        self.assertEqual(self.workflow.count("call: submit_batch_stage"), 5)
+        self.assertEqual(self.workflow.count("extra_labels: {}"), 4)
         self.assertIn('- $${"regions/" + batch_region}', self.submit)
         self.assertIn("subnetwork: $${batch_subnet}", self.submit)
         self.assertIn("labels: $${batch_labels}", self.submit)
@@ -1135,3 +1141,206 @@ class EnsembleLadderContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def stub_render(template):
+    """The template as Workflows YAML without Terraform: directive lines
+    dropped (each loop body kept once), each ${...} interpolation replaced by
+    TF, and $${ unescaped to ${."""
+    text = "\n".join(
+        line for line in template.splitlines() if not line.lstrip().startswith("%{")
+    )
+    out, i = [], 0
+    while i < len(text):
+        if text.startswith("$${", i):
+            out.append("${")
+            i += 3
+        elif text.startswith("${", i):
+            depth, i = 1, i + 2
+            while depth:
+                depth += {"{": 1, "}": -1}.get(text[i], 0)
+                i += 1
+            out.append("TF")
+        else:
+            out.append(text[i])
+            i += 1
+    return yaml.safe_load("".join(out))
+
+
+def steps_of(steps):
+    for step in steps or []:
+        ((name, body),) = step.items()
+        yield name, body
+
+
+def nested_blocks(body):
+    """(kind, steps) of the blocks nested in one step."""
+    if isinstance(body.get("try"), dict) and "steps" in body["try"]:
+        yield "try", body["try"]["steps"]
+    if body.get("except"):
+        yield "except", body["except"].get("steps", [])
+    if "steps" in body:
+        yield "steps", body["steps"]
+    for condition in body.get("switch") or []:
+        if "steps" in condition:
+            yield "switch", condition["steps"]
+    if "for" in body:
+        yield "for", body["for"].get("steps", [])
+    for branch in (body.get("parallel") or {}).get("branches", []):
+        ((_, branch_body),) = branch.items()
+        yield "branch", branch_body.get("steps", [])
+
+
+def walk(steps):
+    for name, body in steps_of(steps):
+        yield name, body
+        for _, inner in nested_blocks(body):
+            yield from walk(inner)
+
+
+def jumps(body):
+    if "next" in body:
+        yield body["next"]
+    for condition in body.get("switch") or []:
+        if "next" in condition:
+            yield condition["next"]
+
+
+def created(body):
+    names = {
+        re.split(r"[.\[]", key, maxsplit=1)[0]
+        for item in body.get("assign") or []
+        for key in item
+    }
+    for block in (body, body.get("try")):
+        if isinstance(block, dict) and "result" in block:
+            names.add(block["result"])
+    return names
+
+
+def read(body):
+    text = re.sub(r'"(?:[^"\\]|\\.)*"', '""', yaml.safe_dump(body))
+    return set(
+        re.findall(r"(?<![\w.])([A-Za-z_]\w*)", " ".join(re.findall(r"\$\{.*", text)))
+    )
+
+
+class WorkflowSyntaxContractTest(unittest.TestCase):
+    """Rules from the Google Workflows syntax reference that `tofu validate`
+    can't see: a breach only shows when the workflow is deployed (#32's apply
+    failed on the first one)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.template = WORKFLOW_PATH.read_text()
+        cls.doc = stub_render(cls.template)
+
+    def test_stub_render_has_every_subworkflow(self):
+        names = set(
+            re.findall(
+                r"^([A-Za-z_][\w$}{.]*):\n  params:", self.template, re.MULTILINE
+            )
+        )
+        self.assertEqual(len(self.doc), len(names))
+        self.assertIn("submit_batch_stage", self.doc)
+
+    def test_subworkflow_parameter_defaults_are_literals(self):
+        # "default value for parameter ... must be a literal": a quoted string,
+        # a number, true/false or null; not a map, list or expression.
+        literal = re.compile(
+            r'^("[^"$]*(\$\{[^}$]*\}[^"$]*)*"|-?\d+(\.\d+)?|true|false|null)$'
+        )
+        checked = 0
+        for block in re.findall(
+            r"^  params:\n((?:    .*\n)+)", self.template, re.MULTILINE
+        ):
+            for line in block.splitlines():
+                item = line.split("#", 1)[0].strip()
+                if not item.startswith("- ") or ":" not in item:
+                    continue
+                name, default = (part.strip() for part in item[2:].split(":", 1))
+                checked += 1
+                with self.subTest(param=name):
+                    self.assertRegex(default, literal)
+        for inline in re.findall(r"^  params: \[(.*)\]$", self.template, re.MULTILINE):
+            self.assertNotIn(":", inline)
+        self.assertGreaterEqual(checked, 3)
+        for sub, spec in self.doc.items():
+            for param in spec.get("params") or []:
+                if isinstance(param, dict):
+                    ((name, default),) = param.items()
+                    with self.subTest(subworkflow=sub, param=name):
+                        self.assertNotIsInstance(default, (dict, list))
+
+    def test_subworkflow_calls_pass_every_required_parameter(self):
+        signatures = {}
+        for sub, spec in self.doc.items():
+            params = spec.get("params") or []
+            required = {p for p in params if isinstance(p, str)}
+            optional = {next(iter(p)) for p in params if isinstance(p, dict)}
+            signatures[sub] = (required, optional)
+        calls = 0
+        for sub, spec in self.doc.items():
+            for name, body in walk(spec["steps"]):
+                callee = body.get("call")
+                if callee not in signatures:
+                    continue
+                calls += 1
+                required, optional = signatures[callee]
+                passed = set(body.get("args") or {})
+                with self.subTest(step=f"{sub}.{name}", call=callee):
+                    self.assertEqual(required - passed, set())
+                    self.assertEqual(passed - required - optional, set())
+        self.assertGreaterEqual(calls, 8)
+        self.assertIn("extra_labels", signatures["submit_batch_stage"][0])
+
+    def test_jumps_inside_for_loops_stay_at_loop_level(self):
+        # "Only jumping between named steps belonging to the same for loop is
+        # allowed"; next: continue/break is documented only on a loop's own
+        # steps, so nothing jumps from inside a try, except or steps block.
+        loops = 0
+        for sub, spec in self.doc.items():
+            for name, body in walk(spec["steps"]):
+                loop = body.get("for") or (body.get("parallel") or {}).get("for")
+                if not loop:
+                    continue
+                loops += 1
+                own = {step for step, _ in steps_of(loop["steps"])}
+                for step, step_body in steps_of(loop["steps"]):
+                    for target in jumps(step_body):
+                        with self.subTest(loop=f"{sub}.{name}", step=step):
+                            self.assertIn(target, own | {"continue", "break", "end"})
+                    for _, inner in nested_blocks(step_body):
+                        for inner_name, inner_body in walk(inner):
+                            with self.subTest(loop=f"{sub}.{name}", step=inner_name):
+                                self.assertEqual(list(jumps(inner_body)), [])
+        self.assertGreaterEqual(loops, 4)
+
+    def test_except_blocks_only_set_variables_that_already_exist(self):
+        # A variable created in an except block is local to it; one read after
+        # the block must be assigned before it.
+        def check(sub, steps, known):
+            known = set(known)
+            items = list(steps_of(steps))
+            for index, (name, body) in enumerate(items):
+                for kind, inner in nested_blocks(body):
+                    if kind == "except":
+                        local = set().union(*(created(b) for _, b in walk(inner)))
+                        later = set().union(
+                            set(), *(read(b) for _, b in items[index + 1 :])
+                        )
+                        with self.subTest(step=f"{sub}.{name}"):
+                            self.assertEqual((local - known) & later, set())
+                    check(sub, inner, known | created(body))
+                known |= created(body)
+
+        for sub, spec in self.doc.items():
+            params = {
+                p if isinstance(p, str) else next(iter(p))
+                for p in spec.get("params") or []
+            }
+            check(sub, spec["steps"], params)
+        ladder = self.template.split("ensemble_ladder_${model}:\n", 1)[1]
+        self.assertLess(
+            ladder.index("- ladder_response: null"), ladder.index("- fetch_ladder:")
+        )
