@@ -353,6 +353,7 @@ submit_ready_work:
                         accelerators: ${batch_config.model_resources[model].gpu_type != null && batch_config.model_resources[model].gpu_count != null ? jsonencode([{ type = batch_config.model_resources[model].gpu_type, count = batch_config.model_resources[model].gpu_count }]) : "[]"}
                         volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
                         max_attempts: ${try(batch_model_max_attempts[model], 0)}
+                        extra_labels: {}
                         env_vars:
                           DATE: $${${model}_action.date}
                           MODEL: "${model}"
@@ -488,6 +489,7 @@ submit_ready_work:
                   accelerators: []
                   volumes: ${batch_config.model_resources["blend"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["blend"].gcs_mount_options }]) : "[]"}
                   max_attempts: 0
+                  extra_labels: {}
                   env_vars:
                     DATE: $${blend_action.date}
                     FORECAST_REGION: $${region_name}
@@ -532,6 +534,7 @@ submit_ready_work:
                   accelerators: []
                   volumes: ${batch_config.model_resources["diagnostics"].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources["diagnostics"].gcs_mount_options }]) : "[]"}
                   max_attempts: 0
+                  extra_labels: {}
                   env_vars:
                     DATE: $${diagnostics_action.date}
                     FORECAST_REGION: $${region_name}
@@ -665,11 +668,11 @@ submit_batch_stage:
     - volumes
     - env_vars
     - max_attempts  # attempts per job id before FAILED/CANCELLED stops being resubmitted; 0 = unlimited
+    - extra_labels  # labels besides attempt ({} for none); no default: Workflows only takes literal scalars
     # Fallback-ladder jobs override these; the defaults are today's job.
     - batch_region: "${region}"
     - batch_subnet: "${batch_config.vpc_subnet}"
     - initial_attempt: 1
-    - extra_labels: {}
   steps:
     - init_batch_submit:
         assign:
@@ -857,6 +860,9 @@ ensemble_ladder_${model}:
   steps:
     # A pipeline-state image without the endpoint (404, e.g. mid-rollout) means
     # no ladder: submit the primary exactly as before. Other errors raise.
+    - init_ladder_response:
+        assign:
+          - ladder_response: null  # set in the except below too, so it must exist here
     - fetch_ladder:
         try:
           call: http.get
@@ -981,6 +987,12 @@ ensemble_ladder_${model}:
           value: loser
           in: $${ladder.cancel}
           steps:
+            # Set here so the except blocks below update them (an except block's
+            # own variables are local), and every jump is a loop-level step.
+            - reset_ladder_loser:
+                assign:
+                  - loser_job: null
+                  - loser_cancel_failed: false
             - recheck_ladder_loser:
                 try:
                   call: googleapis.batch.v1.projects.locations.jobs.get
@@ -990,12 +1002,14 @@ ensemble_ladder_${model}:
                 except:
                   as: e
                   steps:
-                    - classify_loser_get_error:
+                    - reraise_unless_loser_gone:
                         switch:
-                          - condition: $${default(map.get(e, "code"), 0) == 404}
-                            next: continue
-                          - condition: true
+                          - condition: $${default(map.get(e, "code"), 0) != 404}
                             raise: $${e}
+            - skip_gone_ladder_loser:
+                switch:
+                  - condition: $${loser_job == null}
+                    next: continue
             - maybe_cancel_ladder_loser:
                 switch:
                   - condition: $${loser_job.uid == loser.uid and (loser_job.status.state == "QUEUED" or loser_job.status.state == "SCHEDULED" or loser_job.status.state == "RUNNING")}
@@ -1018,7 +1032,13 @@ ensemble_ladder_${model}:
                         args:
                           severity: WARNING
                           text: '$${"ENSEMBLE_LADDER_CANCEL_FAILED " + loser.name + ": " + json.encode_to_string(e)}'
-                        next: continue
+                    - mark_ladder_cancel_failed:
+                        assign:
+                          - loser_cancel_failed: true
+            - skip_failed_ladder_cancel:
+                switch:
+                  - condition: $${loser_cancel_failed}
+                    next: continue
             - log_ladder_loser_cancelled:
                 call: sys.log
                 args:
@@ -1094,6 +1114,7 @@ ladder_submit_${model}:
           volumes: ${batch_config.model_resources[model].mount_common_bucket ? jsonencode([{ gcs = { remotePath = common_bucket }, mountPath = "/mnt/disks/common", mountOptions = batch_config.model_resources[model].gcs_mount_options }]) : "[]"}
           max_attempts: ${try(batch_model_max_attempts[model], 0)}
           initial_attempt: $${attempt}
+          extra_labels: {}
           env_vars:
             DATE: $${date}
             MODEL: "${model}"
