@@ -341,8 +341,7 @@ resource "google_cloud_scheduler_job" "ensemble_ladder" {
     }
   }
 
-  # A missed check is retried by the next one 2 min later.
-  retry_config {
-    retry_count = 0
-  }
+  # No retry_config: the default is no retries, and a missed check is retried
+  # by the next one 2 min later. Setting zero retries explicitly showed as a
+  # change on every plan, because the API returns no retryConfig for it.
 }
