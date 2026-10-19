@@ -15,6 +15,9 @@ Flow for ACTION=run:
   4. NCMRWF configs: poll the portal for NCMRWF_WAIT_MINUTES. Not there yet ->
      left pending for a later pass. With DRYWETCAST_FINALIZE (after the daily
      cutoff) one last check, then marked unavailable and logged at ERROR.
+     A failed download is logged as a WARNING, its partial files are cleared, and
+     it is retried once after NCMRWF_RETRY_SECONDS and then at each poll; the
+     configs fail only if it is still failing when the window ends.
   5. Manifest, overall done marker when all four configs are done, release the claim.
 
 Each config uploads its PNG, NPZ and outlook PNG, plus the subdistrict pickle and
@@ -34,6 +37,8 @@ Environment Variables:
     GCS_REGION_BUCKETS    : JSON {region: bucket}
     NCMRWF_API_KEY        : NCMRWF portal key (Secret Manager); read by DryWetCast
     NCMRWF_WAIT_MINUTES   : how long to poll for the NCMRWF file (default 30)
+    NCMRWF_RETRY_SECONDS  : wait before the first retry of a failed NCMRWF download
+                            (default 60); later retries wait for the next poll
     DRYWETCAST_SUBDISTRICT_GCS : gs:// prefix of the subdistrict bundle and its
                             subdistrict_manifest.tsv; empty skips subdistrict products
 """
@@ -73,6 +78,7 @@ CLAIM_MAX_AGE_SECONDS = int(
 )
 NCMRWF_WAIT_MINUTES = float(os.environ.get("NCMRWF_WAIT_MINUTES", "30"))
 NCMRWF_POLL_MINUTES = float(os.environ.get("NCMRWF_POLL_MINUTES", "5"))
+NCMRWF_RETRY_SECONDS = float(os.environ.get("NCMRWF_RETRY_SECONDS", "60"))
 GEFS_DOWNLOAD_ATTEMPTS = int(os.environ.get("GEFS_DOWNLOAD_ATTEMPTS", "3"))
 GEFS_PROBE_URL = "https://noaa-gefs-pds.s3.amazonaws.com/"
 
@@ -418,11 +424,73 @@ def ncmrwf_available(day: str) -> bool:
         return False
 
 
-def wait_for_ncmrwf(day: str, wait_minutes: float, poll_minutes: float) -> bool:
+class NcmrwfDownloadError(RuntimeError):
+    """The NCMRWF file is on the portal but its download still failed at the end of the window."""
+
+
+def download_ncmrwf(day: str, store: Path, scratch: Path) -> None:
+    run_drywetcast(
+        [
+            "--download-only",
+            "--config",
+            "ncmrwf_reduced",
+            "--date",
+            day,
+            "--cycle",
+            "00",
+            "--aifs-zarr",
+            str(store),
+            "--out-dir",
+            str(scratch),
+        ]
+    )
+
+
+def fetch_ncmrwf(
+    day: str, store: Path, scratch: Path, wait_minutes: float, poll_minutes: float
+) -> bool:
+    """Poll the portal for `wait_minutes` and download the NCMRWF file once it's there.
+
+    True once downloaded; False if the file never appeared. A failed download (a
+    dropped connection, or a file still being uploaded) is retried once after
+    NCMRWF_RETRY_SECONDS, then at each poll; NcmrwfDownloadError only if the
+    attempt after the window ends fails too. Portal listing errors propagate.
+    """
     deadline = utc_now() + timedelta(minutes=wait_minutes)
+    attempts = 0
     while True:
         if ncmrwf_available(day):
-            return True
+            attempts += 1
+            try:
+                download_ncmrwf(day, store, scratch)
+                if attempts > 1:
+                    logger.info(
+                        "NCMRWF download for %s succeeded on attempt %d", day, attempts
+                    )
+                return True
+            except Exception as exc:
+                # DryWetCast skips a cycle whose file is already there; drop
+                # whatever the failed attempt left so the retry fetches it again.
+                shutil.rmtree(scratch / f"ncmrwf_{day}", ignore_errors=True)
+                remaining = (deadline - utc_now()).total_seconds()
+                if attempts == 1:
+                    sleep_seconds = NCMRWF_RETRY_SECONDS
+                elif remaining > 0:
+                    sleep_seconds = min(poll_minutes * 60, remaining)
+                else:
+                    raise NcmrwfDownloadError(
+                        f"{attempts} attempts, the last after the polling window "
+                        f"ended: {exc}"
+                    ) from exc
+                logger.warning(
+                    "NCMRWF download attempt %d for %s failed (%s); retrying in %.0f s",
+                    attempts,
+                    day,
+                    exc,
+                    sleep_seconds,
+                )
+                time.sleep(sleep_seconds)
+                continue
         remaining = (deadline - utc_now()).total_seconds()
         if remaining <= 0:
             return False
@@ -672,7 +740,17 @@ def run(
     if ncmrwf_configs:
         wait = 0 if finalize else NCMRWF_WAIT_MINUTES
         try:
-            available = wait_for_ncmrwf(day, wait, NCMRWF_POLL_MINUTES)
+            available = fetch_ncmrwf(day, store, scratch, wait, NCMRWF_POLL_MINUTES)
+        except NcmrwfDownloadError as exc:
+            logger.exception("NCMRWF download failed for %s", day)
+            for config in ncmrwf_configs:
+                entry = update_status(
+                    bucket, date, config, "failed", f"download: {str(exc)[:450]}"
+                )
+                results[config] = {"state": "failed", "attempts": entry["attempts"]}
+            errors.append(f"NCMRWF download failed: {exc}")
+            ncmrwf_configs = []
+            available = False
         except Exception as exc:
             logger.exception("NCMRWF portal check failed for %s", day)
             for config in ncmrwf_configs:
@@ -685,33 +763,8 @@ def run(
             available = False
 
         if ncmrwf_configs and available:
-            try:
-                run_drywetcast(
-                    [
-                        "--download-only",
-                        "--config",
-                        "ncmrwf_reduced",
-                        "--date",
-                        day,
-                        "--cycle",
-                        "00",
-                        "--aifs-zarr",
-                        str(store),
-                        "--out-dir",
-                        str(scratch),
-                    ]
-                )
-            except Exception as exc:
-                logger.exception("NCMRWF download failed for %s", day)
-                for config in ncmrwf_configs:
-                    entry = update_status(
-                        bucket, date, config, "failed", f"download: {str(exc)[:450]}"
-                    )
-                    results[config] = {"state": "failed", "attempts": entry["attempts"]}
-                errors.append(f"NCMRWF download failed: {exc}")
-            else:
-                for config in ncmrwf_configs:
-                    run_config(config)
+            for config in ncmrwf_configs:
+                run_config(config)
         elif ncmrwf_configs and finalize:
             message = f"NCMRWF file for {day} not on the portal by the daily cutoff"
             logger.error(

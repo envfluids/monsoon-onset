@@ -468,6 +468,83 @@ class DryWetCastJobTest(unittest.TestCase):
         self.assertEqual(self.status()["ncmrwf_reduced"]["state"], "failed")
         self.assertIn("portal", self.status()["ncmrwf_reduced"]["message"])
 
+    # -- NCMRWF download retries (Oct 17: IncompleteRead, 3.7 of 17.5 MB) ----
+    def fail_ncmrwf_downloads(self, failures):
+        """NCMRWF downloads fail `failures` times, each leaving a partial file."""
+        partial = self.module.WORK_DIR / DATE / "scratch" / f"ncmrwf_{DAY}"
+        self.leftovers = []  # files already there when each download started
+        remaining = [failures]
+        original = self.fake_run
+
+        def run(args, **kwargs):
+            if "--download-only" in args and "ncmrwf_reduced" in args:
+                self.leftovers.append(sorted(p.name for p in partial.glob("*")))
+                if remaining[0]:
+                    remaining[0] -= 1
+                    self.calls.append(("download", "ncmrwf_reduced"))
+                    partial.mkdir(parents=True, exist_ok=True)
+                    (partial / f"{DAY}.nc.part").write_bytes(b"n" * 37)
+                    raise subprocess.CalledProcessError(1, "run_forecast.py")
+            original(args, **kwargs)
+
+        self.fake_run = run
+
+    def test_ncmrwf_download_failing_once_is_retried_and_succeeds(self):
+        self.fail_ncmrwf_downloads(1)
+        result = self.invoke()
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.calls.count(("download", "ncmrwf_reduced")), 2)
+        self.assertEqual(self.sleeps, [60])
+        self.assertEqual(self.leftovers, [[], []])  # partial cleared before the retry
+        for config in CONFIGS:
+            self.assertTrue(self.gcs.has(COMMON, self.marker(config)))
+            self.assertEqual(self.status()[config]["state"], "done")
+        self.assertTrue(
+            self.gcs.has(COMMON, f"intermediate/drywetcast_india_{DATE}_done")
+        )
+        warnings = [line for line in self.logs if line.startswith("WARNING:NCMRWF")]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("retrying in 60 s", warnings[0])
+        self.assertFalse(any(line.startswith("ERROR") for line in self.logs))
+
+    def test_second_ncmrwf_retry_waits_for_the_next_poll(self):
+        self.fail_ncmrwf_downloads(2)
+        result = self.invoke(configs=["ncmrwf_reduced", "ncmrwf_full"])
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertEqual(self.sleeps, [60, 300])
+        self.assertTrue(self.gcs.has(COMMON, self.marker("ncmrwf_full")))
+
+    def test_ncmrwf_download_failing_all_window_fails_as_before(self):
+        self.fail_ncmrwf_downloads(100)
+        result = self.invoke()
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("NCMRWF download failed", result.output)
+        # Attempts at 0, 1, 6, 11, 16, 21 and 26 min, and the last at the 30 min end.
+        self.assertEqual(self.calls.count(("download", "ncmrwf_reduced")), 8)
+        self.assertEqual(self.sleeps, [60, 300, 300, 300, 300, 300, 240])
+        self.assertTrue(all(left == [] for left in self.leftovers))
+        self.assertTrue(self.gcs.has(COMMON, self.marker("gefs_full")))
+        for config in ("ncmrwf_reduced", "ncmrwf_full"):
+            self.assertFalse(self.gcs.has(COMMON, self.marker(config)))
+            self.assertEqual(self.status()[config]["state"], "failed")
+            self.assertEqual(self.status()[config]["attempts"], 1)
+            self.assertIn("download", self.status()[config]["message"])
+        self.assertNotIn(("run", "ncmrwf_reduced"), self.calls)
+        self.assertEqual(
+            len([line for line in self.logs if line.startswith("WARNING:NCMRWF")]), 7
+        )
+        self.assertTrue(
+            any(line.startswith("ERROR:NCMRWF download failed") for line in self.logs)
+        )
+
+    def test_finalize_download_failure_gets_one_retry_then_fails(self):
+        self.fail_ncmrwf_downloads(100)
+        result = self.invoke(configs=["ncmrwf_reduced", "ncmrwf_full"], finalize=True)
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.calls.count(("download", "ncmrwf_reduced")), 2)
+        self.assertEqual(self.sleeps, [60])
+        self.assertEqual(self.status()["ncmrwf_reduced"]["state"], "failed")
+
     def test_configs_already_done_are_skipped(self):
         self.gcs.put(COMMON, self.marker("gefs_reduced"), "done")
         self.invoke(configs=["gefs_reduced", "gefs_full"])
