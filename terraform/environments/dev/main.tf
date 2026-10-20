@@ -156,14 +156,31 @@ variable "india_ensemble_deadline_utc" {
   }
 }
 
+variable "ensemble_fallback_region" {
+  description = "Region for the ensemble ladder's fb1 step (a2-highgpu-2g). Each candidate has one A100 zone and a 16-GPU quota (Oct 14, 2026)."
+  type        = string
+  default     = "us-east1"
+
+  validation {
+    condition     = contains(["us-east1", "us-west1", "us-west3", "us-west4"], var.ensemble_fallback_region)
+    error_message = "ensemble_fallback_region must be us-east1, us-west1, us-west3 or us-west4 (A100 regions other than us-central1)."
+  }
+}
+
+variable "ensemble_fallback_subnet_cidr" {
+  description = "CIDR for the ensemble fallback subnet in ensemble_fallback_region"
+  type        = string
+  default     = "10.32.0.0/20"
+}
+
 variable "ensemble_ladder_force" {
   description = "Tests only: submit this fallback step as soon as the ensemble's primary job exists and give it the date (\"\" = normal ladder). Every forced run needs approval; see the ladder test plan."
   type        = string
   default     = ""
 
   validation {
-    condition     = contains(["", "fb2"], var.ensemble_ladder_force)
-    error_message = "ensemble_ladder_force must be \"\" or fb2."
+    condition     = contains(["", "fb1", "fb2"], var.ensemble_ladder_force)
+    error_message = "ensemble_ladder_force must be \"\", fb1 or fb2."
   }
 }
 
@@ -227,12 +244,22 @@ locals {
     }
   }
   model_stage_exclusions = {}
-  additional_subnets = local.gencast_tpu_region == var.region ? {} : {
-    gencast-tpu = {
-      region = local.gencast_tpu_region
-      cidr   = var.gencast_tpu_subnet_cidr
-    }
-  }
+  additional_subnets = merge(
+    local.gencast_tpu_region == var.region ? {} : {
+      gencast-tpu = {
+        region = local.gencast_tpu_region
+        cidr   = var.gencast_tpu_subnet_cidr
+      }
+    },
+    {
+      # The ensemble ladder's fb1 Batch VMs (no external IPs): the module gives
+      # the subnet Private Google Access, plus a Cloud Router and Cloud NAT.
+      ens-fallback = {
+        region = var.ensemble_fallback_region
+        cidr   = var.ensemble_fallback_subnet_cidr
+      }
+    },
+  )
 
   base_regions = {
     india = {
@@ -446,11 +473,11 @@ module "compute" {
 # -----------------------------------------------------------------------------
 
 # If the India ensemble's 2-GPU job hasn't started 10 min after it was submitted
-# (a normal start takes ~6-6.5 min), a 1-GPU job (fb2) is queued beside it in the
-# same region; the first job to start claims the date and the other is cancelled.
-# 1-GPU VMs started in ~6 min on Oct 9-13 while 4g stocked out, but a 1-GPU run
-# takes ~40 min, so an fb2 day delivers ~10-25 min after 14:00 IST; it limits
-# a stockout to minutes late instead of hours.
+# (a normal start takes ~6-6.5 min), the same 2-GPU job (fb1) is queued in
+# ensemble_fallback_region; 10 min after that, if neither has started, a 1-GPU
+# job (fb2) in us-central1. Earlier jobs stay queued: the first job to start
+# claims the date and the others are cancelled. fb1 still delivers by 14:00 IST
+# (~08:21-08:27 UTC); fb2 runs ~40 min, so an fb2 day is ~20-25 min late.
 locals {
   ensemble_ladder = {
     AIFS_ENS_v2 = {
@@ -458,6 +485,20 @@ locals {
       after_minutes = var.ensemble_ladder_after_minutes
       force         = var.ensemble_ladder_force
       steps = [
+        {
+          name   = "fb1"
+          region = var.ensemble_fallback_region
+          subnet = module.networking.subnetwork_ids_by_region[var.ensemble_fallback_region]
+          # Same shape as the primary (dev batch_model_resources above).
+          machine_type     = "a2-highgpu-2g"
+          cpu_milli        = 24000
+          memory_mib       = 174080
+          gpu_count        = 2
+          max_run_duration = "7200s"
+          # No full-field mirror from another region: ~54 GB of small cross-region
+          # writes (~$1/run, slower). The India store is built from local output.
+          upload_full_field = false
+        },
         {
           name              = "fb2"
           region            = var.region
