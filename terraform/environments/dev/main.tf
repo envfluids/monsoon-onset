@@ -1,3 +1,4 @@
+# Rerun apply after granting compute.securityAdmin to the tf-apply service account.
 # -----------------------------------------------------------------------------
 # Development Environment
 # -----------------------------------------------------------------------------
