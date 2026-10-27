@@ -468,8 +468,8 @@ class DryWetCastJobContractTest(unittest.TestCase):
         for expected in (
             "FROM python:3.11-slim-bookworm",
             "libgomp1",
-            "ARG DRYWETCAST_COMMIT=22cdbe5beccd3a776ce9e6039a1f603e3d404604",
-            "ARG DRYWETCAST_SHA256=93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5",
+            "ARG DRYWETCAST_COMMIT=cb08f146bc616f2682e717f1934bc7bc232b1034",
+            "ARG DRYWETCAST_SHA256=f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9",
             "sha256sum -c -",
             "pip install --no-cache-dir --no-deps -r requirements.lock",
             "import xgboost",

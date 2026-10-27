@@ -84,7 +84,7 @@ GEFS_PROBE_URL = "https://noaa-gefs-pds.s3.amazonaws.com/"
 
 SUBDISTRICT_GCS = os.environ.get("DRYWETCAST_SUBDISTRICT_GCS", "")
 SUBDISTRICT_MANIFEST = "subdistrict_manifest.tsv"
-# pipeline/subdistrict.py REQUIRED_FILES at 22cdbe5; the bundle must contain these.
+# pipeline/subdistrict.py REQUIRED_FILES at cb08f14; the bundle must contain these.
 SUBDISTRICT_REQUIRED = (
     "source_to_index.pkl",
     "target_to_index.pkl",
@@ -138,7 +138,7 @@ def manifest_path(date: str) -> str:
 
 
 # DryWetCast names its extra products after --fig-out (outlook.output_path and
-# subdistrict.output_paths at 22cdbe5).
+# subdistrict.output_paths at cb08f14).
 def outlook_file(fig: Path) -> Path:
     return fig.with_name(f"{fig.stem}_outlook.png")
 

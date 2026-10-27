@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # DryWetCast-India at a fixed commit. Bumping it means changing both values.
-ARG DRYWETCAST_COMMIT=22cdbe5beccd3a776ce9e6039a1f603e3d404604
-ARG DRYWETCAST_SHA256=93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5
+ARG DRYWETCAST_COMMIT=cb08f146bc616f2682e717f1934bc7bc232b1034
+ARG DRYWETCAST_SHA256=f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9
 RUN curl -fsSL -o /tmp/drywetcast.tar.gz \
         "https://github.com/pdasiitism/DryWetCast-India/archive/${DRYWETCAST_COMMIT}.tar.gz" \
     && echo "${DRYWETCAST_SHA256}  /tmp/drywetcast.tar.gz" | sha256sum -c - \

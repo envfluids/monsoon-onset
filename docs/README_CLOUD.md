@@ -111,7 +111,7 @@ its first 8 characters.
 - **Input:** the bundle is at `gs://monsoon-dev-common-<project>/weights/drywetcast/subdistrict/v1/`
   (`DRYWETCAST_SUBDISTRICT_GCS`).
   - It must contain `subdistrict_manifest.tsv` plus the files DryWetCast's
-    `pipeline/subdistrict.py` requires at `22cdbe5`. These are `source_to_index.pkl`,
+    `pipeline/subdistrict.py` requires at `cb08f14`. These are `source_to_index.pkl`,
     `target_to_index.pkl`, `weight_matrix.npy`, and the `Sub_districts_India_ESRI` and
     `STATE_BOUNDARY` shapefiles (`.shp`, `.shx`, `.dbf`, `.prj`).
   - The job copies the bundle once per run and checks every file against the manifest
