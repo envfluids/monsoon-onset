@@ -7,7 +7,7 @@ deployed from the dev environment (`terraform/environments/dev/main.tf`). Every 
 
 1. AIFS_ENS_v2 runs 51 members × 168 h as one Cloud Batch job on an
    `a2-highgpu-2g` (2 × A100, standard VMs, not spot).
-2. DryWetCast v2 (DryWetCast-India pinned at commit `22cdbe5`) runs on that
+2. DryWetCast v2 (DryWetCast-India pinned at commit `cb08f14`) runs on that
    ensemble for 4 configs: `gefs_reduced`, `gefs_full`, `ncmrwf_reduced` and
    `ncmrwf_full`. Each config produces the forecast map, an outlook map and the
    subdistrict products.

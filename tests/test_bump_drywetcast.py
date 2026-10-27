@@ -10,8 +10,10 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "scripts/bump_drywetcast.py"
 
-OLD_COMMIT = "22cdbe5beccd3a776ce9e6039a1f603e3d404604"
-OLD_SHA256 = "93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5"
+OLD_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
+OLD_SHA256 = "f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9"
+# requirements.in was derived from this commit's requirements.txt (unchanged since).
+REQUIREMENTS_BASE = "22cdbe5"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 NEW_SHA256 = "ab" * 32
 
@@ -104,7 +106,7 @@ class DockerfileEditTest(unittest.TestCase):
 
     def test_reads_the_commit_requirements_in_was_derived_from(self):
         text = (REPO_ROOT / "docker/drywetcast/requirements.in").read_text()
-        self.assertEqual(self.bump.derived_from_commit(text), OLD_COMMIT[:7])
+        self.assertEqual(self.bump.derived_from_commit(text), REQUIREMENTS_BASE)
         with self.assertRaises(self.bump.BumpError):
             self.bump.derived_from_commit("numpy==2.4.6\n")
 
