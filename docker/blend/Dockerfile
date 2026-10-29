@@ -4,7 +4,9 @@
 # Target: Cloud Run
 # -----------------------------------------------------------------------------
 
-FROM python:3.11-slim
+# Pinned to the python:3.11-slim build today's image was made from
+# (Python 3.11.17; published 2026-10-06), so a rebuild doesn't pick up a newer base.
+FROM python:3.11-slim@sha256:0dd364ba7e10242f07755449e3a3d0e35f9efd987952737b90def6709ab0c5ce
 
 WORKDIR /app
 
@@ -27,8 +29,10 @@ ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
 ENV C_INCLUDE_PATH=/usr/include/gdal
 
 # Install Python dependencies
-COPY docker/blend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Exact versions (requirements.txt -> requirements.lock); --no-deps installs
+# only what the lock lists.
+COPY docker/blend/requirements.lock .
+RUN pip install --no-cache-dir --no-deps -r requirements.lock
 
 # Copy application code
 COPY docker/blend/src/ ./src/

@@ -1,3 +1,6 @@
+# Direct dependencies of this image, with the ranges they may move within.
+# The image installs requirements.lock (every package at an exact version,
+# pip --no-deps); regenerate it after editing this file (see its header).
 google-cloud-storage
 google-auth
 requests
