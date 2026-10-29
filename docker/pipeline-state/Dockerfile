@@ -4,12 +4,16 @@
 # returning a single JSON payload that drives workflow branching.
 # -----------------------------------------------------------------------------
 
-FROM python:3.11-slim
+# Pinned to the python:3.11-slim build today's image was made from
+# (Python 3.11.17; published 2026-10-06), so a rebuild doesn't pick up a newer base.
+FROM python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce
 
 WORKDIR /app
 
-COPY docker/pipeline-state/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Exact versions (requirements.txt -> requirements.lock); --no-deps installs
+# only what the lock lists.
+COPY docker/pipeline-state/requirements.lock .
+RUN pip install --no-cache-dir --no-deps -r requirements.lock
 
 COPY docker/pipeline-state/src/ ./src/
 

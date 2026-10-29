@@ -1,0 +1,92 @@
+# Exact versions installed in monsoon-blend:latest (sha256:80ff43d41ce7, built
+# 2026-10-08), read from that image on 2026-10-29, so a rebuild reproduces it.
+# The Dockerfile installs this file with pip --no-deps on the pinned base image,
+# which provides pip, setuptools, wheel and packaging.
+#
+# requirements.txt holds the direct dependencies and is the file to edit. After
+# changing it, regenerate this file and rebuild, for example:
+#   uv pip compile docker/blend/requirements.txt --python-version 3.11 \
+#     --python-platform x86_64-manylinux_2_28 -o docker/blend/requirements.lock
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.4
+aiosignal==1.4.0
+attrs==26.1.0
+cartopy==0.26.0
+certifi==2026.7.22
+cffi==2.1.1
+cftime==1.6.6
+charset-normalizer==3.5.2
+click==8.5.0
+click-plugins==1.1.1.2
+cligj==0.7.2
+cloudpickle==3.1.2
+contourpy==1.3.3
+cryptography==50.0.2
+cycler==0.12.1
+dask==2026.8.0
+decorator==5.3.1
+donfig==0.8.1.post1
+fiona==1.10.1
+fonttools==4.66.1
+frozenlist==1.8.0
+fsspec==2026.9.0
+gcsfs==2026.10.0
+geopandas==1.2.0
+google-api-core==2.41.0
+google-auth==2.61.0
+google-auth-oauthlib==1.5.0
+google-cloud-core==2.8.0
+google-cloud-storage==3.16.0
+google-cloud-storage-control==1.16.0
+google-crc32c==1.9.0
+google-resumable-media==2.11.0
+googleapis-common-protos==1.75.5
+grpc-google-iam-v1==0.14.5
+grpcio==1.84.0
+grpcio-status==1.84.0
+h5netcdf==1.8.1
+h5py==3.16.0
+idna==3.20
+importlib-metadata==9.0.1
+joblib==1.6.0
+kiwisolver==1.5.1
+locket==1.0.0
+matplotlib==3.11.2
+multidict==6.9.1
+narwhals==2.26.0
+netcdf4==1.7.4
+numcodecs==0.16.5
+numpy==2.4.6
+oauthlib==4.0.0
+opentelemetry-api==1.45.1
+pandas==3.0.6
+partd==1.4.2
+patsy==1.0.3
+pillow==12.3.0
+propcache==0.5.4
+proto-plus==1.29.0
+protobuf==7.36.2
+pyarrow==25.0.1
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pycparser==3.1
+pyogrio==0.13.0
+pyparsing==3.3.3
+pyproj==3.7.2
+pyshp==3.1.6
+python-dateutil==2.9.0.post0
+pyyaml==6.0.3
+requests==2.34.2
+requests-oauthlib==2.0.0
+scikit-learn==1.9.1
+scipy==1.17.1
+shapely==2.2.0
+six==1.17.0
+threadpoolctl==3.7.0
+toolz==1.2.0
+typing-extensions==4.16.0
+urllib3==2.8.0
+xarray==2026.9.0
+yarl==1.25.1
+zarr==3.1.6
+zipp==4.1.1

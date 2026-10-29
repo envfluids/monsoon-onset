@@ -1,0 +1,42 @@
+# Exact versions installed in monsoon-sync:latest (sha256:d73016c755f1, built
+# 2026-10-13), read from that image on 2026-10-29, so a rebuild reproduces it.
+# The Dockerfile installs this file with pip --no-deps on the pinned base image,
+# which provides pip, setuptools, wheel and packaging.
+#
+# requirements.txt holds the direct dependencies and is the file to edit. After
+# changing it, regenerate this file and rebuild, for example:
+#   uv pip compile docker/sync/requirements.txt --python-version 3.11 \
+#     --python-platform x86_64-manylinux_2_28 -o docker/sync/requirements.lock
+certifi==2026.7.22
+cffi==2.1.1
+charset-normalizer==3.5.2
+click==8.5.0
+cryptography==50.0.2
+google-api-core==2.41.0
+google-api-python-client==2.201.0
+google-auth==2.61.0
+google-auth-httplib2==0.4.4
+google-auth-oauthlib==1.5.0
+google-cloud-core==2.8.0
+google-cloud-storage==3.16.0
+google-crc32c==1.9.0
+google-resumable-media==2.11.0
+googleapis-common-protos==1.75.5
+httplib2==0.32.0
+idna==3.20
+oauthlib==4.0.0
+opentelemetry-api==1.45.1
+proto-plus==1.29.0
+protobuf==7.36.2
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pycparser==3.1
+pyparsing==3.3.3
+python-dateutil==2.9.0.post0
+pyyaml==6.0.3
+requests==2.34.2
+requests-oauthlib==2.0.0
+six==1.17.0
+typing-extensions==4.16.0
+uritemplate==4.2.0
+urllib3==2.8.0

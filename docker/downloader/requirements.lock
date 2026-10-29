@@ -1,0 +1,96 @@
+# Exact versions installed in monsoon-downloader:latest (sha256:63aa723c78ca, built
+# 2026-10-09), read from that image on 2026-10-29, so a rebuild reproduces it.
+# The Dockerfile installs this file with pip --no-deps on the pinned base image,
+# which provides pip, setuptools, wheel and packaging.
+#
+# requirements.txt holds the direct dependencies and is the file to edit. After
+# changing it, regenerate this file and rebuild, for example:
+#   uv pip compile docker/downloader/requirements.txt --python-version 3.11 \
+#     --python-platform x86_64-manylinux_2_28 -o docker/downloader/requirements.lock
+aiohappyeyeballs==2.7.1
+aiohttp==3.14.4
+aiosignal==1.4.0
+array-api-compat==1.15.0
+attrs==26.1.0
+certifi==2026.7.22
+cffi==2.1.1
+cfgrib==0.9.15.1
+cftime==1.6.6
+charset-normalizer==3.5.2
+click==8.5.0
+cloudpickle==3.1.2
+cryptography==50.0.2
+dask==2026.8.0
+decorator==5.3.1
+deprecation==2.1.0
+earthkit-data==1.2.4
+earthkit-utils==1.0.2
+eccodes==2.49.0
+eccodeslib==2.47.3.21
+eckit==2.1.0.21
+eckitlib==2.1.0.21
+ecmwf-api-client==1.7.0
+ecmwf-opendata==0.3.34
+entrypoints==0.4
+filelock==4.0.12
+findlibs==0.1.3
+flexcache==0.3
+flexparser==0.4
+frozenlist==1.8.0
+fsspec==2026.9.0
+gcsfs==2026.10.0
+google-api-core==2.41.0
+google-auth==2.61.0
+google-auth-oauthlib==1.5.0
+google-cloud-core==2.8.0
+google-cloud-storage==3.16.0
+google-cloud-storage-control==1.16.0
+google-crc32c==1.9.0
+google-resumable-media==2.11.0
+googleapis-common-protos==1.75.5
+grpc-google-iam-v1==0.14.5
+grpcio==1.84.0
+grpcio-status==1.84.0
+h5netcdf==1.8.1
+idna==3.20
+importlib-metadata==9.0.1
+jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+locket==1.0.0
+lru-dict==1.4.1
+markdown==3.11
+markupsafe==3.0.4
+multidict==6.9.1
+multiurl==0.3.9
+netcdf4==1.7.4
+numpy==2.4.6
+oauthlib==4.0.0
+opentelemetry-api==1.45.1
+pandas==3.0.6
+partd==1.4.2
+pdbufr==0.15.1
+pint==0.25.3
+platformdirs==4.12.4
+propcache==0.5.4
+proto-plus==1.29.0
+protobuf==7.36.2
+pyasn1==0.6.4
+pyasn1-modules==0.4.2
+pycparser==3.1
+python-dateutil==2.9.0.post0
+pytz==2026.5
+pyyaml==6.0.3
+referencing==0.37.0
+requests==2.34.2
+requests-oauthlib==2.0.0
+rpds-py==2026.9.1
+scipy==1.17.1
+six==1.17.0
+toolz==1.2.0
+tqdm==4.70.1
+typing-extensions==4.16.0
+urllib3==2.8.0
+xarray==2026.9.0
+yarl==1.25.1
+zipp==4.1.1
