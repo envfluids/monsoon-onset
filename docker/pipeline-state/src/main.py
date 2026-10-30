@@ -741,20 +741,21 @@ def ensemble_ladder_decision(model: str, date: str, now: datetime) -> dict:
             result["reason"] = "forced_step_submitted"
         return result
 
-    last_created = None
-    for name, _, _ in entries:
-        job = jobs[name]
-        if job is None:
-            if last_created is None:
-                result["reason"] = "previous_step_without_create_time"
-                return result
-            waited = (now - last_created).total_seconds() / 60
-            if waited >= float(cfg["after_minutes"]):
-                result.update(decision="submit", step=name, reason="stuck")
-            else:
-                result["reason"] = f"waiting_for_{name}"
+    # Every step is due after_minutes after the primary was submitted, so all of
+    # them are queued together (the workflow submits one, then asks again).
+    primary_created = parse_batch_time(primary.get("createTime"))
+    for name, _, _ in entries[1:]:
+        if jobs[name] is not None:
+            continue
+        if primary_created is None:
+            result["reason"] = "primary_without_create_time"
             return result
-        last_created = parse_batch_time(job.get("createTime"))
+        waited = (now - primary_created).total_seconds() / 60
+        if waited >= float(cfg["after_minutes"]):
+            result.update(decision="submit", step=name, reason="stuck")
+        else:
+            result["reason"] = f"waiting_for_{name}"
+        return result
     result["reason"] = "ladder_exhausted"
     return result
 

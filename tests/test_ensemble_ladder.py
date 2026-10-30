@@ -132,22 +132,53 @@ class EnsembleLadderDecisionTest(unittest.TestCase):
         self.assertEqual(due["jobs"]["primary"]["waited_minutes"], 10.0)
         self.assertEqual(due["regions"], ["india"])  # FORECAST_REGIONS for fb2
 
-    def test_pr_b_fb1_first_and_fb2_counts_from_fb1(self):
+    def test_fb1_then_fb2_both_due_after_minutes_after_the_primary(self):
         self.module.ENSEMBLE_LADDER = json.loads(json.dumps(LADDER_B))
         self.add(PRIMARY)
+        early = self.decide(9.9)
+        self.assertEqual(
+            (early["decision"], early["reason"]), ("none", "waiting_for_fb1")
+        )
         self.assertEqual(self.decide(10)["step"], "fb1")
+        # The workflow asks again right after creating fb1: fb2 is due too,
+        # without waiting another after_minutes.
         self.add(
             f"{PRIMARY}-fb1",
             region="us-east1",
-            created=PRIMARY_CREATED + timedelta(minutes=11),
+            created=PRIMARY_CREATED + timedelta(minutes=10, seconds=5),
         )
-        waiting = self.decide(20.9)
+        due = self.decide(10.1)
         self.assertEqual(
-            (waiting["decision"], waiting["reason"]), ("none", "waiting_for_fb2")
+            (due["decision"], due["step"], due["reason"]), ("submit", "fb2", "stuck")
         )
-        due = self.decide(21)
-        self.assertEqual((due["decision"], due["step"]), ("submit", "fb2"))
         self.assertTrue(due["ladder_active"])
+        self.add(f"{PRIMARY}-fb2", created=PRIMARY_CREATED + timedelta(minutes=10.2))
+        done = self.decide(10.3)
+        self.assertEqual(
+            (done["decision"], done["reason"]), ("none", "ladder_exhausted")
+        )
+
+    def test_fb2_is_due_even_if_fb1_was_queued_late(self):
+        # E.g. fb1 was queued by a slow check: fb2 still counts from the primary.
+        self.module.ENSEMBLE_LADDER = json.loads(json.dumps(LADDER_B))
+        self.add(PRIMARY)
+        self.add(
+            f"{PRIMARY}-fb1",
+            region="us-east1",
+            created=PRIMARY_CREATED + timedelta(minutes=14),
+        )
+        due = self.decide(14.1)
+        self.assertEqual((due["decision"], due["step"]), ("submit", "fb2"))
+
+    def test_primary_without_create_time_submits_nothing(self):
+        self.module.ENSEMBLE_LADDER = json.loads(json.dumps(LADDER_B))
+        self.add(PRIMARY)
+        del self.jobs[("us-central1", PRIMARY)]["createTime"]
+        result = self.decide(30)
+        self.assertEqual(
+            (result["decision"], result["reason"]),
+            ("none", "primary_without_create_time"),
+        )
 
     def test_started_job_without_claim_waits(self):
         self.add(PRIMARY, state="RUNNING", ran=True)
