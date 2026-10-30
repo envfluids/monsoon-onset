@@ -87,7 +87,7 @@ variable "delivery_check_schedule" {
 variable "ensemble_ladder" {
   description = <<-EOT
     Fallback ladder per Batch model ({} = off). When the model's job hasn't
-    started after_minutes after it was submitted, the next step's job is added
+    started after_minutes after it was submitted, every step's job is added
     beside it (same forecast, another machine or region); the first job to
     start claims the date and the others are cancelled. Step names are the job
     id suffix (<model job id>-<name>). force (tests only) submits that step at

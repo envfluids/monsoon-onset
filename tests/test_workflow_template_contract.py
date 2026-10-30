@@ -974,6 +974,26 @@ class EnsembleLadderContractTest(unittest.TestCase):
         )
         self.assertIn('os.environ.get("ENSEMBLE_CLAIM_OBJECT", "")', self.ens_wrapper)
 
+    def test_a_created_step_asks_again_so_every_due_step_is_queued_together(self):
+        after_log = self.ladder.split("- log_ladder_step_submitted:", 1)[1].split(
+            "\n    - cancel_ladder_losers:", 1
+        )[0]
+        self.assertIn(
+            "- ask_ladder_again:\n"
+            "        assign:\n"
+            "          - run_primary: false\n"
+            "        next: fetch_ladder\n",
+            after_log,
+        )
+        # Only a newly created job loops; "exists" or a retry cap ends the pass.
+        self.assertIn(
+            'condition: $${step_submit.status == "created"}\n'
+            "            next: log_ladder_step_submitted\n"
+            "          - condition: true\n"
+            "            next: ladder_done\n",
+            self.ladder,
+        )
+
     def test_every_ladder_job_claims_before_running(self):
         self.assertEqual(
             self.ladder_submit.count("ENSEMBLE_CLAIM_OBJECT: $${claim_object}"), 2

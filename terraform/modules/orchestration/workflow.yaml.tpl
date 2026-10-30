@@ -978,7 +978,12 @@ ensemble_ladder_${model}:
         args:
           severity: WARNING
           text: '$${"ENSEMBLE_FALLBACK_SUBMITTED ${model} " + date + ": " + step_submit.job_id + " (" + step_submit.machine_type + ", " + step_submit.region + "); primary " + ladder.jobs.primary.state + " for " + string(ladder.jobs.primary.waited_minutes) + " min (" + ladder.reason + ")"}'
-        next: ladder_done
+    # Ask again: every step is due at the same time, so the next one is queued
+    # in this pass. Bounded: each loop creates a job that didn't exist.
+    - ask_ladder_again:
+        assign:
+          - run_primary: false
+        next: fetch_ladder
 
     # Re-read each loser and cancel it only if it is the same job (uid) and
     # still unfinished. A loser that starts anyway stops at its claim check.

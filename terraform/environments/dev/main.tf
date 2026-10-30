@@ -186,7 +186,7 @@ variable "ensemble_ladder_force" {
 }
 
 variable "ensemble_ladder_after_minutes" {
-  description = "Minutes a ladder job may wait without starting before the next fallback step is queued. 10 normally (a normal start takes ~6-6.5 min); 1 only for the race test."
+  description = "Minutes the primary job may wait without starting before every fallback step is queued. 10 normally (a normal start takes ~6-6.5 min); 1 only for the race test."
   type        = number
   default     = 10
 
@@ -475,10 +475,11 @@ module "compute" {
 
 # If the India ensemble's 2-GPU job hasn't started 10 min after it was submitted
 # (a normal start takes ~6-6.5 min), the same 2-GPU job (fb1) is queued in
-# ensemble_fallback_region; 10 min after that, if neither has started, a 1-GPU
-# job (fb2) in us-central1. Earlier jobs stay queued: the first job to start
-# claims the date and the others are cancelled. fb1 still delivers by 14:00 IST
-# (~08:21-08:27 UTC); fb2 runs ~40 min, so an fb2 day is ~20-25 min late.
+# ensemble_fallback_region and, at the same time, a 1-GPU job (fb2) in
+# us-central1. The primary stays queued: the first job to start claims the
+# date and the others are cancelled. fb1 still delivers by 14:00 IST
+# (~08:21-08:27 UTC); fb2 runs ~40 min, so an fb2 day is ~5-10 min late
+# (estimated from Oct 21 and 30; ~20-25 min when fb2 was queued 10 min later).
 locals {
   ensemble_ladder = {
     AIFS_ENS_v2 = {
