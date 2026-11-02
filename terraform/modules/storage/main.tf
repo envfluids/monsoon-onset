@@ -173,6 +173,21 @@ resource "google_artifact_registry_repository" "containers" {
     }
   }
 
+  # Images tagged with a DryWetCast role (products/drywetcast/pins.yaml) are
+  # never deleted, so the fallback version survives any number of rebuilds.
+  # KEEP takes precedence over DELETE.
+  dynamic "cleanup_policies" {
+    for_each = var.environment == "dev" ? [1] : []
+    content {
+      id     = "keep-role-tagged-images"
+      action = "KEEP"
+      condition {
+        tag_state    = "TAGGED"
+        tag_prefixes = ["live", "fallback", "candidate"]
+      }
+    }
+  }
+
   dynamic "cleanup_policies" {
     for_each = var.environment == "dev" ? [1] : []
     content {

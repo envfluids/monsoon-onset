@@ -3,15 +3,16 @@ import io
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "scripts/bump_drywetcast.py"
 
+# The live and fallback pins in products/drywetcast/pins.yaml.
 OLD_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
-OLD_SHA256 = "f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9"
+FALLBACK_COMMIT = "22cdbe5beccd3a776ce9e6039a1f603e3d404604"
 # requirements.in was derived from this commit's requirements.txt (unchanged since).
 REQUIREMENTS_BASE = "22cdbe5"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
@@ -29,112 +30,56 @@ def load_module():
     return module
 
 
-class DockerfileEditTest(unittest.TestCase):
-    def setUp(self):
-        self.bump = load_module()
-        self.dockerfile = (REPO_ROOT / "docker/drywetcast/Dockerfile").read_text()
+def resolve(ref):
+    """Stand-in for the GitHub lookup: v2 is the new commit, prefixes resolve."""
+    if ref == "v2":
+        return NEW_COMMIT
+    for commit in (OLD_COMMIT, FALLBACK_COMMIT):
+        if commit.startswith(ref):
+            return commit
+    raise AssertionError(f"unexpected ref {ref!r}")
 
-    def test_reads_the_current_pin(self):
-        self.assertEqual(
-            self.bump.pinned_values(self.dockerfile), (OLD_COMMIT, OLD_SHA256)
-        )
 
-    def test_replaces_only_the_two_arg_lines(self):
-        updated = self.bump.update_dockerfile(self.dockerfile, NEW_COMMIT, NEW_SHA256)
-
-        self.assertEqual(self.bump.pinned_values(updated), (NEW_COMMIT, NEW_SHA256))
-        old_lines, new_lines = self.dockerfile.splitlines(), updated.splitlines()
-        self.assertEqual(len(old_lines), len(new_lines))
-        changed = [(a, b) for a, b in zip(old_lines, new_lines) if a != b]
-        self.assertEqual(
-            changed,
-            [
-                (
-                    f"ARG DRYWETCAST_COMMIT={OLD_COMMIT}",
-                    f"ARG DRYWETCAST_COMMIT={NEW_COMMIT}",
-                ),
-                (
-                    f"ARG DRYWETCAST_SHA256={OLD_SHA256}",
-                    f"ARG DRYWETCAST_SHA256={NEW_SHA256}",
-                ),
-            ],
-        )
-        # The download and checksum lines use the ARGs, so they follow the bump.
-        self.assertIn("archive/${DRYWETCAST_COMMIT}.tar.gz", updated)
-        self.assertIn(
-            'echo "${DRYWETCAST_SHA256}  /tmp/drywetcast.tar.gz" | sha256sum -c -',
-            updated,
-        )
-
-    def test_is_idempotent(self):
-        once = self.bump.update_dockerfile(self.dockerfile, NEW_COMMIT, NEW_SHA256)
-        self.assertEqual(
-            self.bump.update_dockerfile(once, NEW_COMMIT, NEW_SHA256), once
-        )
-
-    def test_rejects_short_or_malformed_values(self):
-        for commit, sha256 in (
-            ("22cdbe5", NEW_SHA256),
-            (NEW_COMMIT.upper(), NEW_SHA256),
-            (NEW_COMMIT, "ab" * 31),
-            (NEW_COMMIT, "zz" * 32),
-        ):
-            with (
-                self.subTest(commit=commit, sha256=sha256),
-                self.assertRaises(self.bump.BumpError),
-            ):
-                self.bump.update_dockerfile(self.dockerfile, commit, sha256)
-
-    def test_refuses_a_missing_or_repeated_arg(self):
-        missing = self.dockerfile.replace(f"ARG DRYWETCAST_SHA256={OLD_SHA256}\n", "")
-        repeated = self.dockerfile.replace(
-            f"ARG DRYWETCAST_COMMIT={OLD_COMMIT}\n",
-            f"ARG DRYWETCAST_COMMIT={OLD_COMMIT}\nARG DRYWETCAST_COMMIT={OLD_COMMIT}\n",
-        )
-        # A commented-out or indented line isn't the ARG.
-        commented = self.dockerfile.replace(
-            f"ARG DRYWETCAST_COMMIT={OLD_COMMIT}",
-            f"# ARG DRYWETCAST_COMMIT={OLD_COMMIT}",
-        )
-        for name, text in (
-            ("missing", missing),
-            ("repeated", repeated),
-            ("commented", commented),
-        ):
-            with self.subTest(name), self.assertRaises(self.bump.BumpError):
-                self.bump.update_dockerfile(text, NEW_COMMIT, NEW_SHA256)
-
+class RequirementsBaseTest(unittest.TestCase):
     def test_reads_the_commit_requirements_in_was_derived_from(self):
+        bump = load_module()
         text = (REPO_ROOT / "docker/drywetcast/requirements.in").read_text()
-        self.assertEqual(self.bump.derived_from_commit(text), REQUIREMENTS_BASE)
-        with self.assertRaises(self.bump.BumpError):
-            self.bump.derived_from_commit("numpy==2.4.6\n")
+        self.assertEqual(bump.derived_from_commit(text), REQUIREMENTS_BASE)
+        with self.assertRaises(bump.BumpError):
+            bump.derived_from_commit("numpy==2.4.6\n")
 
 
 class BumpMainTest(unittest.TestCase):
-    """main() end to end with GitHub stubbed out and a temporary Dockerfile."""
+    """main() end to end with GitHub stubbed out and a temporary pins.yaml."""
 
     def setUp(self):
         self.bump = load_module()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.dockerfile = Path(self.tmp.name) / "docker/drywetcast/Dockerfile"
-        self.dockerfile.parent.mkdir(parents=True)
-        self.original = (REPO_ROOT / "docker/drywetcast/Dockerfile").read_text()
-        self.dockerfile.write_text(self.original)
-        requirements_in = self.dockerfile.parent / "requirements.in"
+        root = Path(self.tmp.name)
+        self.pins_file = root / "products/drywetcast/pins.yaml"
+        self.pins_file.parent.mkdir(parents=True)
+        self.original = (REPO_ROOT / "products/drywetcast/pins.yaml").read_text()
+        self.pins_file.write_text(self.original)
+        requirements_in = root / "docker/drywetcast/requirements.in"
+        requirements_in.parent.mkdir(parents=True)
         requirements_in.write_text(
             (REPO_ROOT / "docker/drywetcast/requirements.in").read_text()
         )
-        self.requirements = {OLD_COMMIT: "numpy>=2\n", NEW_COMMIT: "numpy>=2\n"}
+        self.requirements = {
+            OLD_COMMIT: "numpy>=2\n",
+            NEW_COMMIT: "numpy>=2\n",
+            FALLBACK_COMMIT: "numpy>=2\n",
+        }
+        self.mentions = mock.Mock(return_value=["README.md"])
         for name, value in (
-            ("REPO_ROOT", Path(self.tmp.name)),
-            ("DOCKERFILE", self.dockerfile),
+            ("REPO_ROOT", root),
+            ("PINS_FILE", self.pins_file),
             ("REQUIREMENTS_IN", requirements_in),
-            ("resolve_commit", lambda ref: NEW_COMMIT if ref == "v2" else OLD_COMMIT),
+            ("resolve_commit", resolve),
             ("tarball_sha256", lambda commit: NEW_SHA256),
             ("requirements_txt", lambda commit: self.requirements[commit]),
-            ("files_mentioning", lambda short: ["README.md"]),
+            ("files_mentioning", self.mentions),
         ):
             patcher = mock.patch.object(self.bump, name, value)
             patcher.start()
@@ -146,27 +91,45 @@ class BumpMainTest(unittest.TestCase):
             code = self.bump.main(list(argv))
         return code, out.getvalue()
 
-    def test_writes_the_new_pin_and_prints_the_diff(self):
+    def roles(self):
+        return self.bump.drywetcast_pins.parse(self.pins_file.read_text()).roles
+
+    def test_writes_the_new_live_pin_and_prints_the_diff(self):
         code, out = self.run_main("v2")
 
         self.assertEqual(code, 0)
+        roles = self.roles()
         self.assertEqual(
-            self.bump.pinned_values(self.dockerfile.read_text()),
-            (NEW_COMMIT, NEW_SHA256),
+            (roles["live"].commit, roles["live"].sha256), (NEW_COMMIT, NEW_SHA256)
         )
-        self.assertIn(f"-ARG DRYWETCAST_COMMIT={OLD_COMMIT}", out)
-        self.assertIn(f"+ARG DRYWETCAST_COMMIT={NEW_COMMIT}", out)
-        self.assertIn(f"+ARG DRYWETCAST_SHA256={NEW_SHA256}", out)
+        self.assertEqual(roles["fallback"].commit, FALLBACK_COMMIT)
+        self.assertIsNone(roles["candidate"])
+        self.assertIn(f"-    commit: {OLD_COMMIT}", out)
+        self.assertIn(f"+    commit: {NEW_COMMIT}", out)
+        self.assertIn(f"+    sha256: {NEW_SHA256}", out)
         self.assertIn("requirements.txt is unchanged", out)
         self.assertNotIn("WARNING", out)
         self.assertIn("README.md", out)
+        self.mentions.assert_called_once_with(OLD_COMMIT[:7])
 
-    def test_dry_run_leaves_the_dockerfile_alone(self):
+    def test_pins_a_candidate_that_was_null(self):
+        code, out = self.run_main("v2", "--role", "candidate")
+
+        self.assertEqual(code, 0)
+        roles = self.roles()
+        self.assertEqual(roles["candidate"].commit, NEW_COMMIT)
+        self.assertEqual(roles["candidate"].lock, "docker/drywetcast/requirements.lock")
+        self.assertEqual(roles["live"].commit, OLD_COMMIT)
+        self.assertIn("-  candidate: null", out)
+        self.assertIn("candidate was not pinned", out)
+        self.mentions.assert_not_called()
+
+    def test_dry_run_leaves_pins_alone(self):
         code, out = self.run_main("v2", "--dry-run")
 
         self.assertEqual(code, 0)
-        self.assertEqual(self.dockerfile.read_text(), self.original)
-        self.assertIn(f"+ARG DRYWETCAST_COMMIT={NEW_COMMIT}", out)
+        self.assertEqual(self.pins_file.read_text(), self.original)
+        self.assertIn(f"+    commit: {NEW_COMMIT}", out)
 
     def test_warns_when_requirements_changed(self):
         self.requirements[NEW_COMMIT] = "numpy>=2\nseaborn>=0.13\n"
@@ -178,11 +141,24 @@ class BumpMainTest(unittest.TestCase):
         self.assertIn("+seaborn>=0.13", out)
 
     def test_same_commit_is_a_no_op(self):
-        code, out = self.run_main(OLD_COMMIT[:7])
+        code, out = self.run_main(FALLBACK_COMMIT[:7], "--role", "fallback")
 
         self.assertEqual(code, 0)
-        self.assertIn("Already pinned", out)
-        self.assertEqual(self.dockerfile.read_text(), self.original)
+        self.assertIn("fallback is already pinned", out)
+        self.assertEqual(self.pins_file.read_text(), self.original)
+
+    def test_refuses_a_pins_file_for_another_repo(self):
+        self.pins_file.write_text(
+            self.original.replace(
+                "repo: pdasiitism/DryWetCast-India", "repo: someone/fork"
+            )
+        )
+
+        with redirect_stderr(io.StringIO()) as err:
+            code, _ = self.run_main("v2")
+
+        self.assertEqual(code, 1)
+        self.assertIn("someone/fork", err.getvalue())
 
 
 if __name__ == "__main__":

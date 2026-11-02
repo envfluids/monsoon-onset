@@ -15,6 +15,9 @@ from packaging.utils import canonicalize_name
 ROOT = Path(__file__).resolve().parents[1]
 IMAGES = ("downloader", "pipeline-state", "sync", "tpu-dispatch", "blend")
 PINNED_FROM = re.compile(r"^FROM python:3\.11-slim@sha256:[0-9a-f]{64}$")
+DRYWETCAST_PINNED_FROM = re.compile(
+    r"^FROM python:3\.11-slim-bookworm@sha256:[0-9a-f]{64}$"
+)
 LOCK_LINE = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)==(\S+)$")
 
 
@@ -64,6 +67,18 @@ class CpuImagePinsTest(unittest.TestCase):
                     if not line.lstrip().startswith("#")
                 )
                 self.assertNotIn("requirements.txt", instructions)
+
+    def test_drywetcast_uses_a_digest_pinned_base_and_its_lock(self):
+        # One Dockerfile for every role; the lock path is the role's pins.yaml entry.
+        dockerfile = (ROOT / "docker/drywetcast/Dockerfile").read_text()
+        froms = [line for line in dockerfile.splitlines() if line.startswith("FROM ")]
+        self.assertEqual(len(froms), 1, froms)
+        self.assertRegex(froms[0], DRYWETCAST_PINNED_FROM)
+        self.assertIn(
+            "COPY ${DRYWETCAST_LOCK} requirements.lock\n"
+            "RUN pip install --no-cache-dir --no-deps -r requirements.lock\n",
+            dockerfile,
+        )
 
     def test_lock_pins_every_package_and_satisfies_requirements_txt(self):
         for image in IMAGES:

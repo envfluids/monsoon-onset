@@ -442,7 +442,8 @@ Lifecycle rules delete `ic/`, `intermediate/`, and `jax-cache/` after `retention
 
 **What it is:** a private Docker registry. **Role here:** holds all nine pipeline images
 (`monsoon-{env}-containers`). Cloud Build pushes here; Cloud Run/Batch/TPU pull from here. Dev
-deletes old image versions after 7 days (keeping the 3 newest per image).
+deletes old image versions after 7 days (keeping the 3 newest per image, and any image tagged
+with a DryWetCast role: `live`, `fallback` or `candidate`).
 
 ### 5.8 TPUs - the GenCast accelerator
 
