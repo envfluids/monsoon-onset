@@ -353,6 +353,7 @@ class DryWetCastJobContractTest(unittest.TestCase):
         cls.ens_dockerfile = (root / "docker/aifs-ens-v2/Dockerfile").read_text()
         cls.dwc_dockerfile = (root / "docker/drywetcast/Dockerfile").read_text()
         cls.dwc_lock = (root / "docker/drywetcast/requirements.lock").read_text()
+        cls.storage_main = (root / "terraform/modules/storage/main.tf").read_text()
 
     def test_workflow_step_is_guarded_async_and_passes_the_action(self):
         block = self.workflow.split(
@@ -434,14 +435,18 @@ class DryWetCastJobContractTest(unittest.TestCase):
         self.assertNotIn("drywetcast", self.prod)
 
     def test_build_adds_the_image_and_records_code_versions(self):
-        self.assertIn("  drywetcast:\n    - docker/drywetcast/", self.image_deps)
-        for step in (
-            "pull-cache-drywetcast",
-            "build-drywetcast",
-            "push-drywetcast",
-            "deploy-drywetcast",
-        ):
-            self.assertIn(f"- id: {step}", self.cloudbuild)
+        deps = yaml.safe_load(self.image_deps)["images"]
+        for image in ("drywetcast", "drywetcast-fallback", "drywetcast-candidate"):
+            self.assertEqual(
+                deps[image],
+                [
+                    "docker/drywetcast/",
+                    "products/drywetcast/",
+                    "scripts/drywetcast_pins.py",
+                ],
+            )
+            for step in ("pull-cache", "build", "push", "deploy"):
+                self.assertIn(f"- id: {step}-{image}\n", self.cloudbuild)
         self.assertIn(
             'git rev-parse --short HEAD > code_version 2>/dev/null || echo "${_SHORT_SHA}" > code_version',
             self.cloudbuild,
@@ -450,12 +455,61 @@ class DryWetCastJobContractTest(unittest.TestCase):
             "- id:", 1
         )[0]
         self.assertIn('--build-arg AIFS_CODE_VERSION="$$(cat code_version)"', ens_build)
-        dwc_build = self.cloudbuild.split("- id: build-drywetcast", 1)[1].split(
-            "- id:", 1
-        )[0]
-        self.assertIn('--build-arg CODE_VERSION="$$(cat code_version)"', dwc_build)
-        deploy = self.cloudbuild.split("- id: deploy-drywetcast", 1)[1]
-        self.assertIn("not created yet; skipping deploy", deploy)
+        self.assertIn(
+            "python scripts/drywetcast_pins.py write-build-args .", self.cloudbuild
+        )
+        for image, role in (
+            ("drywetcast", "live"),
+            ("drywetcast-fallback", "fallback"),
+            ("drywetcast-candidate", "candidate"),
+        ):
+            with self.subTest(image=image):
+                build = self.cloudbuild.split(f"- id: build-{image}\n", 1)[1].split(
+                    "- id:", 1
+                )[0]
+                self.assertIn('--build-arg CODE_VERSION="$$(cat code_version)"', build)
+                self.assertIn(f"$$(cat drywetcast-{role}.buildargs)", build)
+                self.assertIn(f"/monsoon-{image}:$$(cat code_version) \\", build)
+                self.assertIn(f"/monsoon-{image}:{role} \\", build)
+                self.assertIn("-f docker/drywetcast/Dockerfile .", build)
+                deploy = self.cloudbuild.split(f"- id: deploy-{image}\n", 1)[1].split(
+                    "- id:", 1
+                )[0]
+                self.assertIn("not created yet; skipping deploy", deploy)
+                self.assertIn(
+                    f"--image=${{_REGION}}-docker.pkg.dev/${{PROJECT_ID}}/${{_REPO}}"
+                    f"/monsoon-{image}:$$(cat code_version)",
+                    deploy,
+                )
+                if role != "live":
+                    # A role set to null in pins.yaml gets no buildargs file.
+                    for step in ("pull-cache", "build", "push", "deploy"):
+                        block = self.cloudbuild.split(f"- id: {step}-{image}\n", 1)[
+                            1
+                        ].split("- id:", 1)[0]
+                        self.assertIn(
+                            f"[ -f drywetcast-{role}.buildargs ] || {{ echo", block
+                        )
+
+    def test_images_are_tagged_with_the_build_commit(self):
+        # The trigger never sets _SHORT_SHA, so tagging with it gave every image :local.
+        self.assertNotIn(":${_SHORT_SHA}", self.cloudbuild)
+        for step in ("build", "deploy"):
+            for image in ("downloader", "pipeline-state", "sync", "drywetcast"):
+                with self.subTest(step=step, image=image):
+                    if step == "build":
+                        block = self.cloudbuild.split(f"- id: build-{image}\n", 1)[1]
+                    else:
+                        block = self.cloudbuild.split(f"- id: deploy-{image}\n", 1)[1]
+                    block = block.split("- id:", 1)[0]
+                    self.assertIn(f"/monsoon-{image}:$$(cat code_version)", block)
+
+    def test_registry_cleanup_keeps_role_tagged_images(self):
+        keep = self.storage_main.split('id     = "keep-role-tagged-images"', 1)[1]
+        keep = keep.split("\n  }\n", 1)[0]
+        self.assertIn('action = "KEEP"', keep)
+        self.assertIn('tag_state    = "TAGGED"', keep)
+        self.assertIn('tag_prefixes = ["live", "fallback", "candidate"]', keep)
 
     def test_ensemble_dockerfile_records_code_version_after_the_heavy_layers(self):
         arg = self.ens_dockerfile.index("ARG AIFS_CODE_VERSION=unknown")
@@ -468,10 +522,17 @@ class DryWetCastJobContractTest(unittest.TestCase):
         for expected in (
             "FROM python:3.11-slim-bookworm",
             "libgomp1",
-            "ARG DRYWETCAST_COMMIT=cb08f146bc616f2682e717f1934bc7bc232b1034",
-            "ARG DRYWETCAST_SHA256=f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9",
+            # Pins come from products/drywetcast/pins.yaml (test_drywetcast_pins.py),
+            # so the Dockerfile has no defaults and refuses to build without them.
+            "ARG DRYWETCAST_REPO\n",
+            "ARG DRYWETCAST_COMMIT\n",
+            "ARG DRYWETCAST_SHA256\n",
+            'test -n "${DRYWETCAST_COMMIT}"',
+            "https://github.com/${DRYWETCAST_REPO}/archive/${DRYWETCAST_COMMIT}.tar.gz",
             "sha256sum -c -",
+            "COPY ${DRYWETCAST_LOCK} requirements.lock",
             "pip install --no-cache-dir --no-deps -r requirements.lock",
+            "ENV DRYWETCAST_ROLE=${DRYWETCAST_ROLE}",
             "import xgboost",
             "pandas, geopandas, pyogrio, shapely, pyproj",
             "inference, outlook, subdistrict",

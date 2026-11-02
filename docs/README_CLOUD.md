@@ -106,6 +106,23 @@ its first 8 characters.
 
 `<config>` is one of `gefs_reduced`, `gefs_full`, `ncmrwf_reduced` or `ncmrwf_full`.
 
+### DryWetCast versions
+
+`products/drywetcast/pins.yaml` pins a DryWetCast-India commit and tarball checksum per role.
+Cloud Build builds one image per pinned role from `docker/drywetcast/Dockerfile` with the
+current wrapper.
+
+| Role | Image | Runs as |
+|------|-------|---------|
+| `live` | `monsoon-drywetcast` | the `monsoon-dev-drywetcast` job |
+| `fallback` | `monsoon-drywetcast-fallback` | no job yet; the previous known-good version |
+| `candidate` | `monsoon-drywetcast-candidate` | no job yet; built only when pinned |
+
+- Each image is also tagged with its role, and the registry cleanup policy never deletes
+  role-tagged images.
+- Change a pin with `scripts/bump_drywetcast.py <ref> [--role live|fallback|candidate]`.
+- `.github/CODEOWNERS` asks the DryWetCast-India maintainer to review changes to the pins.
+
 ### Subdistrict bundle
 
 - **Input:** the bundle is at `gs://monsoon-dev-common-<project>/weights/drywetcast/subdistrict/v1/`
@@ -248,7 +265,7 @@ GenCast weights and stats are **not** staged — the `gencast` container reads t
 
 ### Container Images
 
-All images are stored in a single **Artifact Registry** Docker repository (`monsoon-{env}-containers`) in the same region. The pipeline service account has `roles/artifactregistry.reader` on this repository. Images are referenced by tag (`latest`) - Terraform ignores image changes in the Cloud Run Job definitions so containers can be updated independently via `docker push` without a `tofu apply`. Dev repositories delete old image versions after 7 days by default.
+All images are stored in a single **Artifact Registry** Docker repository (`monsoon-{env}-containers`) in the same region. The pipeline service account has `roles/artifactregistry.reader` on this repository. Images are referenced by tag (`latest`) - Terraform ignores image changes in the Cloud Run Job definitions so containers can be updated independently via `docker push` without a `tofu apply`. Dev repositories delete old image versions after 7 days by default, keeping the 3 newest per image and any image tagged with a DryWetCast role (`live`, `fallback`, `candidate`; see `products/drywetcast/pins.yaml`).
 
 ---
 

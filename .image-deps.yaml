@@ -56,8 +56,22 @@ images:
     - gencast/utils/
     - gencast/data/
 
+  # One image per role in products/drywetcast/pins.yaml (live, fallback,
+  # candidate); all three share the wrapper and Dockerfile.
   drywetcast:
     - docker/drywetcast/
+    - products/drywetcast/
+    - scripts/drywetcast_pins.py
+
+  drywetcast-fallback:
+    - docker/drywetcast/
+    - products/drywetcast/
+    - scripts/drywetcast_pins.py
+
+  drywetcast-candidate:
+    - docker/drywetcast/
+    - products/drywetcast/
+    - scripts/drywetcast_pins.py
 
 # Any change to these paths rebuilds every image.
 global:

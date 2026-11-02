@@ -1,0 +1,24 @@
+# DryWetCast-India versions built into the pipeline images.
+#
+# Cloud Build builds one image per role from docker/drywetcast/Dockerfile, with
+# the current wrapper (docker/drywetcast/src/) and the role's lock file:
+#   live      -> monsoon-drywetcast            (runs as the monsoon-<env>-drywetcast job)
+#   fallback  -> monsoon-drywetcast-fallback   (previous known-good version)
+#   candidate -> monsoon-drywetcast-candidate  (version under trial; null when none)
+# Each image is also tagged with its role, which the Artifact Registry cleanup
+# policy keeps.
+#
+# commit: full hash in the repo below. sha256: checksum of
+# https://github.com/<repo>/archive/<commit>.tar.gz, checked during the build.
+# Change pins with scripts/bump_drywetcast.py, which rewrites a role's entry.
+repo: pdasiitism/DryWetCast-India
+roles:
+  live:
+    commit: cb08f146bc616f2682e717f1934bc7bc232b1034
+    sha256: f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9
+    lock: docker/drywetcast/requirements.lock
+  fallback:
+    commit: 22cdbe5beccd3a776ce9e6039a1f603e3d404604
+    sha256: 93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5
+    lock: docker/drywetcast/requirements.lock
+  candidate: null

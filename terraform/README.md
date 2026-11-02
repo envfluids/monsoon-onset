@@ -320,6 +320,13 @@ Images are tagged with both a short commit SHA and `latest`:
 <REGION>-docker.pkg.dev/<PROJECT_ID>/<REPO>/<NAME>:latest
 ```
 
+The SHA is the build's `git rev-parse --short HEAD`; `_SHORT_SHA` (default `local`) is used only
+when the uploaded source has no `.git`.
+
+DryWetCast is built once per role in `products/drywetcast/pins.yaml`: `monsoon-drywetcast`
+(live), `monsoon-drywetcast-fallback` and, when one is pinned, `monsoon-drywetcast-candidate`.
+Each is also tagged with its role (`:live`, `:fallback`, `:candidate`).
+
 Terraform resources reference the `latest` tag. The `lifecycle { ignore_changes }` block on each
 Cloud Run Job prevents Terraform from reverting image updates that happen outside of a `tf apply`
 (i.e., after a Cloud Build run).
@@ -368,7 +375,8 @@ Cloud Workflows (main pipeline)  ──queries──►  Cloud Run Service: pipe
   `output/`.
 - **Artifact Registry** (`monsoon-{env}-containers`): stores pipeline container images. Dev
   repositories delete old image versions after `artifact_registry_cleanup_older_than`, which
-  defaults to 7 days, while retaining the 3 most recent versions per package.
+  defaults to 7 days, while retaining the 3 most recent versions per package and any version
+  tagged `live*`, `fallback*` or `candidate*` (the DryWetCast role images).
 - **Pipeline service account** with `storage.objectAdmin` on the common and regional buckets and
   `artifactregistry.reader` on the registry.
 - **GCS folder structure**: common-bucket prefixes are `weights/`, `ic/`, `full_field/`,

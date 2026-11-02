@@ -6,6 +6,12 @@
 # Untouched images are skipped — both pull-cache and build/push steps short-
 # circuit when their image name is not in /workspace/targets.
 #
+# Images are tagged with the commit they were built from (the short hash of
+# HEAD, or _SHORT_SHA when the build has no git checkout) and :latest. The
+# DryWetCast images are built once per role in products/drywetcast/pins.yaml
+# and also tagged with the role (:live, :fallback, :candidate), which the
+# Artifact Registry cleanup policy keeps.
+#
 # Trigger this build with:
 #   gcloud builds submit --config cloudbuild.yaml \
 #     --substitutions=_SHORT_SHA=$(git rev-parse --short HEAD),_TARGETS=all
@@ -18,6 +24,8 @@ substitutions:
   _REGION: us-central1
   _REPO: monsoon-dev-containers
   _ENV: dev
+  # Image tag only when the source has no .git (gcloud builds submit doesn't
+  # upload it); triggered builds tag with the commit. See detect-targets.
   _SHORT_SHA: local
   # auto  → diff HEAD against _BASE_REF and rebuild what changed
   # all   → rebuild every image
@@ -55,10 +63,12 @@ steps:
         fi
         pip install --quiet pyyaml
         python scripts/cloudbuild_detect_targets.py
+        # One drywetcast-<role>.buildargs per pinned DryWetCast role.
+        python scripts/drywetcast_pins.py write-build-args .
         echo "---"
         echo "targets file:"
         cat targets || true
-        # Build commit for images that record their code version.
+        # Build commit: images record it and are tagged with it.
         git rev-parse --short HEAD > code_version 2>/dev/null || echo "${_SHORT_SHA}" > code_version
         echo "code version: $$(cat code_version)"
     waitFor: ["-"]
@@ -167,6 +177,28 @@ steps:
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest || true
     waitFor: [detect-targets]
 
+  - id: pull-cache-drywetcast-fallback
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-fallback targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-fallback.buildargs ] || { echo "no fallback pinned; skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:latest || true
+    waitFor: [detect-targets]
+
+  - id: pull-cache-drywetcast-candidate
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-candidate targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-candidate.buildargs ] || { echo "no candidate pinned; skip"; exit 0; }
+        docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:latest || true
+    waitFor: [detect-targets]
+
   # ---------------------------------------------------------------------------
   # Build (gated). All builds use the repo root as context so Dockerfiles can
   # COPY from sibling directories (AIFS/, NeuralGCM/, blend/, sync/, etc.).
@@ -182,7 +214,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:latest \
           -f docker/downloader/Dockerfile .
     waitFor: [pull-cache-downloader]
@@ -198,7 +230,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:latest \
           -f docker/pipeline-state/Dockerfile .
     waitFor: [pull-cache-pipeline-state]
@@ -214,7 +246,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:latest \
           -f docker/tpu-dispatch/Dockerfile .
     waitFor: [pull-cache-tpu-dispatch]
@@ -230,7 +262,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:latest \
           -f docker/sync/Dockerfile .
     waitFor: [pull-cache-sync]
@@ -246,7 +278,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-blend:latest \
           -f docker/blend/Dockerfile .
     waitFor: [pull-cache-blend]
@@ -262,7 +294,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-v2:latest \
           -f docker/aifs-v2/Dockerfile .
     waitFor: [pull-cache-aifs-v2]
@@ -279,7 +311,7 @@ steps:
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
           --build-arg AIFS_CODE_VERSION="$$(cat code_version)" \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
           -f docker/aifs-ens-v2/Dockerfile .
     waitFor: [pull-cache-aifs-ens-v2]
@@ -295,7 +327,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-neuralgcm:latest \
           -f docker/neuralgcm/Dockerfile .
     waitFor: [pull-cache-neuralgcm]
@@ -311,7 +343,7 @@ steps:
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:${_SHORT_SHA} \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-gencast:latest \
           -f docker/gencast/Dockerfile .
     waitFor: [pull-cache-gencast]
@@ -324,14 +356,61 @@ steps:
       - -c
       - |
         grep -qx drywetcast targets || { echo "skip"; exit 0; }
+        # $$(cat ...) word-splits the checked build arguments from pins.yaml.
         docker build \
           --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
           --build-arg BUILDKIT_INLINE_CACHE=1 \
           --build-arg CODE_VERSION="$$(cat code_version)" \
-          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:${_SHORT_SHA} \
+          $$(cat drywetcast-live.buildargs) \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:$$(cat code_version) \
           -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:live \
           -f docker/drywetcast/Dockerfile .
     waitFor: [pull-cache-drywetcast]
+
+  - id: build-drywetcast-fallback
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-fallback targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-fallback.buildargs ] || { echo "no fallback pinned; skip"; exit 0; }
+        # $$(cat ...) word-splits the checked build arguments from pins.yaml.
+        docker build \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:latest \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --build-arg CODE_VERSION="$$(cat code_version)" \
+          $$(cat drywetcast-fallback.buildargs) \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:$$(cat code_version) \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:fallback \
+          -f docker/drywetcast/Dockerfile .
+    waitFor: [pull-cache-drywetcast-fallback]
+
+  - id: build-drywetcast-candidate
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: ["DOCKER_BUILDKIT=1"]
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-candidate targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-candidate.buildargs ] || { echo "no candidate pinned; skip"; exit 0; }
+        # $$(cat ...) word-splits the checked build arguments from pins.yaml.
+        docker build \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:latest \
+          --cache-from ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:latest \
+          --build-arg BUILDKIT_INLINE_CACHE=1 \
+          --build-arg CODE_VERSION="$$(cat code_version)" \
+          $$(cat drywetcast-candidate.buildargs) \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:$$(cat code_version) \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:latest \
+          -t ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:candidate \
+          -f docker/drywetcast/Dockerfile .
+    waitFor: [pull-cache-drywetcast-candidate]
 
   # ---------------------------------------------------------------------------
   # Push (gated). Per-image push avoids the top-level `images:` block, which
@@ -437,6 +516,28 @@ steps:
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast
     waitFor: [build-drywetcast]
 
+  - id: push-drywetcast-fallback
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-fallback targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-fallback.buildargs ] || { echo "no fallback pinned; skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback
+    waitFor: [build-drywetcast-fallback]
+
+  - id: push-drywetcast-candidate
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-candidate targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-candidate.buildargs ] || { echo "no candidate pinned; skip"; exit 0; }
+        docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate
+    waitFor: [build-drywetcast-candidate]
+
   # ---------------------------------------------------------------------------
   # Roll Cloud Run service/jobs to the freshly-pushed digest. Cloud Run pins
   # the resolved digest at revision-create time and does not auto-follow tag
@@ -455,7 +556,7 @@ steps:
         grep -qx pipeline-state targets || { echo "skip"; exit 0; }
         gcloud run services update monsoon-${_ENV}-pipeline-state \
           --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:${_SHORT_SHA}
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-pipeline-state:$$(cat code_version)
     waitFor: [push-pipeline-state]
 
   - id: deploy-downloader
@@ -467,7 +568,7 @@ steps:
         grep -qx downloader targets || { echo "skip"; exit 0; }
         gcloud run jobs update monsoon-${_ENV}-downloader \
           --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:${_SHORT_SHA}
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-downloader:$$(cat code_version)
     waitFor: [push-downloader]
 
   - id: deploy-tpu-dispatch
@@ -479,7 +580,7 @@ steps:
         grep -qx tpu-dispatch targets || { echo "skip"; exit 0; }
         gcloud run jobs update monsoon-${_ENV}-tpu-dispatch \
           --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:${_SHORT_SHA}
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-tpu-dispatch:$$(cat code_version)
     waitFor: [push-tpu-dispatch]
 
   - id: deploy-sync
@@ -491,7 +592,7 @@ steps:
         grep -qx sync targets || { echo "skip"; exit 0; }
         gcloud run jobs update monsoon-${_ENV}-sync \
           --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:${_SHORT_SHA}
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-sync:$$(cat code_version)
     waitFor: [push-sync]
 
   - id: deploy-drywetcast
@@ -508,7 +609,41 @@ steps:
           || { echo "monsoon-${_ENV}-drywetcast not created yet; skipping deploy"; exit 0; }
         gcloud run jobs update monsoon-${_ENV}-drywetcast \
           --project=${PROJECT_ID} --region=${_REGION} \
-          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:${_SHORT_SHA}
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast:$$(cat code_version)
     waitFor: [push-drywetcast]
+
+  - id: deploy-drywetcast-fallback
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-fallback targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-fallback.buildargs ] || { echo "no fallback pinned; skip"; exit 0; }
+        # No job runs this image yet; deploy once Terraform creates one.
+        gcloud run jobs describe monsoon-${_ENV}-drywetcast-fallback \
+          --project=${PROJECT_ID} --region=${_REGION} >/dev/null 2>&1 \
+          || { echo "monsoon-${_ENV}-drywetcast-fallback not created yet; skipping deploy"; exit 0; }
+        gcloud run jobs update monsoon-${_ENV}-drywetcast-fallback \
+          --project=${PROJECT_ID} --region=${_REGION} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-fallback:$$(cat code_version)
+    waitFor: [push-drywetcast-fallback]
+
+  - id: deploy-drywetcast-candidate
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx drywetcast-candidate targets || { echo "skip"; exit 0; }
+        [ -f drywetcast-candidate.buildargs ] || { echo "no candidate pinned; skip"; exit 0; }
+        # No job runs this image yet; deploy once Terraform creates one.
+        gcloud run jobs describe monsoon-${_ENV}-drywetcast-candidate \
+          --project=${PROJECT_ID} --region=${_REGION} >/dev/null 2>&1 \
+          || { echo "monsoon-${_ENV}-drywetcast-candidate not created yet; skipping deploy"; exit 0; }
+        gcloud run jobs update monsoon-${_ENV}-drywetcast-candidate \
+          --project=${PROJECT_ID} --region=${_REGION} \
+          --image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-drywetcast-candidate:$$(cat code_version)
+    waitFor: [push-drywetcast-candidate]
 
 timeout: 3600s
