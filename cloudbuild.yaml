@@ -145,6 +145,10 @@ steps:
       - |
         grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
         docker pull ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest || true
+        # The image being replaced, for verify-aifs-ens-v2 (the build moves :latest).
+        docker image inspect --format '{{index .RepoDigests 0}}' \
+          ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:latest \
+          > aifs-ens-v2.previous 2>/dev/null || rm -f aifs-ens-v2.previous
     waitFor: [detect-targets]
 
   - id: pull-cache-neuralgcm
@@ -413,6 +417,44 @@ steps:
     waitFor: [pull-cache-drywetcast-candidate]
 
   # ---------------------------------------------------------------------------
+  # Verify (gated) before push. AIFS ENS v2 must hold exactly the base's
+  # packages plus requirements.lock, and its imports must load; otherwise the
+  # build fails and nothing is pushed. pip check is reported next to the
+  # replaced :latest's, not enforced.
+  # ---------------------------------------------------------------------------
+  - id: verify-aifs-ens-v2
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
+        set -e
+        image=${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2:$$(cat code_version)
+        py() { docker run --rm -e PIP_DISABLE_PIP_VERSION_CHECK=1 --entrypoint python "$$@"; }
+        py "$$image" -m pip list --format=freeze > aifs-ens-v2.freeze
+        py "$$image" -m pip check > aifs-ens-v2.pipcheck 2>&1 || true
+        echo "== pip check (built image)"; cat aifs-ens-v2.pipcheck
+        if [ -f aifs-ens-v2.previous ]; then
+          py "$$(cat aifs-ens-v2.previous)" -m pip check > aifs-ens-v2.pipcheck.previous 2>&1 || true
+          echo "== pip check, $$(cat aifs-ens-v2.previous) -> built image (no output: unchanged)"
+          diff <(sort aifs-ens-v2.pipcheck.previous) <(sort aifs-ens-v2.pipcheck) || true
+        fi
+        echo "== imports"
+        py "$$image" -c "import torch, numpy, anemoi.inference, anemoi.models, anemoi.transform, earthkit.data, cfunits, zarr, gcsfs, xarray, netCDF4, h5netcdf, huggingface_hub, torch_geometric; print('imports ok: torch', torch.__version__, 'numpy', numpy.__version__)"
+    waitFor: [build-aifs-ens-v2]
+
+  - id: verify-aifs-ens-v2-packages
+    name: python:3.11
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
+        python scripts/aifs_ens_v2_packages.py check aifs-ens-v2.freeze
+    waitFor: [verify-aifs-ens-v2]
+
+  # ---------------------------------------------------------------------------
   # Push (gated). Per-image push avoids the top-level `images:` block, which
   # would otherwise fail when an image wasn't built in this run.
   # ---------------------------------------------------------------------------
@@ -484,7 +526,7 @@ steps:
       - |
         grep -qx aifs-ens-v2 targets || { echo "skip"; exit 0; }
         docker push --all-tags ${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_REPO}/monsoon-aifs-ens-v2
-    waitFor: [build-aifs-ens-v2]
+    waitFor: [verify-aifs-ens-v2-packages]
 
   - id: push-neuralgcm
     name: gcr.io/cloud-builders/docker

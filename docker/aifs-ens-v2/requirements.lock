@@ -1,0 +1,88 @@
+# Exact versions pip adds to nvcr.io/nvidia/pytorch:25.08-py3@sha256:ace9a848c0ae on top of
+# its own packages: the pip layer (sha256:9cd17fbdcfef, built 2026-05-29) of
+# monsoon-aifs-ens-v2:latest (sha256:4a7532b65e90 and sha256:32d3380ae2c4, same layers),
+# read from the registry on 2026-11-02, so a rebuild reproduces it.
+# The Dockerfile installs this file with pip --no-deps --no-build-isolation; numpy,
+# scipy, torch and every other dependency not listed here come from the pinned base
+# (see base-packages.txt). Seven of these replace a base version: cffi, click, fsspec,
+# grpcio, numcodecs, packaging, zarr.
+#
+# requirements.txt holds the direct dependencies and is the file to edit. After
+# changing it, regenerate this file in the pinned base (a plain resolver doesn't know
+# what the base already has), keeping only what differs from base-packages.txt:
+#   docker run --rm -v "$PWD/docker/aifs-ens-v2:/w" --entrypoint bash <FROM image> -c \
+#     'pip install -q --no-cache-dir -r /w/requirements.txt && pip list --format=freeze' \
+#     | grep -vxFf docker/aifs-ens-v2/base-packages.txt
+# then restore this header, and rebuild.
+
+anemoi-inference==0.8.3
+anemoi-models==0.11.2
+anemoi-transform==0.1.16.post2
+anemoi-utils==0.4.35.post3
+aniso8601==10.0.1
+annotated-doc==0.0.4
+antlr4-python3-runtime==4.9.3
+anytree==2.13.0
+array-api-compat==1.14.0
+cffi==2.0.0
+cfgrib==0.9.15.1
+cftime==1.6.5
+cfunits==3.3.7
+click==8.4.1
+cryptography==48.0.0
+deprecation==2.1.0
+donfig==0.8.1.post1
+earthkit-data==0.20.0
+earthkit-meteo==0.6.2
+earthkit-regrid==0.5.1
+earthkit-utils==0.3.0
+eccodes==2.47.0
+eccodeslib==2.47.1.20
+eckitlib==2.0.7.20
+entrypoints==0.4
+findlibs==0.1.2
+flexcache==0.3
+flexparser==0.4
+fsspec==2026.3.0
+gcsfs==2026.5.0
+gitdb==4.0.12
+GitPython==3.1.50
+google-api-core==2.30.3
+google-auth==2.53.0
+google-auth-oauthlib==1.4.0
+google-cloud-core==2.6.0
+google-cloud-storage==3.10.1
+google-cloud-storage-control==1.11.0
+google-crc32c==1.8.0
+google-resumable-media==2.9.0
+googleapis-common-protos==1.75.0
+grpc-google-iam-v1==0.14.4
+grpcio==1.80.0
+grpcio-status==1.80.0
+h5netcdf==1.8.1
+hf-xet==1.5.0
+huggingface_hub==1.17.0
+hydra-core==1.3.2
+lru-dict==1.4.1
+multiurl==0.3.7
+netCDF4==1.7.4
+numcodecs==0.16.5
+nvsmi==0.4.2
+oauthlib==3.3.1
+omegaconf==2.3.0
+packaging==26.2
+pdbufr==0.14.2
+Pint==0.25.3
+proto-plus==1.28.0
+pyasn1==0.6.3
+pyasn1_modules==0.4.2
+requests-oauthlib==2.0.0
+semantic-version==2.10.0
+shellingham==1.5.4
+smmap==5.0.3
+termcolor==3.3.0
+torch-geometric==2.7.0
+typer==0.25.1
+xarray==2026.4.0
+xxhash==3.7.0
+zarr==3.1.5
