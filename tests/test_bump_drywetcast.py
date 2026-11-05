@@ -11,10 +11,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "scripts/bump_drywetcast.py"
 
 # The live and fallback pins in products/drywetcast/pins.yaml.
-OLD_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
-FALLBACK_COMMIT = "22cdbe5beccd3a776ce9e6039a1f603e3d404604"
+OLD_COMMIT = "f08e7c95a30542dabe91be70a21bd2350668ad85"
+FALLBACK_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
 # requirements.in was derived from this commit's requirements.txt (unchanged since).
 REQUIREMENTS_BASE = "22cdbe5"
+REQUIREMENTS_BASE_COMMIT = "22cdbe5beccd3a776ce9e6039a1f603e3d404604"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 NEW_SHA256 = "ab" * 32
 
@@ -31,10 +32,10 @@ def load_module():
 
 
 def resolve(ref):
-    """Stand-in for the GitHub lookup: v2 is the new commit, prefixes resolve."""
+    """Stand-in for the GitHub lookup: v2 is the new commit, known prefixes resolve."""
     if ref == "v2":
         return NEW_COMMIT
-    for commit in (OLD_COMMIT, FALLBACK_COMMIT):
+    for commit in (OLD_COMMIT, FALLBACK_COMMIT, REQUIREMENTS_BASE_COMMIT):
         if commit.startswith(ref):
             return commit
     raise AssertionError(f"unexpected ref {ref!r}")
@@ -70,6 +71,7 @@ class BumpMainTest(unittest.TestCase):
             OLD_COMMIT: "numpy>=2\n",
             NEW_COMMIT: "numpy>=2\n",
             FALLBACK_COMMIT: "numpy>=2\n",
+            REQUIREMENTS_BASE_COMMIT: "numpy>=2\n",
         }
         self.mentions = mock.Mock(return_value=["README.md"])
         for name, value in (
