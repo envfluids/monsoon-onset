@@ -10,11 +10,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = REPO_ROOT / "scripts/drywetcast_pins.py"
 
-LIVE_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
-LIVE_SHA256 = "f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9"
-# 22cdbe5 ran in production until 2026-10-27; image 073ba4c1 reports this commit.
-FALLBACK_COMMIT = "22cdbe5beccd3a776ce9e6039a1f603e3d404604"
-FALLBACK_SHA256 = "93e1164722f7e7779a2f83f8c8c5c8791d27a6546fe03ae84c2dcaf05fb51bc5"
+LIVE_COMMIT = "f08e7c95a30542dabe91be70a21bd2350668ad85"
+LIVE_SHA256 = "cad0f188d6ca1c740e44b0dad6a9ff390bb1005d3e810d84774b4fb74a65aaa1"
+# cb08f14 ran in production from 2026-10-27; the 20261105T00 manifest reports this commit.
+FALLBACK_COMMIT = "cb08f146bc616f2682e717f1934bc7bc232b1034"
+FALLBACK_SHA256 = "f687b6f816dd59c9abb2fac9e83ffcc72f0685664622581be4a0e3ea7bbe6bc9"
 NEW_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 NEW_SHA256 = "ab" * 32
 
