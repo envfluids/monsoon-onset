@@ -41,6 +41,7 @@ images:
 
   aifs-ens-v2:
     - docker/aifs-ens-v2/
+    - scripts/aifs_ens_v2_packages.py
     - config/models.json
     - AIFS/utils/
     - AIFS/grids/
