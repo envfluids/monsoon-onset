@@ -58,3 +58,20 @@ variable "grant_pipeline_batch_job_viewer" {
   type        = bool
   default     = false
 }
+
+variable "external_share_readers" {
+  description = "External read-only collaborators for the share bucket. Key: short id used in the service account name (ext-<key>-reader). Value: display name. An empty map creates no share bucket."
+  type        = map(string)
+  default     = {}
+
+  validation {
+    condition     = alltrue([for k in keys(var.external_share_readers) : can(regex("^[a-z][a-z0-9-]{0,18}$", k))])
+    error_message = "Reader keys must start with a lowercase letter, use only lowercase letters, digits or hyphens, and be at most 19 characters (service account IDs are limited to 30)."
+  }
+}
+
+variable "external_share_uploaders" {
+  description = "IAM members (e.g. user:name@uchicago.edu) who can upload to and manage objects in the share bucket."
+  type        = list(string)
+  default     = []
+}
