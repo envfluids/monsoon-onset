@@ -376,6 +376,13 @@ module "storage" {
 
   # pipeline-state reads Batch job states for the ensemble fallback ladder.
   grant_pipeline_batch_job_viewer = true
+
+  # Read-only share bucket for external collaborators (dev only).
+  # Reader service account keys are created outside Terraform.
+  external_share_readers = {
+    ajaya = "Ajaya Mohan, read-only (onset consultant)"
+  }
+  external_share_uploaders = ["user:zfjohnson@uchicago.edu"]
 }
 
 # -----------------------------------------------------------------------------

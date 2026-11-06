@@ -254,3 +254,61 @@ resource "google_project_iam_member" "pipeline_logging" {
   role    = "roles/logging.logWriter"
   member  = "serviceAccount:${google_service_account.pipeline.email}"
 }
+
+# -----------------------------------------------------------------------------
+# External Share Bucket (optional; created only when readers are configured)
+# gs://${name_prefix}-${env}-share-${project_id}/
+#   Read-only data for external collaborators, e.g. regional subsets of the
+#   AIFS reforecasts and IMERG. Each reader gets its own service account with
+#   objectViewer on this bucket only. Keys are created outside Terraform so
+#   private keys never enter state.
+# -----------------------------------------------------------------------------
+
+locals {
+  external_share_enabled = length(var.external_share_readers) > 0
+}
+
+resource "google_storage_bucket" "share" {
+  count = local.external_share_enabled ? 1 : 0
+
+  name     = "${var.name_prefix}-${var.environment}-share-${var.project_id}"
+  project  = var.project_id
+  location = var.region
+
+  force_destroy = var.environment == "dev"
+
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  labels = {
+    environment = var.environment
+    managed_by  = "terraform"
+    purpose     = "external-share"
+  }
+}
+
+resource "google_service_account" "share_reader" {
+  for_each = var.external_share_readers
+
+  project      = var.project_id
+  account_id   = "ext-${each.key}-reader"
+  display_name = each.value
+}
+
+# Each external reader can list and read objects in the share bucket only
+resource "google_storage_bucket_iam_member" "share_readers" {
+  for_each = google_service_account.share_reader
+
+  bucket = google_storage_bucket.share[0].name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${each.value.email}"
+}
+
+# Uploaders can add, replace and delete objects in the share bucket only
+resource "google_storage_bucket_iam_member" "share_uploaders" {
+  for_each = local.external_share_enabled ? toset(var.external_share_uploaders) : toset([])
+
+  bucket = google_storage_bucket.share[0].name
+  role   = "roles/storage.objectAdmin"
+  member = each.value
+}
