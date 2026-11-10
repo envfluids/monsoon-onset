@@ -352,9 +352,24 @@ class BatchGetJobRetryTest(unittest.TestCase):
         )
         self.assertEqual(len(self.session.calls), 3)
         self.assertEqual(self.sleeps, [1.0, 2.0])
-        url, timeout_seconds = self.session.calls[0]
+        url, timeout = self.session.calls[0]
         self.assertTrue(url.endswith(f"/locations/us-central1/jobs/{PRIMARY}"))
-        self.assertEqual(timeout_seconds, self.module.REQUEST_TIMEOUT_SECONDS)
+        # (connect, read): requests times the connect and each read separately.
+        self.assertEqual(timeout, (5, self.module.REQUEST_TIMEOUT_SECONDS))
+
+    def test_worst_case_ladder_call_fits_the_300_s_timeouts(self):
+        # The ladder reads primary, fb1 and fb2 in turn; each read can use every
+        # attempt (connect + read timeout each) plus the backoffs between them.
+        m = self.module
+        per_attempt = m.BATCH_CONNECT_TIMEOUT_SECONDS + m.REQUEST_TIMEOUT_SECONDS
+        backoff = sum(
+            m.BATCH_READ_BACKOFF_SECONDS * 2**i
+            for i in range(m.BATCH_READ_ATTEMPTS - 1)
+        )
+        per_job = m.BATCH_READ_ATTEMPTS * per_attempt + backoff
+        jobs = 1 + len(LADDER_B[MODEL]["steps"])
+        self.assertEqual(per_job, 78)
+        self.assertLess(jobs * per_job, 300 - 30)  # 30 s left for the GCS reads
 
     def test_connection_errors_and_transient_statuses_are_retried(self):
         # Oct 26 / Nov 7: "Remote end closed connection without response".

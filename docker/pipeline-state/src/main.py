@@ -560,8 +560,11 @@ def batch_session():
 
 
 # Batch reads are retried on timeouts, connection errors and transient HTTP
-# codes. Worst case per job: 3 x REQUEST_TIMEOUT_SECONDS + 1 s + 2 s, well inside
-# the workflow's 300 s http.get timeout.
+# codes. requests applies a timeout to the connect and to each read separately,
+# so the connect gets its own short limit. Worst case per job: 3 x (5 s + 20 s)
+# + 1 s + 2 s = 78 s; for the ladder's 3 jobs 234 s, inside both the workflow's
+# 300 s http.get timeout and Cloud Run's 300 s request timeout.
+BATCH_CONNECT_TIMEOUT_SECONDS = 5
 BATCH_READ_ATTEMPTS = 3
 BATCH_READ_BACKOFF_SECONDS = 1.0  # doubles after each failed attempt
 BATCH_READ_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
@@ -584,7 +587,9 @@ def batch_get_job(project_id: str, region: str, job_id: str) -> dict | None:
     problem = ""
     for attempt in range(1, BATCH_READ_ATTEMPTS + 1):
         try:
-            response = batch_session().get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            response = batch_session().get(
+                url, timeout=(BATCH_CONNECT_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS)
+            )
         except (
             requests.exceptions.Timeout,
             requests.exceptions.ConnectionError,
