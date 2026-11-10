@@ -4,6 +4,7 @@ import json
 import unittest
 from datetime import datetime, timedelta, timezone
 
+import requests
 from test_pipeline_state_actions import (
     COMMON_BUCKET,
     FakeStorageClient,
@@ -300,6 +301,169 @@ class EnsembleLadderDecisionTest(unittest.TestCase):
         self.assertEqual(
             state["actions"]["models_to_run_by_model"][MODEL]["date"], DATE
         )
+
+
+def http_response(status, body=None):
+    response = requests.Response()
+    response.status_code = status
+    response._content = json.dumps(body or {}).encode()
+    response.url = "https://batch.googleapis.com/v1/fake"
+    return response
+
+
+class FakeBatchSession:
+    """Plays back one outcome per GET: a status code, a body dict or an exception."""
+
+    def __init__(self, *outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = []
+
+    def get(self, url, timeout):
+        self.calls.append((url, timeout))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        if isinstance(outcome, int):
+            return http_response(outcome)
+        return http_response(200, outcome)
+
+
+class BatchGetJobRetryTest(unittest.TestCase):
+    """batch_get_job retries transient failures with a short doubling backoff."""
+
+    def setUp(self):
+        self.module = load_pipeline_state()
+        self.sleeps = []
+        self.module._sleep = self.sleeps.append
+
+    def get(self, *outcomes):
+        self.module._batch_session = self.session = FakeBatchSession(*outcomes)
+        return self.module.batch_get_job("proj", "us-central1", PRIMARY)
+
+    def test_success_needs_one_call(self):
+        self.assertEqual(self.get({"name": PRIMARY}), {"name": PRIMARY})
+        self.assertEqual(len(self.session.calls), 1)
+        self.assertEqual(self.sleeps, [])
+
+    def test_read_timeouts_are_retried_then_succeed(self):
+        timeout = requests.exceptions.ReadTimeout("Read timed out. (read timeout=20)")
+        self.assertEqual(
+            self.get(timeout, timeout, {"name": PRIMARY}), {"name": PRIMARY}
+        )
+        self.assertEqual(len(self.session.calls), 3)
+        self.assertEqual(self.sleeps, [1.0, 2.0])
+        url, timeout = self.session.calls[0]
+        self.assertTrue(url.endswith(f"/locations/us-central1/jobs/{PRIMARY}"))
+        # (connect, read): requests times the connect and each read separately.
+        self.assertEqual(timeout, (5, self.module.REQUEST_TIMEOUT_SECONDS))
+
+    def test_worst_case_ladder_call_fits_the_300_s_timeouts(self):
+        # The ladder reads primary, fb1 and fb2 in turn; each read can use every
+        # attempt (connect + read timeout each) plus the backoffs between them.
+        m = self.module
+        per_attempt = m.BATCH_CONNECT_TIMEOUT_SECONDS + m.REQUEST_TIMEOUT_SECONDS
+        backoff = sum(
+            m.BATCH_READ_BACKOFF_SECONDS * 2**i
+            for i in range(m.BATCH_READ_ATTEMPTS - 1)
+        )
+        per_job = m.BATCH_READ_ATTEMPTS * per_attempt + backoff
+        jobs = 1 + len(LADDER_B[MODEL]["steps"])
+        self.assertEqual(per_job, 78)
+        self.assertLess(jobs * per_job, 300 - 30)  # 30 s left for the GCS reads
+
+    def test_connection_errors_and_transient_statuses_are_retried(self):
+        # Oct 26 / Nov 7: "Remote end closed connection without response".
+        aborted = requests.exceptions.ConnectionError("Connection aborted.")
+        self.assertIsNone(self.get(aborted, 503, 404))
+        self.assertEqual(len(self.session.calls), 3)
+        for status in (429, 500, 502, 504):
+            with self.subTest(status=status):
+                self.assertEqual(self.get(status, {"uid": "u"}), {"uid": "u"})
+
+    def test_persistent_failure_raises_batch_unavailable_after_three_attempts(self):
+        timeout = requests.exceptions.ReadTimeout("Read timed out.")
+        with self.assertRaises(self.module.BatchUnavailable) as caught:
+            self.get(timeout, timeout, timeout)
+        self.assertEqual(len(self.session.calls), 3)
+        self.assertEqual(self.sleeps, [1.0, 2.0])
+        self.assertIn(PRIMARY, str(caught.exception))
+        self.assertIn("ReadTimeout", str(caught.exception))
+
+    def test_missing_job_is_none_without_retry(self):
+        self.assertIsNone(self.get(404))
+        self.assertEqual(len(self.session.calls), 1)
+
+    def test_permanent_http_errors_raise_at_once(self):
+        # A permission or request error won't fix itself: no retry, and still a 500.
+        for status in (400, 403):
+            with self.subTest(status=status):
+                with self.assertRaises(requests.exceptions.HTTPError):
+                    self.get(status)
+                self.assertEqual(len(self.session.calls), 1)
+        self.assertEqual(self.sleeps, [])
+
+
+class EnsembleLadderBatchUnavailableTest(unittest.TestCase):
+    """A Batch read that fails every retry gives "no decision this pass"."""
+
+    def setUp(self):
+        self.module = load_pipeline_state()
+        self.storage = FakeStorageClient()
+        self.module._storage_client = self.storage
+        self.module.GCS_COMMON_BUCKET = COMMON_BUCKET
+        self.module.ENSEMBLE_LADDER = json.loads(json.dumps(LADDER_B))
+        self.module.REGIONS = {"india": {"models": [MODEL], "stages": []}}
+        self.module.REGION_MODELS = {"india": [MODEL]}
+        self.module._sleep = lambda seconds: None
+        self.unreadable = set()
+
+        def fake_get(project_id, region, job_id):
+            if job_id in self.unreadable:
+                raise self.module.BatchUnavailable(f"Batch job {job_id} unreadable")
+            return job(job_id, region, state="CANCELLED")
+
+        self.module.batch_get_job = fake_get
+
+    def decide(self):
+        return self.module.ensemble_ladder_decision(
+            MODEL, DATE, PRIMARY_CREATED + timedelta(minutes=30)
+        )
+
+    def test_no_decision_and_nothing_for_the_workflow_to_submit(self):
+        for unreadable in (PRIMARY, f"{PRIMARY}-fb2"):
+            with self.subTest(unreadable=unreadable):
+                self.unreadable = {unreadable}
+                result = self.decide()
+                self.assertEqual(result["decision"], "none")
+                self.assertEqual(result["reason"], "batch_unavailable")
+                self.assertIn(unreadable, result["detail"])
+                # Even a workflow without the batch_unavailable branch submits
+                # nothing: no winner to resubmit, and the ladder counts as active.
+                self.assertEqual(result["winner_step"], "")
+                self.assertTrue(result["ladder_active"])
+                self.assertEqual(result["cancel"], [])
+                self.assertFalse(result["log_won"])
+
+    def test_endpoint_answers_200_instead_of_500(self):
+        self.unreadable = {PRIMARY}
+        responses = []
+        handler = self.module.Handler.__new__(self.module.Handler)
+        handler.respond = lambda status, payload: responses.append((status, payload))
+        handler.respond_ladder({"model": [MODEL], "date": [DATE]})
+        status, payload = responses[-1]
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["reason"], "batch_unavailable")
+
+    def test_endpoint_still_answers_500_for_other_errors(self):
+        def broken(project_id, region, job_id):
+            raise requests.exceptions.HTTPError("403 Client Error: Forbidden")
+
+        self.module.batch_get_job = broken
+        responses = []
+        handler = self.module.Handler.__new__(self.module.Handler)
+        handler.respond = lambda status, payload: responses.append((status, payload))
+        handler.respond_ladder({"model": [MODEL], "date": [DATE]})
+        self.assertEqual(responses[-1][0], 500)
 
 
 class EnsembleLadderEndpointTest(unittest.TestCase):

@@ -688,6 +688,7 @@ submit_batch_stage:
             url: $${"https://batch.googleapis.com/v1/projects/${project_id}/locations/" + batch_region + "/jobs?jobId=" + job_id}
             auth:
               type: OAuth2
+            timeout: 60  # per attempt (default 300); retried below
             body:
               labels: $${batch_labels}
               taskGroups:
@@ -729,6 +730,16 @@ submit_batch_stage:
               logsPolicy:
                 destination: CLOUD_LOGGING
           result: create_batch_response
+        # Safe to retry: the job id is fixed, so a retry after a create that did
+        # land gets 409, which the except below treats as "exists". The default
+        # predicate retries 429, 502, 503, 504 and connection/timeout errors only.
+        retry:
+          predicate: $${http.default_retry_predicate}
+          max_retries: 3
+          backoff:
+            initial_delay: 5
+            max_delay: 30
+            multiplier: 2
         except:
           as: e
           steps:
@@ -898,6 +909,9 @@ ensemble_ladder_${model}:
           - claim_prefix: $${"batch-state/${model}/" + date}
     - maybe_submit_owner:
         switch:
+          # pipeline-state couldn't read the Batch jobs: act on nothing this pass.
+          - condition: $${default(map.get(ladder, "reason"), "") == "batch_unavailable"}
+            next: log_ladder_deferred
           - condition: $${run_primary and ladder.winner_step != ""}
             next: resubmit_ladder_winner
           - condition: $${run_primary and not ladder.ladder_active}
@@ -1083,6 +1097,13 @@ ensemble_ladder_${model}:
           text: '$${"ENSEMBLE_FALLBACK_WON ${model} " + date + ": " + ladder.winner + " (" + ladder.winner_step + ") started first; the other ladder jobs are cancelled"}'
     - ladder_done:
         return: $${ladder.decision}
+    # WARNING, not ERROR: a pass that defers isn't a pipeline failure.
+    - log_ladder_deferred:
+        call: sys.log
+        args:
+          severity: WARNING
+          text: '$${"ENSEMBLE_LADDER_DEFERRED ${model} " + date + ": " + default(map.get(ladder, "detail"), "Batch API unavailable") + "; the next pass asks again"}'
+        next: ladder_done
 
 
 ladder_submit_${model}:

@@ -559,14 +559,63 @@ def batch_session():
     return _batch_session
 
 
+# Batch reads are retried on timeouts, connection errors and transient HTTP
+# codes. requests applies a timeout to the connect and to each read separately,
+# so the connect gets its own short limit. Worst case per job: 3 x (5 s + 20 s)
+# + 1 s + 2 s = 78 s; for the ladder's 3 jobs 234 s, inside both the workflow's
+# 300 s http.get timeout and Cloud Run's 300 s request timeout.
+BATCH_CONNECT_TIMEOUT_SECONDS = 5
+BATCH_READ_ATTEMPTS = 3
+BATCH_READ_BACKOFF_SECONDS = 1.0  # doubles after each failed attempt
+BATCH_READ_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
+_sleep = time.sleep  # tests replace it
+
+
+class BatchUnavailable(RuntimeError):
+    """A Batch read that still failed after every retry."""
+
+
 def batch_get_job(project_id: str, region: str, job_id: str) -> dict | None:
-    """The Batch job, or None if it doesn't exist (needs batch.jobs.get)."""
+    """The Batch job, or None if it doesn't exist (needs batch.jobs.get).
+
+    Raises BatchUnavailable when every attempt timed out, failed to connect or
+    got a retryable status; other HTTP errors (403, 400, ...) raise at once.
+    """
+    import requests
+
     url = f"{BATCH_API}/projects/{project_id}/locations/{region}/jobs/{job_id}"
-    response = batch_session().get(url, timeout=REQUEST_TIMEOUT_SECONDS)
-    if response.status_code == 404:
-        return None
-    response.raise_for_status()
-    return response.json()
+    problem = ""
+    for attempt in range(1, BATCH_READ_ATTEMPTS + 1):
+        try:
+            response = batch_session().get(
+                url, timeout=(BATCH_CONNECT_TIMEOUT_SECONDS, REQUEST_TIMEOUT_SECONDS)
+            )
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+        ) as exc:
+            problem = f"{type(exc).__name__}: {exc}"
+        else:
+            if response.status_code == 404:
+                return None
+            if response.status_code not in BATCH_READ_RETRYABLE_STATUS:
+                response.raise_for_status()
+                return response.json()
+            problem = f"HTTP {response.status_code}"
+        if attempt < BATCH_READ_ATTEMPTS:
+            delay = BATCH_READ_BACKOFF_SECONDS * 2 ** (attempt - 1)
+            logger.warning(
+                "batch_get_job %s attempt %d/%d failed (%s); retrying in %.0f s",
+                job_id,
+                attempt,
+                BATCH_READ_ATTEMPTS,
+                problem,
+                delay,
+            )
+            _sleep(delay)
+    raise BatchUnavailable(
+        f"Batch job {job_id} unreadable after {BATCH_READ_ATTEMPTS} attempts: {problem}"
+    )
 
 
 def ladder_primary_job_id(model: str, date: str) -> str:
@@ -654,7 +703,16 @@ def ensemble_ladder_decision(model: str, date: str, now: datetime) -> dict:
     ]
     jobs = {}
     for name, region, job_id in entries:
-        job = batch_get_job(project_id, region, job_id)
+        try:
+            job = batch_get_job(project_id, region, job_id)
+        except BatchUnavailable as exc:
+            # No decision this pass; the next pass asks again. ladder_active is
+            # set so the workflow can't take "nothing claimed, nothing queued"
+            # and resubmit the primary (older workflows check only that).
+            logger.warning("ensemble_ladder_deferred %s %s: %s", model, date, exc)
+            result.update(reason="batch_unavailable", ladder_active=True)
+            result["detail"] = str(exc)
+            return result
         jobs[name] = job
         created = parse_batch_time(job.get("createTime")) if job else None
         result["jobs"][name] = {

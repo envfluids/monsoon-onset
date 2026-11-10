@@ -996,6 +996,45 @@ class EnsembleLadderContractTest(unittest.TestCase):
         self.assertIn('winner_step: ""', fetch)
         self.assertIn('if parsed.path == "/ensemble_ladder":', self.pipeline_state)
 
+    def test_batch_unavailable_defers_before_any_submit(self):
+        # pipeline-state's "no decision this pass": checked before the owner
+        # resubmit and the primary submit, logged as WARNING (not an alert), done.
+        self.assertOrdered(
+            self.ladder,
+            "- maybe_submit_owner:",
+            'condition: $${default(map.get(ladder, "reason"), "") == "batch_unavailable"}',
+            "next: log_ladder_deferred",
+            'condition: $${run_primary and ladder.winner_step != ""}',
+            "condition: $${run_primary and not ladder.ladder_active}",
+        )
+        deferred = self.ladder.split("- log_ladder_deferred:", 1)[1]
+        self.assertIn("severity: WARNING", deferred)
+        self.assertIn("ENSEMBLE_LADDER_DEFERRED", deferred)
+        self.assertIn("next: ladder_done", deferred)
+        self.assertNotIn("ENSEMBLE_LADDER_DEFERRED", self.monitoring)
+        self.assertIn(
+            'result.update(reason="batch_unavailable", ladder_active=True)',
+            self.pipeline_state,
+        )
+
+    def test_batch_create_retries_transient_errors_and_409_means_exists(self):
+        create = self.submit.split("- create_batch_job:", 1)[1].split(
+            "- batch_job_created:", 1
+        )[0]
+        self.assertIn("jobs?jobId=", create)
+        self.assertOrdered(
+            create,
+            "timeout: 60",
+            "result: create_batch_response",
+            "retry:",
+            "predicate: $${http.default_retry_predicate}",
+            "max_retries: 3",
+            "except:",
+            'condition: $${default(map.get(e, "code"), 0) == 409}',
+            "next: get_existing_batch_job",
+        )
+        self.assertNotIn("default_retry_predicate_non_idempotent", create)
+
     def test_losers_are_cancelled_only_after_a_uid_recheck(self):
         self.assertOrdered(
             self.ladder,
@@ -1580,6 +1619,13 @@ class MonitoringAlertPolicyContractTest(unittest.TestCase):
                 self.assertEqual(block.count("condition_matched_log {"), 1)
                 self.assertIn("notification_rate_limit {", block)
         self.assertGreaterEqual(len(log_policies), 5)
+
+    def test_pipeline_failure_incidents_auto_close_after_30_minutes(self):
+        # Without it one incident stayed open Oct 26 - Nov 10 and every later
+        # failure was reported under it. 1800s is the API's minimum.
+        strategy = hcl_block(self.policies["pipeline_failure"], "alert_strategy {")
+        self.assertIn('auto_close = "1800s"', strategy)
+        self.assertIn('period = "300s"', strategy)
 
     def test_every_policy_has_conditions(self):
         for name, block in self.policies.items():
