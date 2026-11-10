@@ -302,6 +302,9 @@ resource "google_monitoring_alert_policy" "pipeline_failure" {
     notification_rate_limit {
       period = "300s" # Max 1 notification per 5 minutes
     }
+    # Close 30 min after the last match, so each real failure opens its own
+    # incident (without it one incident stayed open from Oct 26 to Nov 10).
+    auto_close = "1800s"
   }
 
   documentation {
