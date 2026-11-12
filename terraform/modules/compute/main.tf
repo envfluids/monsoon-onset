@@ -198,6 +198,12 @@ locals {
       DRYWETCAST_SUBDISTRICT_GCS = "gs://${var.common_gcs_bucket}/weights/drywetcast/subdistrict/v1/"
     }
   }
+  # The fallback job runs the same wrapper with an older DryWetCast-India
+  # commit, so it gets exactly the live job's env vars and secrets.
+  cloud_run_job_env_by_key = merge(
+    local.cloud_run_job_env,
+    { drywetcast_fallback = local.cloud_run_job_env.drywetcast },
+  )
 
   all_cloud_run_services = {
     downloader = {
@@ -241,18 +247,36 @@ locals {
       retries = 0
       secrets = []
     }
+    # The previous known-good DryWetCast-India version (fallback role in
+    # products/drywetcast/pins.yaml), started for a config the live version
+    # failed on. Same resources and limits as the live job.
+    drywetcast_fallback = {
+      name    = "${var.name_prefix}-${var.environment}-drywetcast-fallback"
+      image   = var.drywetcast_fallback_image
+      memory  = "8Gi"
+      cpu     = "4"
+      timeout = "3600s"
+      retries = 0
+      secrets = []
+    }
   }
 
-  # Optional jobs exist only when their image is set.
+  # Optional jobs exist only when their image is set; the fallback also needs
+  # the live job.
+  optional_job_enabled = {
+    drywetcast          = var.drywetcast_image != null
+    drywetcast_fallback = var.drywetcast_image != null && var.drywetcast_fallback_image != null
+  }
   cloud_run_services = {
     for name, service in local.all_cloud_run_services : name => service
-    if name != "drywetcast" || var.drywetcast_image != null
+    if lookup(local.optional_job_enabled, name, true)
   }
 
   # Secrets that already exist in Secret Manager and aren't managed here (so
   # their values stay out of Terraform state), mounted by env-var name.
+  # The fallback job mounts the same NCMRWF key as the live job.
   cloud_run_existing_secret_ids = {
-    drywetcast = {
+    for key in ["drywetcast", "drywetcast_fallback"] : key => {
       NCMRWF_API_KEY = var.drywetcast_ncmrwf_secret_id
     }
   }
@@ -373,7 +397,7 @@ resource "google_cloud_run_v2_job" "pipeline_jobs" {
         }
 
         dynamic "env" {
-          for_each = lookup(local.cloud_run_job_env, each.key, {})
+          for_each = lookup(local.cloud_run_job_env_by_key, each.key, {})
           content {
             name  = env.key
             value = env.value

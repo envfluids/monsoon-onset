@@ -139,6 +139,12 @@ variable "drywetcast_image" {
   default     = null
 }
 
+variable "drywetcast_fallback_image" {
+  description = "Container image for the DryWetCast-India fallback Cloud Run job (the fallback role in products/drywetcast/pins.yaml). Needs drywetcast_image; null creates no job."
+  type        = string
+  default     = null
+}
+
 variable "drywetcast_ncmrwf_secret_id" {
   description = "Existing Secret Manager secret holding the NCMRWF portal key, mounted as NCMRWF_API_KEY on the DryWetCast job. Referenced only; not created or managed here."
   type        = string

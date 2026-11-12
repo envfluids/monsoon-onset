@@ -192,6 +192,18 @@ resource "google_monitoring_alert_policy" "ensemble_ladder_claim_unavailable" {
   }
 }
 
+locals {
+  drywetcast_job_name          = "${var.name_prefix}-${var.environment}-drywetcast"
+  drywetcast_fallback_job_name = "${var.name_prefix}-${var.environment}-drywetcast-fallback"
+  # The subdistrict alert covers the fallback job too once it exists. Without
+  # it the filter is unchanged, so environments without the job see no diff.
+  drywetcast_job_filter = (
+    var.enable_drywetcast_fallback_alert
+    ? "(resource.labels.job_name=\"${local.drywetcast_job_name}\" OR resource.labels.job_name=\"${local.drywetcast_fallback_job_name}\")"
+    : "resource.labels.job_name=\"${local.drywetcast_job_name}\""
+  )
+}
+
 # Alert: DryWetCast ran without its subdistrict products. These problems are
 # deliberately non-fatal (the execution succeeds), so the Cloud Run Job Failure
 # alert never sees them; the wrapper logs one of these tokens at ERROR instead.
@@ -208,7 +220,7 @@ resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {
     condition_matched_log {
       filter = <<-EOT
         resource.type="cloud_run_job"
-        resource.labels.job_name="${var.name_prefix}-${var.environment}-drywetcast"
+        ${local.drywetcast_job_filter}
         (textPayload:"DRYWETCAST_SUBDISTRICT_UNAVAILABLE" OR textPayload:"DRYWETCAST_SUBDISTRICT_FAILED")
       EOT
     }
@@ -225,6 +237,49 @@ resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {
 
   documentation {
     content   = "DRYWETCAST_SUBDISTRICT_UNAVAILABLE: the subdistrict bundle could not be copied or failed its manifest check, so every config ran without subdistrict products. DRYWETCAST_SUBDISTRICT_FAILED: DryWetCast failed with the bundle for one config, which was rerun without it. The core products and outlook were still delivered; see the day's manifest.json (subdistrict_bundle, this_run.<config>.subdistrict)."
+    mime_type = "text/markdown"
+  }
+
+  user_labels = {
+    environment = var.environment
+    severity    = "warning"
+  }
+}
+
+# Alert: a DryWetCast config was delivered by the fallback job (the previous
+# known-good DryWetCast-India version) because the live version failed on it.
+# The job logs DRYWETCAST_FALLBACK_USED at WARNING; the run itself succeeds, so
+# the Cloud Run Job Failure alert never sees it.
+resource "google_monitoring_alert_policy" "drywetcast_fallback_used" {
+  count = var.enable_alerts && var.enable_drywetcast_fallback_alert ? 1 : 0
+
+  project      = var.project_id
+  display_name = "[${upper(var.environment)}] DryWetCast Used the Fallback Version"
+  combiner     = "OR"
+
+  conditions {
+    display_name = "Fallback job delivered a DryWetCast config"
+
+    condition_matched_log {
+      filter = <<-EOT
+        resource.type="cloud_run_job"
+        resource.labels.job_name="${local.drywetcast_fallback_job_name}"
+        textPayload:"DRYWETCAST_FALLBACK_USED"
+      EOT
+    }
+  }
+
+  notification_channels = [for ch in google_monitoring_notification_channel.email : ch.id]
+
+  alert_strategy {
+    notification_rate_limit {
+      period = "3600s" # Max 1 notification per hour
+    }
+    auto_close = "86400s"
+  }
+
+  documentation {
+    content   = "DRYWETCAST_FALLBACK_USED: the live DryWetCast-India version failed on a config (a code failure, not missing inputs), so the config was rerun with the previous known-good version from the fallback role in products/drywetcast/pins.yaml. The products were delivered and synced as usual. Which version produced each config is in output/drywetcast/<date>/<config>/version.json, the day's manifest.json and drywetcast-state/<date>/status.json in the region bucket. Look at the live job's failed execution for the cause."
     mime_type = "text/markdown"
   }
 

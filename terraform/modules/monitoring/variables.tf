@@ -36,6 +36,12 @@ variable "enable_ensemble_fallback_alert" {
   default     = false
 }
 
+variable "enable_drywetcast_fallback_alert" {
+  description = "The DryWetCast fallback job exists: email when it delivers a config (DRYWETCAST_FALLBACK_USED) and include it in the subdistrict alert. Needs enable_alerts."
+  type        = bool
+  default     = false
+}
+
 variable "enable_delivery_alert" {
   description = "Alert on DELIVERY_LATE (delivery deadline missed) and BATCH_RETRY_CAP (a Batch job stopped being retried) workflow logs. Needs enable_alerts."
   type        = bool
