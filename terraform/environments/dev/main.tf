@@ -455,6 +455,9 @@ module "compute" {
   gencast_image        = "${module.storage.artifact_registry_url}/monsoon-gencast:latest"
   tpu_dispatch_image   = "${module.storage.artifact_registry_url}/monsoon-tpu-dispatch:latest"
   drywetcast_image     = "${module.storage.artifact_registry_url}/monsoon-drywetcast:latest"
+  # Created at :latest; the Build's deploy-drywetcast-fallback step then pins
+  # each build's digest (Terraform ignores image changes).
+  drywetcast_fallback_image = "${module.storage.artifact_registry_url}/monsoon-drywetcast-fallback:latest"
 
   # NCMRWF key: the existing ncmrwf-api-key secret, referenced (not managed) by the job.
   drywetcast_ncmrwf_secret_id = "ncmrwf-api-key"
@@ -628,7 +631,9 @@ module "monitoring" {
   enable_alerts                  = true
   enable_delivery_alert          = true
   enable_ensemble_fallback_alert = true
-  notification_emails            = ["zachary.freitag.johnson7@gmail.com"]
+  # The monsoon-dev-drywetcast-fallback job exists (compute drywetcast_fallback_image).
+  enable_drywetcast_fallback_alert = true
+  notification_emails              = ["zachary.freitag.johnson7@gmail.com"]
 
   depends_on = [module.orchestration]
 }

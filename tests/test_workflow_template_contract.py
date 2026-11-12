@@ -386,7 +386,10 @@ class DryWetCastJobContractTest(unittest.TestCase):
         ):
             self.assertIn(expected, job)
         self.assertIn(
-            'if name != "drywetcast" || var.drywetcast_image != null', self.compute_main
+            "drywetcast          = var.drywetcast_image != null", self.compute_main
+        )
+        self.assertIn(
+            "if lookup(local.optional_job_enabled, name, true)", self.compute_main
         )
         self.assertIn(
             "NCMRWF_API_KEY = var.drywetcast_ncmrwf_secret_id", self.compute_main
@@ -557,6 +560,122 @@ class DryWetCastJobContractTest(unittest.TestCase):
         ):
             self.assertIn(pin, self.dwc_lock)
         self.assertNotIn("nvidia", self.dwc_lock)
+
+
+class DryWetCastFallbackJobContractTest(unittest.TestCase):
+    """The fallback Cloud Run job (fallback role in products/drywetcast/pins.yaml):
+    a copy of the live job with the older DryWetCast-India image, dev only."""
+
+    ROOT = Path(__file__).resolve().parents[1]
+
+    @classmethod
+    def setUpClass(cls):
+        root = cls.ROOT
+        cls.compute_main = COMPUTE_MAIN_PATH.read_text()
+        cls.compute_vars = (root / "terraform/modules/compute/variables.tf").read_text()
+        cls.dev = DEV_MAIN_PATH.read_text()
+        cls.prod = PROD_MAIN_PATH.read_text()
+        cls.workflow = WORKFLOW_PATH.read_text()
+        cls.cloudbuild = (root / "cloudbuild.yaml").read_text()
+        cls.monitoring = (root / "terraform/modules/monitoring/main.tf").read_text()
+        cls.monitoring_vars = (
+            root / "terraform/modules/monitoring/variables.tf"
+        ).read_text()
+
+    def job(self, key):
+        services = self.compute_main.split("all_cloud_run_services = {", 1)[1]
+        return services.split(f"    {key} = {{", 1)[1].split("    }", 1)[0]
+
+    def test_fallback_job_matches_the_live_job_except_name_and_image(self):
+        live, fallback = self.job("drywetcast"), self.job("drywetcast_fallback")
+        self.assertIn(
+            'name    = "${var.name_prefix}-${var.environment}-drywetcast-fallback"',
+            fallback,
+        )
+        self.assertIn("image   = var.drywetcast_fallback_image", fallback)
+
+        def settings(block):
+            return [
+                line.strip()
+                for line in block.splitlines()
+                if line.strip().split(" ", 1)[0]
+                in {"memory", "cpu", "timeout", "retries", "secrets"}
+            ]
+
+        self.assertEqual(settings(fallback), settings(live))
+        self.assertEqual(len(settings(fallback)), 5)
+
+    def test_fallback_job_gets_the_live_env_vars_and_ncmrwf_secret(self):
+        self.assertIn(
+            "{ drywetcast_fallback = local.cloud_run_job_env.drywetcast }",
+            self.compute_main,
+        )
+        self.assertIn(
+            "for_each = lookup(local.cloud_run_job_env_by_key, each.key, {})",
+            self.compute_main,
+        )
+        secrets = self.compute_main.split("cloud_run_existing_secret_ids = {", 1)[1]
+        secrets = secrets.split("\n  }\n", 1)[0]
+        self.assertIn(
+            'for key in ["drywetcast", "drywetcast_fallback"] : key => {', secrets
+        )
+        self.assertIn("NCMRWF_API_KEY = var.drywetcast_ncmrwf_secret_id", secrets)
+
+    def test_fallback_job_is_optional_and_needs_the_live_job(self):
+        self.assertIn(
+            "drywetcast_fallback = var.drywetcast_image != null && "
+            "var.drywetcast_fallback_image != null",
+            self.compute_main,
+        )
+        variable = self.compute_vars.split('variable "drywetcast_fallback_image" {', 1)[
+            1
+        ]
+        self.assertIn("default     = null", variable.split("}", 1)[0])
+        self.assertNotIn("drywetcast_fallback_image", self.prod)
+
+    def test_dev_creates_the_job_from_the_fallback_image(self):
+        self.assertIn(
+            'drywetcast_fallback_image = "${module.storage.artifact_registry_url}'
+            '/monsoon-drywetcast-fallback:latest"',
+            self.dev,
+        )
+        self.assertIn("enable_drywetcast_fallback_alert = true", self.dev)
+        # The Build already deploys each build's fallback image to this job name.
+        self.assertIn(
+            "gcloud run jobs update monsoon-${_ENV}-drywetcast-fallback",
+            self.cloudbuild,
+        )
+
+    def test_nothing_starts_the_fallback_job_yet(self):
+        self.assertNotIn("drywetcast_fallback", self.workflow)
+
+    def test_fallback_alert_and_subdistrict_filter(self):
+        policy = hcl_block(
+            self.monitoring,
+            'resource "google_monitoring_alert_policy" "drywetcast_fallback_used" {',
+        )
+        self.assertIn(
+            "count = var.enable_alerts && var.enable_drywetcast_fallback_alert ? 1 : 0",
+            policy,
+        )
+        self.assertIn(
+            'resource.labels.job_name="${local.drywetcast_fallback_job_name}"', policy
+        )
+        self.assertIn('textPayload:"DRYWETCAST_FALLBACK_USED"', policy)
+        subdistrict = hcl_block(
+            self.monitoring,
+            'resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {',
+        )
+        self.assertIn("${local.drywetcast_job_filter}", subdistrict)
+        self.assertIn(
+            'variable "enable_drywetcast_fallback_alert" {', self.monitoring_vars
+        )
+        self.assertIn(
+            "default     = false",
+            self.monitoring_vars.split(
+                'variable "enable_drywetcast_fallback_alert" {', 1
+            )[1],
+        )
 
 
 class DeliveryAlertAndRetryCapContractTest(unittest.TestCase):
@@ -877,25 +996,23 @@ class DriveSyncContractTest(unittest.TestCase):
                 self.assertIn(expected, rule)
 
     def test_log_alerts_for_subdistrict_and_repeated_sync_failures(self):
-        for resource, tokens, job in (
+        for resource, tokens, job_filter in (
             (
                 'resource "google_monitoring_alert_policy" "drywetcast_subdistrict" {',
                 ("DRYWETCAST_SUBDISTRICT_UNAVAILABLE", "DRYWETCAST_SUBDISTRICT_FAILED"),
-                "drywetcast",
+                # Live job, plus the fallback job when it exists.
+                "${local.drywetcast_job_filter}",
             ),
             (
                 'resource "google_monitoring_alert_policy" "sync_gave_up" {',
                 ("SYNC_ITEMS_GAVE_UP",),
-                "sync",
+                'resource.labels.job_name="${var.name_prefix}-${var.environment}-sync"',
             ),
         ):
             with self.subTest(resource=resource):
                 block = hcl_block(self.monitoring, resource)
                 self.assertIn("count = var.enable_alerts ? 1 : 0", block)
-                self.assertIn(
-                    f'resource.labels.job_name="${{var.name_prefix}}-${{var.environment}}-{job}"',
-                    block,
-                )
+                self.assertIn(job_filter, block)
                 for token in tokens:
                     self.assertIn(f'textPayload:"{token}"', block)
                 self.assertIn('period = "3600s"', block)
