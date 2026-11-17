@@ -60,7 +60,7 @@ variable "grant_pipeline_batch_job_viewer" {
 }
 
 variable "external_share_readers" {
-  description = "External read-only collaborators for the share bucket. Key: short id used in the service account name (ext-<key>-reader). Value: display name. An empty map creates no share bucket."
+  description = "External read-only collaborators for the share bucket. Key: short id used in the service account name (ext-<key>-reader) and as the reader's object prefix (<key>/); each reader can only read and list objects under its own prefix. Value: display name. An empty map creates no share bucket."
   type        = map(string)
   default     = {}
 
