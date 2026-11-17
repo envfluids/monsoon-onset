@@ -325,3 +325,18 @@ resource "google_storage_bucket_iam_member" "share_uploaders" {
   role   = "roles/storage.objectAdmin"
   member = each.value
 }
+
+# Uploaders can mint short-lived credentials as each reader service account,
+# for `gcloud storage sign-url --impersonate-service-account=ext-<key>-reader@...`
+# (signed download URLs valid up to 12 hours, no service account keys needed).
+# Granted on the reader service accounts only, nothing project-wide.
+resource "google_service_account_iam_member" "share_uploaders_token_creator" {
+  for_each = {
+    for pair in setproduct(keys(google_service_account.share_reader), var.external_share_uploaders) :
+    "${pair[0]}/${pair[1]}" => { reader = pair[0], member = pair[1] }
+  }
+
+  service_account_id = google_service_account.share_reader[each.value.reader].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = each.value.member
+}
