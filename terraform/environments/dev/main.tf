@@ -378,9 +378,11 @@ module "storage" {
   grant_pipeline_batch_job_viewer = true
 
   # Read-only share bucket for external collaborators (dev only).
+  # Each reader sees only objects under <key>/ (ajaya/, dave/).
   # Reader service account keys are created outside Terraform.
   external_share_readers = {
     ajaya = "Ajaya Mohan, read-only (onset consultant)"
+    dave  = "Dave Connelly, read-only (UC Berkeley)"
   }
   external_share_uploaders = ["user:zfjohnson@uchicago.edu"]
 }

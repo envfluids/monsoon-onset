@@ -260,8 +260,9 @@ resource "google_project_iam_member" "pipeline_logging" {
 # gs://${name_prefix}-${env}-share-${project_id}/
 #   Read-only data for external collaborators, e.g. regional subsets of the
 #   AIFS reforecasts and IMERG. Each reader gets its own service account with
-#   objectViewer on this bucket only. Keys are created outside Terraform so
-#   private keys never enter state.
+#   objectViewer on this bucket only, limited by an IAM condition to objects
+#   under <key>/ (e.g. ajaya/, dave/), so readers cannot see each other's data.
+#   Keys are created outside Terraform so private keys never enter state.
 # -----------------------------------------------------------------------------
 
 locals {
@@ -295,13 +296,25 @@ resource "google_service_account" "share_reader" {
   display_name = each.value
 }
 
-# Each external reader can list and read objects in the share bucket only
+# Each external reader can read objects under its own <key>/ prefix, and list
+# only with that prefix (e.g. gcloud storage ls gs://<bucket>/<key>/). Listing
+# the bucket root or another reader's prefix is denied. The bucket uses
+# uniform bucket-level access, so these conditions are the only object ACLs.
 resource "google_storage_bucket_iam_member" "share_readers" {
   for_each = google_service_account.share_reader
 
   bucket = google_storage_bucket.share[0].name
   role   = "roles/storage.objectViewer"
   member = "serviceAccount:${each.value.email}"
+
+  condition {
+    title       = "only-${each.key}-prefix"
+    description = "Read and list objects under ${each.key}/ only"
+    expression = join(" || ", [
+      "resource.name.startsWith(\"projects/_/buckets/${google_storage_bucket.share[0].name}/objects/${each.key}/\")",
+      "(resource.type == \"storage.googleapis.com/Bucket\" && api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"${each.key}/\"))",
+    ])
+  }
 }
 
 # Uploaders can add, replace and delete objects in the share bucket only
